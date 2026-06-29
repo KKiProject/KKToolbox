@@ -1,0 +1,12 @@
+{
+    "name": "st-memory-augment",
+    "version": "1.0.0",
+    "private": true,
+    "type": "commonjs",
+    "main": "index.js",
+    "description": "Server plugin for Memory Augment",
+    "dependencies": {},
+    "scripts": {
+        "test": "node test/run.cjs"
+    }
+}

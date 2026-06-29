@@ -1,0 +1,109 @@
+<div id="memory_augment_settings" class="memory-augment-settings inline-drawer">
+    <div class="inline-drawer-toggle inline-drawer-header memory-augment-titlebar">
+        <div class="memory-augment-title">
+            <i class="fa-solid fa-brain" aria-hidden="true"></i>
+            <b>KKToolbox · Memory Augment</b>
+            <span class="memory-augment-version">v1.0.0</span>
+        </div>
+        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+    </div>
+    <div class="inline-drawer-content">
+        <p class="memory-augment-hint">增强记忆、上下文压缩与弹幕旁路系统。</p>
+
+        <details open>
+            <summary>API 配置</summary>
+            <div class="memory-augment-section memory-augment-api-grid">
+                <section class="memory-augment-api-card" data-api-card="embedding">
+                    <div class="memory-augment-card-heading">
+                        <h4>Embedding API</h4>
+                        <button type="button" class="menu_button memory-augment-fetch-models" data-fetch-models="embedding" disabled><i class="fa-solid fa-rotate" aria-hidden="true"></i><span>拉取模型</span></button>
+                    </div>
+                    <div class="memory-augment-field"><label>Base URL<input class="text_pole" type="url" data-setting="apis.embedding.url" data-api-url="embedding" placeholder="https://api.example.com"></label><small class="memory-augment-param-help">Embedding 服务的 OpenAI 兼容接口地址，通常填写到 /v1 之前或 /v1。</small></div>
+                    <div class="memory-augment-field"><label>API Key<input class="text_pole" type="password" data-setting="apis.embedding.apiKey" data-api-key="embedding" autocomplete="off"></label><small class="memory-augment-param-help">用于调用 Embedding 服务，仅保存在 SillyTavern 扩展设置中。</small></div>
+                    <div class="memory-augment-field" data-model-manual-field="embedding"><label>模型名（手动）<input class="text_pole" type="text" data-setting="apis.embedding.model" data-model-manual="embedding" placeholder="拉取失败时可手动填写"></label><small class="memory-augment-param-help">生成聊天和世界书向量的模型名称。</small></div>
+                    <div class="memory-augment-field" data-model-select-field="embedding" hidden><label>模型<select class="text_pole" data-model-select="embedding"></select></label><small class="memory-augment-param-help">从接口返回的模型列表中选择 Embedding 模型。</small></div>
+                    <div class="memory-augment-model-status" data-model-status="embedding" role="status" aria-live="polite"></div>
+                </section>
+
+                <section class="memory-augment-api-card" data-api-card="reranker">
+                    <div class="memory-augment-card-heading">
+                        <h4>Reranker API</h4>
+                        <button type="button" class="menu_button memory-augment-fetch-models" data-fetch-models="reranker" disabled><i class="fa-solid fa-rotate" aria-hidden="true"></i><span>拉取模型</span></button>
+                    </div>
+                    <div class="memory-augment-field"><label>Base URL<input class="text_pole" type="url" data-setting="apis.reranker.url" data-api-url="reranker" placeholder="https://api.example.com"></label><small class="memory-augment-param-help">Reranker 服务地址；留空整组配置即可只使用向量排序。</small></div>
+                    <div class="memory-augment-field"><label>API Key<input class="text_pole" type="password" data-setting="apis.reranker.apiKey" data-api-key="reranker" autocomplete="off"></label><small class="memory-augment-param-help">用于调用 Reranker 服务的密钥。</small></div>
+                    <div class="memory-augment-field" data-model-manual-field="reranker"><label>模型名（手动）<input class="text_pole" type="text" data-setting="apis.reranker.model" data-model-manual="reranker" placeholder="拉取失败时可手动填写"></label><small class="memory-augment-param-help">对向量召回候选进行相关性精排的模型名称。</small></div>
+                    <div class="memory-augment-field" data-model-select-field="reranker" hidden><label>模型<select class="text_pole" data-model-select="reranker"></select></label><small class="memory-augment-param-help">从接口返回的模型列表中选择 Reranker 模型。</small></div>
+                    <div class="memory-augment-model-status" data-model-status="reranker" role="status" aria-live="polite"></div>
+                </section>
+
+                <section class="memory-augment-api-card" data-api-card="barrage">
+                    <div class="memory-augment-card-heading">
+                        <h4>弹幕副 API</h4>
+                        <button type="button" class="menu_button memory-augment-fetch-models" data-fetch-models="barrage" disabled><i class="fa-solid fa-rotate" aria-hidden="true"></i><span>拉取模型</span></button>
+                    </div>
+                    <div class="memory-augment-field"><label>Base URL<input class="text_pole" type="url" data-setting="apis.barrage.url" data-api-url="barrage" placeholder="https://api.example.com"></label><small class="memory-augment-param-help">生成弹幕的 OpenAI 兼容接口地址，与主聊天 API 相互独立。</small></div>
+                    <div class="memory-augment-field"><label>API Key<input class="text_pole" type="password" data-setting="apis.barrage.apiKey" data-api-key="barrage" autocomplete="off"></label><small class="memory-augment-param-help">用于调用弹幕副 API 的密钥。</small></div>
+                    <div class="memory-augment-field" data-model-manual-field="barrage"><label>模型名（手动）<input class="text_pole" type="text" data-setting="apis.barrage.model" data-model-manual="barrage" placeholder="拉取失败时可手动填写"></label><small class="memory-augment-param-help">负责生成弹幕文本的模型名称。</small></div>
+                    <div class="memory-augment-field" data-model-select-field="barrage" hidden><label>模型<select class="text_pole" data-model-select="barrage"></select></label><small class="memory-augment-param-help">从接口返回的模型列表中选择弹幕模型。</small></div>
+                    <div class="memory-augment-model-status" data-model-status="barrage" role="status" aria-live="polite"></div>
+                </section>
+            </div>
+        </details>
+
+        <details>
+            <summary>上下文压缩</summary>
+            <div class="memory-augment-section memory-augment-card">
+                <div class="memory-augment-field"><label for="memory_augment_recent_messages">发送最近 N 楼原文：<span data-value-for="memory_augment_recent_messages"></span></label><input id="memory_augment_recent_messages" type="range" min="1" max="20" step="1" data-setting="context.recentMessages"><small class="memory-augment-param-help">生成时仅发送最近 N 条消息的原文，更早的消息不发送原文。聊天记录本身不受影响。</small></div>
+                <div class="memory-augment-field"><label>摘要触发间隔<input class="text_pole" type="number" min="1" max="50" step="1" data-setting="context.summaryInterval"></label><small class="memory-augment-param-help">每 X 次 AI 回复后，自动摘要一次之前的旧消息。数值越大，摘要越不频繁。</small></div>
+                <div class="memory-augment-field"><label>摘要最大长度（token）<input class="text_pole" type="number" min="50" max="4000" step="50" data-setting="context.summaryMaxTokens"></label><small class="memory-augment-param-help">单次摘要输出的 token 上限。覆盖的消息越多可以适当调大。</small></div>
+            </div>
+        </details>
+
+        <details>
+            <summary>RAG 设置</summary>
+            <div class="memory-augment-section memory-augment-card">
+                <div class="memory-augment-field"><label>分块大小<input class="text_pole" type="number" min="1" max="20" step="1" data-setting="rag.chunkSize"></label><small class="memory-augment-param-help">每个聊天向量块包含的消息条数。较小更精确，较大可保留更多上下文。</small></div>
+                <div class="memory-augment-field"><label>向量粗召回 top-K<input class="text_pole" type="number" min="1" max="100" step="1" data-setting="rag.topK"></label><small class="memory-augment-param-help">向量搜索初步召回的候选数量。数值越大召回更全面，但处理更慢。</small></div>
+                <div class="memory-augment-field"><label>精排保留 top-N<input class="text_pole" type="number" min="1" max="50" step="1" data-setting="rag.topN"></label><small class="memory-augment-param-help">最终发送给 AI 的记忆片段上限，应不大于 top-K。</small></div>
+                <div class="memory-augment-field"><label>Reranker 阈值<input class="text_pole" type="number" min="0" max="1" step="0.05" data-setting="rag.rerankerThreshold"></label><small class="memory-augment-param-help">精排结果的最低相关度，越高越严格；未配置 Reranker 时不生效。</small></div>
+                <div class="memory-augment-field"><label class="checkbox_label"><input type="checkbox" data-setting="rag.semanticWorldInfo">启用世界书语义触发</label><small class="memory-augment-param-help">让勾选的世界书条目参与语义检索，不改变其原有关键词触发规则。</small></div>
+                <div class="memory-augment-worldinfo-selector">
+                    <div class="memory-augment-worldinfo-header"><strong>语义触发条目</strong><span id="memory_augment_worldinfo_status"></span></div>
+                    <div id="memory_augment_worldinfo_entries" class="memory-augment-worldinfo-entries">正在读取当前关联世界书…</div>
+                </div>
+                <div class="memory-augment-actions">
+                    <button id="memory_augment_refresh_worldinfo" type="button" class="menu_button">刷新条目</button>
+                    <button id="memory_augment_vectorize_worldinfo" type="button" class="menu_button">向量化世界书</button>
+                    <button id="memory_augment_rebuild_chat" type="button" class="menu_button">重建当前聊天向量</button>
+                </div>
+            </div>
+        </details>
+
+        <details>
+            <summary>弹幕设置</summary>
+            <div class="memory-augment-section memory-augment-card">
+                <div class="memory-augment-field"><label class="checkbox_label"><input type="checkbox" data-setting="barrage.enabled">启用弹幕</label><small class="memory-augment-param-help">AI 回复完成后调用副 API 生成旁路弹幕，不写入聊天上下文。</small></div>
+                <div class="memory-augment-field"><label>携带最近 N 楼<input class="text_pole" type="number" min="1" max="20" step="1" data-setting="barrage.recentMessages"></label><small class="memory-augment-param-help">发送给弹幕副 API 的最近消息条数，不影响主生成上下文。</small></div>
+                <div class="memory-augment-field"><label class="checkbox_label"><input type="checkbox" data-setting="barrage.includeRag">携带 RAG 召回</label><small class="memory-augment-param-help">让弹幕生成同时参考当前相关的历史记忆片段。</small></div>
+                <div class="memory-augment-field"><label>系统提示词<textarea class="text_pole" rows="5" data-setting="barrage.systemPrompt"></textarea></label><small class="memory-augment-param-help">定义弹幕的身份、语气和输出风格。</small></div>
+            </div>
+        </details>
+
+        <details open>
+            <summary>状态</summary>
+            <div class="memory-augment-section memory-augment-card memory-augment-status">
+                <div><span>服务状态</span><strong id="memory_augment_status_state" class="memory-augment-badge">checking</strong></div>
+                <div><span>实现阶段</span><strong id="memory_augment_status_phase" class="memory-augment-badge">—</strong></div>
+                <div><span>当前聊天 chunk</span><strong id="memory_augment_status_chunks" class="memory-augment-badge">0</strong></div>
+                <div><span>最后摘要时间</span><strong id="memory_augment_status_summary" class="memory-augment-badge">—</strong></div>
+                <div><span>当前摘要条目</span><strong id="memory_augment_status_summary_entries" class="memory-augment-badge">0</strong></div>
+                <div><span>向量库总大小</span><strong id="memory_augment_status_size" class="memory-augment-badge">0 B</strong></div>
+                <div class="memory-augment-actions">
+                    <button id="memory_augment_refresh_status" type="button" class="menu_button">刷新状态</button>
+                    <button id="memory_augment_clear_summaries" type="button" class="menu_button">清除所有摘要</button>
+                </div>
+            </div>
+        </details>
+    </div>
+</div>

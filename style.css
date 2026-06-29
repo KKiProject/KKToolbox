@@ -1,0 +1,362 @@
+.memory-augment-settings .inline-drawer-content {
+    color: var(--SmartThemeBodyColor);
+    padding: 0 0.65rem 0.85rem;
+}
+
+.memory-augment-titlebar {
+    align-items: center;
+}
+
+.memory-augment-title {
+    align-items: center;
+    display: flex;
+    gap: 0.5rem;
+    min-width: 0;
+}
+
+.memory-augment-title > i {
+    color: var(--SmartThemeQuoteColor);
+}
+
+.memory-augment-version,
+.memory-augment-badge {
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor) 18%, transparent);
+    border: 1px solid color-mix(in srgb, var(--SmartThemeQuoteColor) 45%, transparent);
+    border-radius: 999px;
+    color: var(--SmartThemeBodyColor);
+    display: inline-flex;
+    font-size: 0.78em;
+    font-weight: 600;
+    line-height: 1.2;
+    padding: 0.2rem 0.5rem;
+    white-space: nowrap;
+}
+
+.memory-augment-settings details {
+    border-top: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor) 75%, transparent);
+    padding: 0.45rem 0;
+}
+
+.memory-augment-settings summary {
+    color: var(--SmartThemeBodyColor);
+    cursor: pointer;
+    font-weight: 600;
+    padding: 0.15rem 0.2rem;
+}
+
+.memory-augment-hint {
+    color: var(--SmartThemeQuoteColor);
+    font-size: 0.85em;
+    margin: 0.2rem 0 0.55rem;
+}
+
+.memory-augment-section {
+    display: grid;
+    gap: 0.65rem;
+    margin-top: 0.4rem;
+    padding: 0.65rem;
+}
+
+.memory-augment-card,
+.memory-augment-api-card {
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 52%, transparent);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 0.65rem;
+    box-shadow: 0 0.25rem 0.8rem color-mix(in srgb, var(--SmartThemeShadowColor) 18%, transparent);
+}
+
+.memory-augment-api-grid {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+    padding: 0;
+}
+
+.memory-augment-api-card {
+    display: grid;
+    gap: 0.65rem;
+    min-width: 0;
+    padding: 0.65rem;
+}
+
+.memory-augment-section h4 {
+    margin: 0;
+}
+
+.memory-augment-field {
+    display: grid;
+    gap: 0.2rem;
+    justify-items: start;
+    min-width: 0;
+}
+
+.memory-augment-field > label:not(.checkbox_label) {
+    display: grid;
+    gap: 0.22rem;
+    justify-items: start;
+    margin: 0;
+    width: 100%;
+}
+
+.memory-augment-field .text_pole,
+.memory-augment-field input[type="range"] {
+    box-sizing: border-box;
+    margin: 0;
+    max-width: 100%;
+    width: 22rem;
+}
+
+.memory-augment-field textarea.text_pole {
+    width: 32rem;
+}
+
+.memory-augment-field > .checkbox_label {
+    justify-content: flex-start;
+    margin: 0;
+    text-align: left;
+}
+
+.memory-augment-param-help {
+    color: var(--SmartThemeQuoteColor);
+    display: block;
+    font-size: 0.78em;
+    line-height: 1.35;
+    max-width: 42rem;
+    opacity: 0.86;
+    text-align: left;
+}
+
+.memory-augment-card-heading {
+    align-items: center;
+    display: flex;
+    gap: 0.5rem;
+    justify-content: space-between;
+}
+
+.memory-augment-fetch-models {
+    align-items: center;
+    display: inline-flex;
+    flex: 0 0 auto;
+    gap: 0.35rem;
+    transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.memory-augment-fetch-models:not(:disabled):hover,
+.memory-augment-actions .menu_button:hover,
+.memory-augment-status .menu_button:hover {
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor) 22%, var(--SmartThemeBlurTintColor));
+    border-color: var(--SmartThemeQuoteColor);
+}
+
+.memory-augment-fetch-models:not(:disabled):active {
+    transform: translateY(1px);
+}
+
+.memory-augment-fetch-models.is-loading i {
+    animation: memory-augment-spin 0.8s linear infinite;
+}
+
+.memory-augment-fetch-models:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+}
+
+.memory-augment-model-status {
+    color: var(--SmartThemeQuoteColor);
+    font-size: 0.85em;
+    line-height: 1.35;
+    min-height: 1.15em;
+}
+
+.memory-augment-model-status.is-error {
+    color: var(--SmartThemeEmColor);
+}
+
+.memory-augment-model-status.is-success::before {
+    content: '\f058';
+    font-family: 'Font Awesome 6 Free';
+    font-weight: 900;
+    margin-right: 0.3rem;
+}
+
+@keyframes memory-augment-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+.memory-augment-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.memory-augment-worldinfo-selector {
+    background: color-mix(in srgb, var(--SmartThemeChatTintColor) 38%, transparent);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 0.4rem;
+    padding: 0.5rem;
+}
+
+.memory-augment-worldinfo-header {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.4rem;
+}
+
+#memory_augment_worldinfo_status,
+.memory-augment-worldinfo-empty {
+    color: var(--SmartThemeQuoteColor);
+    font-size: 0.9em;
+}
+
+.memory-augment-worldinfo-entries {
+    display: grid;
+    gap: 0.25rem;
+    max-height: 14rem;
+    overflow: auto;
+}
+
+.memory-augment-worldinfo-book {
+    border-bottom: 1px solid var(--SmartThemeBorderColor);
+    font-weight: 600;
+    margin-top: 0.35rem;
+    padding-bottom: 0.2rem;
+}
+
+.memory-augment-worldinfo-entry {
+    padding-left: 0.35rem;
+}
+
+.memory-augment-status > div {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.memory-augment-status .memory-augment-badge {
+    max-width: 70%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#memory_augment_status_state[data-state="ok"] {
+    border-color: var(--SmartThemeQuoteColor);
+}
+
+#memory_augment_status_state[data-state="offline"] {
+    border-color: var(--SmartThemeEmColor);
+    color: var(--SmartThemeEmColor);
+}
+
+.memory-augment-top-entry .drawer-header {
+    align-items: center;
+    display: flex;
+    justify-content: center;
+}
+
+#memory_augment_top_button {
+    color: var(--SmartThemeBodyColor);
+    cursor: pointer;
+    transition: color 0.15s ease, filter 0.15s ease, transform 0.15s ease;
+}
+
+#memory_augment_top_button:hover,
+#memory_augment_top_button:focus-visible {
+    color: var(--SmartThemeQuoteColor);
+    filter: drop-shadow(0 0 0.3rem var(--SmartThemeShadowColor));
+    transform: translateY(-1px);
+}
+
+.memory-augment-popup .popup-body {
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 94%, transparent);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 0.8rem;
+    box-shadow: 0 0.8rem 2.5rem var(--SmartThemeShadowColor);
+}
+
+.memory-augment-popup .popup-content {
+    color: var(--SmartThemeBodyColor);
+    max-width: 64rem;
+}
+
+.memory-augment-settings.is-quick-panel {
+    width: 100%;
+}
+
+.memory-augment-settings.is-quick-panel > .inline-drawer-content {
+    display: block !important;
+}
+
+.memory-augment-settings.is-quick-panel > .memory-augment-titlebar {
+    cursor: default;
+    pointer-events: none;
+}
+
+.memory-augment-settings.is-quick-panel > .memory-augment-titlebar .inline-drawer-icon {
+    display: none;
+}
+
+@media (max-width: 700px) {
+    .memory-augment-api-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .memory-augment-version {
+        display: none;
+    }
+}
+
+.memory-augment-barrage {
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 55%, transparent);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 0.5rem;
+    margin-top: 0.75rem;
+    padding: 0.35rem 0.6rem;
+}
+
+.memory-augment-barrage-toggle {
+    align-items: center;
+    color: var(--SmartThemeQuoteColor);
+    cursor: pointer;
+    display: flex;
+    gap: 0.45rem;
+    list-style: none;
+    user-select: none;
+}
+
+.memory-augment-barrage-toggle::-webkit-details-marker {
+    display: none;
+}
+
+.memory-augment-barrage-toggle::after {
+    content: '›';
+    margin-left: auto;
+    transform: rotate(90deg);
+    transition: transform 0.15s ease;
+}
+
+.memory-augment-barrage[open] > .memory-augment-barrage-toggle::after {
+    transform: rotate(270deg);
+}
+
+.memory-augment-barrage-status {
+    font-size: 0.85em;
+    opacity: 0.75;
+}
+
+.memory-augment-barrage-content {
+    border-left: 2px solid var(--SmartThemeQuoteColor);
+    margin: 0.55rem 0 0.2rem;
+    padding: 0.25rem 0 0.25rem 0.7rem;
+    white-space: pre-wrap;
+}
+
+.memory-augment-barrage.is-loading {
+    opacity: 0.8;
+}
+
+.memory-augment-barrage.is-error .memory-augment-barrage-status,
+.memory-augment-barrage.is-error .memory-augment-barrage-content {
+    color: var(--crimson70a);
+}

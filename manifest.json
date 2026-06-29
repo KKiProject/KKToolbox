@@ -1,0 +1,15 @@
+{
+    "display_name": "Memory Augment",
+    "loading_order": 5,
+    "requires": [],
+    "optional": [],
+    "dependencies": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "KKToolbox",
+    "version": "1.0.0",
+    "description": "Vector RAG memory, summarization, and barrage system",
+    "homePage": "",
+    "auto_update": false,
+    "generate_interceptor": "memoryAugmentInterceptor"
+}
