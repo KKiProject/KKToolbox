@@ -25,7 +25,7 @@ export function reconcileBufferedMessageQueue(metadata, chat) {
     let lastConfirmedMessageIndex = -1;
 
     for (let id = messages.length - 1; id >= 0; id--) {
-        if (messages[id]?.is_user === true && messages[id]?.is_system !== true) {
+        if (messages[id]?.is_user === true) {
             lastConfirmedMessageIndex = id;
             break;
         }
@@ -35,7 +35,6 @@ export function reconcileBufferedMessageQueue(metadata, chat) {
     const finalizedIds = messages
         .map((message, id) => ({ message, id }))
         .filter(({ message, id }) => id <= lastConfirmedMessageIndex
-            && message?.is_system !== true
             && String(message?.mes ?? '').trim())
         .map(({ id }) => id);
 

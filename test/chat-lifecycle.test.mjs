@@ -53,14 +53,31 @@ test('opening a chat rebuilds the four-floor buffer instead of ingesting recent 
         mes: `floor ${index}`,
     }));
     assert.deepEqual(reconcileBufferedMessageQueue(metadata, longChat), {
-        ready: [0, 2, 3, 4],
+        ready: [0, 1, 2, 3, 4],
         pending: [5, 6, 7, 8],
         lastConfirmedMessageIndex: 8,
         readyThrough: 4,
     });
 });
 
-test('the persistent queue batches ready messages and chat loads reconcile only eligible floors', async () => {
+test('hidden summarized floors stay eligible for the vector store while only four recent floors are buffered', () => {
+    const metadata = {};
+    const chat = Array.from({ length: 101 }, (_, index) => ({
+        is_user: index % 2 === 0,
+        is_system: index < 80,
+        mes: `floor ${index}`,
+    }));
+
+    const result = reconcileBufferedMessageQueue(metadata, chat);
+    assert.deepEqual(result.ready, Array.from({ length: 97 }, (_, index) => index));
+    assert.deepEqual(result.pending, [97, 98, 99, 100]);
+    assert.equal(result.lastConfirmedMessageIndex, 100);
+    assert.equal(result.readyThrough, 96);
+    assert.equal(result.ready.includes(0), true);
+    assert.equal(result.ready.includes(79), true);
+});
+
+test('the persistent queue batches ready messages and chat loads reconcile every eligible floor', async () => {
     const handlers = new Map();
     const ingested = [];
     const reconciliations = [];

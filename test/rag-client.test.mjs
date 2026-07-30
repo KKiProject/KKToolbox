@@ -97,3 +97,50 @@ test('native chat memory writes, searches, edits, and disables fragments without
     assert.ok(vectorRequests.some(item => item.url === '/api/vector/insert'));
     assert.ok(vectorRequests.some(item => item.url === '/api/vector/delete'));
 });
+
+test('a partial 80-95 floor store is repaired with all missing historical floors without re-embedding saved floors', async (context) => {
+    const originalSillyTavern = globalThis.SillyTavern;
+    const originalFetch = globalThis.fetch;
+    context.after(() => {
+        globalThis.SillyTavern = originalSillyTavern;
+        globalThis.fetch = originalFetch;
+    });
+
+    globalThis.SillyTavern = {
+        getContext: () => ({ getRequestHeaders: () => ({ 'Content-Type': 'application/json' }) }),
+    };
+    const fixture = installNativeFetch();
+    globalThis.fetch = fixture.fetch;
+    const embedding = {
+        baseUrl: 'https://embedding.example',
+        apiKey: 'embed-key',
+        model: 'embed-model',
+    };
+    const messages = Array.from({ length: 96 }, (_, id) => ({
+        id,
+        role: id % 2 === 0 ? 'user' : 'assistant',
+        text: `第 ${id} 楼原文`,
+    }));
+
+    const partial = await ingestChat({
+        chatId: 'hundred-floor-chat',
+        embedding,
+        targetChars: 400,
+        messages: messages.slice(80),
+    });
+    assert.equal(partial.embedded, 16);
+
+    const repaired = await ingestChat({
+        chatId: 'hundred-floor-chat',
+        embedding,
+        targetChars: 400,
+        messages,
+    });
+    assert.equal(repaired.embedded, 80);
+    assert.equal(repaired.reused, 16);
+
+    const listed = await getChatMemory('hundred-floor-chat', { offset: 0, limit: 200 });
+    assert.equal(listed.total, 96);
+    assert.equal(Math.min(...listed.items.map(item => item.message_id)), 0);
+    assert.equal(Math.max(...listed.items.map(item => item.message_id)), 95);
+});
