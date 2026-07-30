@@ -1,8 +1,18 @@
 import { rerankMemory, searchMemory } from './rag-client.js';
 import { normalizeBaseUrl } from './api-utils.js';
+import { getActiveWorldInfoBookIds } from './world-info-manager.js';
 
 const EXTENSION_KEY = 'st-memory-augment';
 const MEMORY_MARKER = 'memory_augment_rag';
+const WORLD_INFO_TOP_K = 7;
+const WORLD_INFO_TOP_N = 3;
+const MEMORY_TIMELINE_GUARD = [
+    '【历史召回附录】',
+    '以下片段来自较早楼层，是根据当前内容检索出的可能相关历史。它们可能有用，也可能无关，仅供参考，不要求必须采用。',
+    '若片段确与当前情境相关，应据此保持人物认知、事实与因果连续性；若无关则忽略。',
+    '这些片段不是当前正在发生的场景，不得因此回退时间线或重复已经发生的事件。',
+    '如与最近原文冲突，以最近原文和较晚楼层为准。',
+].join('\n');
 
 function clampInteger(value, fallback, minimum, maximum) {
     const number = Math.trunc(Number(value));
@@ -70,15 +80,65 @@ function formatRecallMessage(results, prefix, intro, kind) {
 }
 
 export function formatMemoryMessage(results) {
-    return formatRecallMessage(results, '[记忆召回]', '以下是与当前对话相关的历史片段：', 'chat');
+    const getMessageIds = result => result?.message_id !== undefined
+        ? [result.message_id]
+        : Array.isArray(result?.message_ids) ? result.message_ids : [];
+    const sorted = [...results].sort((left, right) => {
+        const leftId = getMessageIds(left)[0] ?? Number.MAX_SAFE_INTEGER;
+        const rightId = getMessageIds(right)[0] ?? Number.MAX_SAFE_INTEGER;
+        const floorOrder = String(leftId).localeCompare(String(rightId), undefined, { numeric: true });
+        return floorOrder || (Number(left?.segment_index) || 0) - (Number(right?.segment_index) || 0);
+    });
+    const fragments = sorted.map((result) => {
+        const text = String(result?.text ?? '').trim();
+        if (!text) {
+            return '';
+        }
+        const ids = getMessageIds(result);
+        const floor = ids.length > 1 ? `${ids[0]}-${ids.at(-1)}` : ids[0];
+        const label = floor !== undefined
+            ? `[记忆召回-第${floor}楼]`
+            : '[记忆召回]';
+        return `${label} ${text}`;
+    }).filter(Boolean);
+    if (fragments.length === 0) {
+        return null;
+    }
+    const content = `${MEMORY_TIMELINE_GUARD}\n\n${fragments.join('\n\n')}`;
+    return {
+        role: 'system',
+        content,
+        name: 'Memory Augment',
+        is_user: false,
+        is_system: false,
+        mes: content,
+        extra: {
+            type: 'narrator',
+            [MEMORY_MARKER]: true,
+            memory_augment_recall_type: 'chat',
+        },
+    };
 }
 
 export function formatWorldInfoMessage(results) {
-    return formatRecallMessage(results, '[设定召回]', '以下是与当前对话语义相关的世界设定：', 'worldinfo');
-}
-
-function isMemoryMessage(message) {
-    return Boolean(message?.extra?.[MEMORY_MARKER]);
+    const fragments = [...results]
+        .sort((left, right) => String(left?.book_id ?? left?.world_info_book ?? '')
+            .localeCompare(String(right?.book_id ?? right?.world_info_book ?? ''), undefined, { numeric: true })
+            || String(left?.entry_uid ?? left?.world_info_id ?? '')
+                .localeCompare(String(right?.entry_uid ?? right?.world_info_id ?? ''), undefined, { numeric: true })
+            || (Number(left?.segment_index) || 0) - (Number(right?.segment_index) || 0))
+        .map((result) => {
+            const book = String(result?.book_id ?? result?.world_info_book ?? '世界书').trim();
+            const text = String(result?.text ?? '').trim();
+            return text ? `[设定召回-${book}] ${text}` : '';
+        })
+        .filter(Boolean);
+    if (fragments.length === 0) return null;
+    const content = fragments.join('\n\n');
+    return {
+        role: 'system', content, name: 'Memory Augment', is_user: false, is_system: false, mes: content,
+        extra: { type: 'narrator', [MEMORY_MARKER]: true, memory_augment_recall_type: 'worldinfo' },
+    };
 }
 
 function cloneGenerationChat(chat) {
@@ -92,40 +152,38 @@ function cloneGenerationChat(chat) {
     return JSON.parse(JSON.stringify(chat));
 }
 
-export function compressGenerationChat(chat, recentMessageCount) {
-    if (!Array.isArray(chat) || chat.length === 0) {
-        return { removed: 0, summaryCount: 0 };
+async function selectRecallResults({
+    candidates,
+    query,
+    topN,
+    threshold,
+    reranker,
+    rerank,
+    source,
+}) {
+    if (!Array.isArray(candidates) || candidates.length === 0) {
+        return { results: [], usedReranker: false };
+    }
+    if (!reranker) {
+        return { results: candidates.slice(0, topN), usedReranker: false };
     }
 
-    const recentCount = clampInteger(recentMessageCount, 5, 1, 20);
-    const hasOriginalIndices = chat.some(message => Number.isInteger(message?.index));
-    const isOriginal = (message) => {
-        if (isMemoryMessage(message)) {
-            return false;
-        }
-        if (hasOriginalIndices) {
-            return Number.isInteger(message?.index);
-        }
-        return message?.extra?.type !== 'narrator' && message?.role !== 'system';
-    };
-
-    const originalMessages = chat.filter(isOriginal);
-    const recentMessages = originalMessages.slice(-recentCount);
-    const oldMessages = originalMessages.slice(0, Math.max(0, originalMessages.length - recentCount));
-    const ragMessages = chat.filter(isMemoryMessage);
-    const auxiliaryMessages = chat.filter(message => !isOriginal(message)
-        && !isMemoryMessage(message));
-    const replacement = [
-        ...auxiliaryMessages,
-        ...ragMessages,
-        ...recentMessages,
-    ];
-
-    chat.splice(0, chat.length, ...replacement);
-    return {
-        removed: oldMessages.length,
-        retained: recentMessages.length,
-    };
+    try {
+        const response = await rerank({
+            query,
+            candidates,
+            topN,
+            threshold,
+            reranker,
+        });
+        return {
+            results: Array.isArray(response?.results) ? response.results.slice(0, topN) : [],
+            usedReranker: true,
+        };
+    } catch (error) {
+        console.warn(`[Memory Augment] ${source} reranking failed; using vector search order.`, error);
+        return { results: candidates.slice(0, topN), usedReranker: false };
+    }
 }
 
 export async function retrieveAndInject(chat, settings, context, clients = {}) {
@@ -143,62 +201,86 @@ export async function retrieveAndInject(chat, settings, context, clients = {}) {
     const topK = clampInteger(settings?.rag?.topK, 20, 1, 100);
     const topN = clampInteger(settings?.rag?.topN, 5, 1, Math.min(50, topK));
     const threshold = clampNumber(settings?.rag?.rerankerThreshold, 0.3, 0, 1);
-    const recentMessages = clampInteger(settings?.context?.recentMessages, 5, 1, 20);
+    const recentMessages = clampInteger(settings?.context?.recentMessages, 20, 1, 1000);
+    const persistentChatLength = Array.isArray(context?.chat) ? context.chat.length : chat.length;
+    const chatMessageIdBefore = Math.max(0, persistentChatLength - recentMessages);
     const search = clients.searchMemory ?? searchMemory;
     const rerank = clients.rerankMemory ?? rerankMemory;
-    const worldInfoKeys = Array.isArray(settings?.rag?.semanticWorldInfoEntries)
-        ? settings.rag.semanticWorldInfoEntries.map(String)
-        : [];
-    const semanticWorldInfo = Boolean(settings?.rag?.semanticWorldInfo && worldInfoKeys.length > 0);
+    const activeBookIds = Array.isArray(settings?.rag?.activeWorldInfoBookIds)
+        ? settings.rag.activeWorldInfoBookIds.map(String)
+        : getActiveWorldInfoBookIds();
+    const semanticWorldInfo = Boolean(settings?.rag?.semanticWorldInfo && activeBookIds.length > 0);
     const searchResponse = await search({
         chatId,
         query,
-        topK,
+        separate: true,
+        chatTopK: topK,
+        worldInfoTopK: WORLD_INFO_TOP_K,
         embedding,
-        types: semanticWorldInfo ? ['chat', 'worldinfo'] : ['chat'],
-        worldInfoKeys: semanticWorldInfo ? worldInfoKeys : [],
+        scope: {
+            chat_id: chatId,
+            chat_message_id_before: chatMessageIdBefore,
+            book_ids: semanticWorldInfo ? activeBookIds : [],
+        },
     });
-    const candidates = Array.isArray(searchResponse?.results) ? searchResponse.results : [];
-    if (candidates.length === 0) {
+    if (searchResponse?.errors?.chat) {
+        console.warn(`[Memory Augment] Chat vector search failed: ${searchResponse.errors.chat}`);
+    }
+    if (searchResponse?.errors?.worldinfo) {
+        console.warn(`[Memory Augment] World info vector search failed: ${searchResponse.errors.worldinfo}`);
+    }
+    const legacyCandidates = Array.isArray(searchResponse?.results) ? searchResponse.results : [];
+    const chatCandidates = Array.isArray(searchResponse?.chatResults)
+        ? searchResponse.chatResults
+        : legacyCandidates.filter(result => result.type !== 'worldinfo');
+    const worldInfoCandidates = semanticWorldInfo
+        ? Array.isArray(searchResponse?.worldInfoResults)
+            ? searchResponse.worldInfoResults
+            : legacyCandidates.filter(result => result.type === 'worldinfo')
+        : [];
+    if (chatCandidates.length === 0 && worldInfoCandidates.length === 0) {
         return { injected: false, reason: 'no-results' };
     }
 
     const reranker = completeApiConfig(settings?.apis?.reranker);
-    let results = candidates.slice(0, topN);
-    let usedReranker = false;
-
-    if (reranker) {
-        try {
-            const rerankResponse = await rerank({
-                query,
-                candidates,
-                topN,
-                threshold,
-                reranker,
-            });
-            results = Array.isArray(rerankResponse?.results) ? rerankResponse.results : [];
-            usedReranker = true;
-        } catch (error) {
-            console.warn('[Memory Augment] Reranker failed; using vector search order.', error);
-        }
-    }
-
-    const selectedResults = results.slice(0, topN);
+    const [chatSelection, worldInfoSelection] = await Promise.all([
+        selectRecallResults({
+            candidates: chatCandidates,
+            query,
+            topN,
+            threshold,
+            reranker,
+            rerank,
+            source: 'Chat memory',
+        }),
+        selectRecallResults({
+            candidates: worldInfoCandidates,
+            query,
+            topN: WORLD_INFO_TOP_N,
+            threshold,
+            reranker,
+            rerank,
+            source: 'World info',
+        }),
+    ]);
+    const usedReranker = chatSelection.usedReranker || worldInfoSelection.usedReranker;
     const worldInfoMessage = semanticWorldInfo
-        ? formatWorldInfoMessage(selectedResults.filter(result => result.type === 'worldinfo'))
+        ? formatWorldInfoMessage(worldInfoSelection.results)
         : null;
-    const memoryMessage = formatMemoryMessage(selectedResults.filter(result => result.type !== 'worldinfo'));
+    const memoryMessage = formatMemoryMessage(chatSelection.results);
     const recallMessages = [worldInfoMessage, memoryMessage].filter(Boolean);
     if (recallMessages.length === 0) {
         return { injected: false, reason: 'filtered', usedReranker };
     }
 
-    const insertionIndex = Math.max(0, chat.length - recentMessages);
+    const insertionIndex = Math.max(0, chat.length - 2);
     chat.splice(insertionIndex, 0, ...recallMessages);
     return {
         injected: true,
         insertionIndex,
-        resultCount: selectedResults.length,
+        resultCount: chatSelection.results.length + worldInfoSelection.results.length,
+        chatResultCount: chatSelection.results.length,
+        worldInfoResultCount: worldInfoSelection.results.length,
         usedReranker,
     };
 }
@@ -233,12 +315,6 @@ export async function memoryAugmentInterceptor(chat, contextSize, abort, type) {
     // ST normally supplies a generation-only array. Clone its messages as well,
     // so nested objects shared with context.chat can never be changed by us.
     const generationChat = cloneGenerationChat(chat);
-
-    try {
-        compressGenerationChat(generationChat, settings.context?.recentMessages);
-    } catch (error) {
-        console.error('[Memory Augment] Context compression failed; generation will continue without compression.', error);
-    }
 
     try {
         await retrieveAndInject(generationChat, settings, context);

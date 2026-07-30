@@ -15,6 +15,7 @@ function createSettings({ includeRag = false } = {}) {
         barrage: {
             enabled: true,
             recentMessages: 3,
+            maxTokens: 4064,
             includeRag,
             systemPrompt: 'audience system prompt',
         },
@@ -41,11 +42,11 @@ function createContext() {
     };
 }
 
-test('recent floor setting selects only messages ending at the rendered AI response', () => {
+test('recent floor setting selects N recap messages plus the rendered AI response', () => {
     const context = createContext();
     assert.deepEqual(
         collectRecentMessages(context.chat, 5, 3).map(message => message.id),
-        [3, 4, 5],
+        [2, 3, 4, 5],
     );
 });
 
@@ -65,13 +66,19 @@ test('barrage generation renders and caches without mutating context.chat', asyn
 
     assert.equal(result.generated, true);
     assert.deepEqual(context.chat, originalChat);
-    assert.deepEqual(requestBody.recentMessages.map(message => message.id), [3, 4, 5]);
+    assert.deepEqual(requestBody.recentMessages.map(message => message.id), [2, 3, 4, 5]);
     assert.deepEqual(requestBody.ragFragments, []);
     assert.equal(requestBody.barrage.baseUrl, 'https://barrage.example');
     assert.equal(requestBody.systemPrompt, 'audience system prompt');
+    assert.equal(requestBody.maxTokens, 4064);
     assert.equal(renders.at(-1)[1], '观众弹幕结果');
     assert.equal(renders.at(-1)[2], 'ready');
     assert.equal(context.chatMetadata[BARRAGE_METADATA_KEY]['5'].content, '观众弹幕结果');
+    assert.equal(Number.isInteger(context.chatMetadata[BARRAGE_METADATA_KEY]['5'].timestamp), true);
+    assert.deepEqual(
+        Object.keys(context.chatMetadata[BARRAGE_METADATA_KEY]['5']).sort(),
+        ['content', 'timestamp'],
+    );
     assert.equal(context.saves, 1);
 
     let generatedAgain = false;
@@ -107,8 +114,15 @@ test('RAG switch attaches retrieved fragments to the barrage request', async () 
 
     assert.equal(result.generated, true);
     assert.equal(result.ragCount, 1);
-    assert.equal(searchPayload.topK, 9);
+    assert.equal(searchPayload.separate, true);
+    assert.equal(searchPayload.chatTopK, 9);
+    assert.equal(searchPayload.worldInfoTopK, 7);
     assert.equal(searchPayload.embedding.baseUrl, 'https://embedding.example');
+    assert.deepEqual(searchPayload.scope, {
+        chat_id: 'barrage-chat',
+        chat_message_id_before: 0,
+        book_ids: [],
+    });
     assert.equal(barragePayload.ragFragments[0].text, 'recalled history');
 });
 
@@ -128,4 +142,94 @@ test('missing barrage API configuration produces no request or chat mutation', a
     assert.equal(result.reason, 'missing-config');
     assert.equal(requested, false);
     assert.deepEqual(context.chat, originalChat);
+});
+
+test('RAG failure is isolated and barrage generation continues with recent messages only', async () => {
+    const context = createContext();
+    let barragePayload;
+    const originalWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+        const result = await handleCharacterMessageRendered(5, createSettings({ includeRag: true }), context, {
+            renderBarrage: () => undefined,
+            getCurrentContext: () => context,
+            async searchMemory() {
+                throw new Error('embedding unavailable');
+            },
+            async generateBarrage(payload) {
+                barragePayload = payload;
+                return { content: 'without rag' };
+            },
+        });
+
+        assert.equal(result.generated, true);
+        assert.deepEqual(barragePayload.ragFragments, []);
+        assert.deepEqual(barragePayload.recentMessages.map(message => message.id), [2, 3, 4, 5]);
+    } finally {
+        console.warn = originalWarn;
+    }
+});
+
+test('barrage API and render failures do not reject or mutate chat', async () => {
+    const context = createContext();
+    const originalChat = structuredClone(context.chat);
+    const originalWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+        const result = await handleCharacterMessageRendered(5, createSettings(), context, {
+            renderBarrage() {
+                throw new Error('DOM unavailable');
+            },
+            async generateBarrage() {
+                throw new Error('side API unavailable');
+            },
+        });
+
+        assert.equal(result.generated, false);
+        assert.match(result.error.message, /side API unavailable/);
+        assert.deepEqual(context.chat, originalChat);
+        assert.equal(context.chatMetadata[BARRAGE_METADATA_KEY], undefined);
+    } finally {
+        console.warn = originalWarn;
+    }
+});
+
+test('barrage panel displays the detailed upstream API error', async () => {
+    const context = createContext();
+    const renders = [];
+    const originalWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+        const result = await handleCharacterMessageRendered(5, createSettings(), context, {
+            renderBarrage: (...args) => renders.push(args),
+            async generateBarrage() {
+                throw new Error('Barrage API returned 402: Insufficient balance');
+            },
+        });
+
+        assert.equal(result.generated, false);
+        assert.equal(renders.at(-1)[2], 'error');
+        assert.match(renders.at(-1)[1], /402: Insufficient balance/);
+    } finally {
+        console.warn = originalWarn;
+    }
+});
+
+test('forced regeneration bypasses the stored barrage and replaces it', async () => {
+    const context = createContext();
+    context.chatMetadata[BARRAGE_METADATA_KEY] = {
+        5: { content: 'old barrage', timestamp: 1 },
+    };
+
+    const result = await handleCharacterMessageRendered(5, createSettings(), context, {
+        renderBarrage: () => undefined,
+        getCurrentContext: () => context,
+        async generateBarrage() {
+            return { content: 'new barrage' };
+        },
+    }, { force: true });
+
+    assert.equal(result.generated, true);
+    assert.equal(context.chatMetadata[BARRAGE_METADATA_KEY]['5'].content, 'new barrage');
+    assert.equal(context.saves, 2, 'the stale barrage is removed before the replacement is saved');
 });

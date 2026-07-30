@@ -1,11 +1,13 @@
 import { extension_settings, renderExtensionTemplateAsync } from '../../../extensions.js';
 import { Popup, POPUP_TYPE } from '../../../popup.js';
 import { normalizeBaseUrl } from './api-utils.js';
+import { bindChatIngestionLifecycle, reconcileBufferedMessageQueue } from './chat-lifecycle.js';
+import { initializeChatMemoryUi } from './chat-memory-ui.js';
 import { memoryAugmentInterceptor } from './context-manager.js';
-import { fetchModels, getStatus, ingestChat } from './rag-client.js';
+import { fetchModels, getStatus, ingestChat, reconcileChatVectors } from './rag-client.js';
 import { initializeBarrageUi } from './barrage-ui.js';
 import { clearAllSummaries, getSummaryStatus, initializeSummaryManager } from './summary-manager.js';
-import { initializeWorldInfoManager } from './world-info-manager.js';
+import { initializeWorldInfoManager, vectorizeSelectedWorldInfo } from './world-info-manager.js';
 
 const EXTENSION_KEY = 'st-memory-augment';
 const EXTENSION_FOLDER = decodeURIComponent(new URL('.', import.meta.url).pathname)
@@ -24,21 +26,22 @@ export const defaultSettings = Object.freeze({
         barrage: { url: '', apiKey: '', model: '', availableModels: [], modelsBaseUrl: '' },
     },
     context: {
-        recentMessages: 5,
-        summaryInterval: 5,
-        summaryMaxTokens: 500,
+        recentMessages: 20,
+        summaryBatchSize: 10,
     },
     rag: {
-        chunkSize: 3,
+        segmentTargetChars: 400,
         topK: 20,
         topN: 5,
         rerankerThreshold: 0.3,
         semanticWorldInfo: false,
+        semanticWorldInfoBooks: [],
         semanticWorldInfoEntries: [],
     },
     barrage: {
         enabled: false,
         recentMessages: 5,
+        maxTokens: 4064,
         includeRag: true,
         systemPrompt: '你是一群正在观看小说直播的观众，请以弹幕/评论区风格吐槽点评',
     },
@@ -278,13 +281,24 @@ function showNotice(message, type = 'info') {
 function renderStatus(status) {
     const state = String(status.status ?? 'unknown');
     const stateElement = document.querySelector('#memory_augment_status_state');
-    stateElement.textContent = state;
+    stateElement.textContent = state === 'ok' ? '正常' : state === 'error' ? '读取失败' : '未知';
     stateElement.dataset.state = state;
-    document.querySelector('#memory_augment_status_chunks').textContent = status.chunkCount ?? 0;
-    document.querySelector('#memory_augment_status_summary').textContent = status.lastSummaryAt ?? '—';
-    document.querySelector('#memory_augment_status_summary_entries').textContent = status.summaryEntryCount ?? 0;
-    document.querySelector('#memory_augment_status_size').textContent = status.totalSize ?? '0 B';
-    document.querySelector('#memory_augment_status_phase').textContent = status.phase ? `Phase ${status.phase}` : '—';
+    const chunkCount = Number(status.chunkCount) || 0;
+    const summaryEntryCount = Number(status.summaryEntryCount) || 0;
+    const lastSummaryAt = String(status.lastSummaryAt ?? '').trim();
+    const chatSize = String(status.chatSize ?? '').trim();
+    document.querySelector('#memory_augment_status_chunks').textContent = chunkCount > 0
+        ? String(chunkCount)
+        : '暂无（发送消息后自动生成）';
+    document.querySelector('#memory_augment_status_summary').textContent = lastSummaryAt && lastSummaryAt !== '—'
+        ? lastSummaryAt
+        : '暂无摘要';
+    document.querySelector('#memory_augment_status_summary_entries').textContent = summaryEntryCount > 0
+        ? String(summaryEntryCount)
+        : '暂无摘要';
+    document.querySelector('#memory_augment_status_size').textContent = !chatSize || /^0(?:\.0+)?\s*(?:B|Bytes?)$/i.test(chatSize)
+        ? '空'
+        : chatSize;
 }
 
 async function openQuickPanel() {
@@ -303,9 +317,11 @@ async function openQuickPanel() {
 
     const popup = new Popup(panel, POPUP_TYPE.DISPLAY, '', {
         wide: true,
-        large: true,
         allowVerticalScrolling: true,
-        onOpen: () => void refreshStatus(),
+        onOpen: () => {
+            void refreshStatus();
+            document.dispatchEvent(new CustomEvent('memory-augment:panel-open'));
+        },
         onClose: () => {
             panel.classList.remove('is-quick-panel');
             if (originalNextSibling?.parentNode === originalParent) {
@@ -332,7 +348,7 @@ function addTopNavigationButton() {
     entry.className = 'drawer memory-augment-top-entry';
     entry.innerHTML = `
         <div class="drawer-toggle drawer-header">
-            <div id="memory_augment_top_button" class="drawer-icon fa-solid fa-brain fa-fw closedIcon"
+            <div id="memory_augment_top_button" class="drawer-icon fa-solid fa-toolbox fa-fw closedIcon"
                 role="button" tabindex="0" title="打开 KKToolbox 设置与状态" aria-label="打开 KKToolbox 设置与状态"></div>
         </div>`;
     const button = entry.querySelector('#memory_augment_top_button');
@@ -346,7 +362,12 @@ function addTopNavigationButton() {
             void openQuickPanel();
         }
     });
-    holder.append(entry);
+    const personaButton = holder.querySelector('#persona-management-button');
+    if (personaButton) {
+        holder.insertBefore(entry, personaButton);
+    } else {
+        holder.append(entry);
+    }
 }
 
 async function refreshStatus() {
@@ -370,13 +391,13 @@ async function refreshStatus() {
         });
     } catch (error) {
         renderStatus({
-            status: 'offline',
+            status: 'error',
             summaryEntryCount: summaryStatus.entryCount,
             lastSummaryAt: summaryStatus.lastSummaryAt
                 ? new Date(summaryStatus.lastSummaryAt).toLocaleString()
                 : null,
         });
-        console.warn('[Memory Augment] Server plugin status request failed.', error);
+        console.warn('[Memory Augment] Local memory status request failed.', error);
     } finally {
         button?.classList.remove('disabled');
     }
@@ -399,36 +420,58 @@ function normalizeTimestamp(value) {
     return Number.isNaN(milliseconds) ? 0 : Math.floor(milliseconds / 1000);
 }
 
-function createIngestPayload(settings, force = false) {
+function serializeChatMessage(message, id) {
+    return {
+        id,
+        name: message?.name ?? '',
+        role: message?.is_user ? 'user' : 'assistant',
+        text: message?.mes ?? '',
+        timestamp: normalizeTimestamp(message?.send_date),
+    };
+}
+
+function createChatSnapshot(settings) {
     const context = SillyTavern.getContext();
     const chatId = context.getCurrentChatId?.() ?? context.chatId;
     const embedding = getEmbeddingConfig(settings);
 
-    if (!chatId || !hasCompleteEmbeddingConfig(embedding) || !Array.isArray(context.chat)) {
+    if (!chatId || !Array.isArray(context.chat)) {
         return null;
     }
 
     return {
         chatId,
-        chunkSize: settings.rag.chunkSize,
-        embedding,
-        force,
-        messages: context.chat.map((message, id) => ({
-            id,
-            name: message.name ?? '',
-            role: message.is_user ? 'user' : 'assistant',
-            text: message.mes ?? '',
-            timestamp: normalizeTimestamp(message.send_date),
-        })),
+        messages: context.chat.map(serializeChatMessage),
+        embedding: hasCompleteEmbeddingConfig(embedding) ? embedding : null,
+        targetChars: settings.rag.segmentTargetChars,
     };
 }
 
-function queueIngestion(settings, { force = false, notify = false } = {}) {
-    const payload = createIngestPayload(settings, force);
+function createIngestPayload(settings, messageIds) {
+    const snapshot = createChatSnapshot(settings);
+    if (!snapshot?.embedding || !Array.isArray(messageIds)) {
+        return null;
+    }
+
+    const messages = messageIds
+        .map(Number)
+        .filter(id => Number.isInteger(id) && id >= 0 && id < snapshot.messages.length)
+        .map(id => snapshot.messages[id])
+        .filter(message => String(message.text).trim());
+    if (messages.length === 0) return null;
+
+    return {
+        type: 'chat',
+        chatId: snapshot.chatId,
+        targetChars: snapshot.targetChars,
+        embedding: snapshot.embedding,
+        messages,
+    };
+}
+
+function queueIngestion(settings, { messageIds = null } = {}) {
+    const payload = createIngestPayload(settings, messageIds);
     if (!payload) {
-        if (notify) {
-            showNotice('请先填写完整的 Embedding Base URL、API Key 和模型名。', 'warning');
-        }
         return Promise.resolve(null);
     }
 
@@ -437,8 +480,98 @@ function queueIngestion(settings, { force = false, notify = false } = {}) {
         .then(() => ingestChat(payload))
         .then(async (result) => {
             await refreshStatus();
+            return result;
+        });
+
+    ingestionQueue = task;
+    return task;
+}
+
+function queueChatReconciliation(settings, messageIds = []) {
+    const snapshot = createChatSnapshot(settings);
+    if (!snapshot) return Promise.resolve(null);
+    const readyIds = [...new Set((Array.isArray(messageIds) ? messageIds : [])
+        .map(Number)
+        .filter(id => Number.isInteger(id) && id >= 0 && id < snapshot.messages.length))];
+    const messages = readyIds
+        .map(id => snapshot.messages[id])
+        .filter(message => String(message.text).trim());
+
+    const task = ingestionQueue
+        .catch(() => undefined)
+        .then(async () => {
+            const cleanup = await reconcileChatVectors({
+                chatId: snapshot.chatId,
+                messageIds: messages.map(message => message.id),
+                embedding: snapshot.embedding,
+            });
+            if (!snapshot.embedding || messages.length === 0) {
+                return { accepted: 0, chunks: 0, embedded: 0, reused: 0, cleanup, didIngest: false };
+            }
+            const result = await ingestChat({
+                type: 'chat',
+                chatId: snapshot.chatId,
+                targetChars: snapshot.targetChars,
+                embedding: snapshot.embedding,
+                messages,
+            });
+            return { ...result, cleanup, didIngest: true };
+        })
+        .then(async (result) => {
+            await refreshStatus();
+            return result;
+        });
+
+    ingestionQueue = task;
+    return task;
+}
+
+function queueChatRebuild(settings, { notify = false } = {}) {
+    const snapshot = createChatSnapshot(settings);
+    if (!snapshot) return Promise.resolve(null);
+    const context = SillyTavern.getContext();
+    const { ready } = reconcileBufferedMessageQueue(context.chatMetadata, context.chat);
+    const messages = ready
+        .map(id => snapshot.messages[id])
+        .filter(message => String(message?.text ?? '').trim());
+    if (messages.length > 0 && !snapshot.embedding) {
+        if (notify) showNotice('请先填写完整的 Embedding Base URL、API Key 和模型名。', 'warning');
+        return Promise.resolve(null);
+    }
+
+    const task = ingestionQueue
+        .catch(() => undefined)
+        .then(async () => {
+            if (messages.length === 0) {
+                const cleanup = await reconcileChatVectors({
+                    chatId: snapshot.chatId,
+                    messageIds: [],
+                    embedding: snapshot.embedding,
+                });
+                return {
+                    accepted: 0,
+                    chunks: 0,
+                    embedded: 0,
+                    reused: 0,
+                    preservedManual: cleanup.preservedManualChunks ?? 0,
+                    cleanup,
+                };
+            }
+            const result = await ingestChat({
+                type: 'chat',
+                chatId: snapshot.chatId,
+                targetChars: snapshot.targetChars,
+                embedding: snapshot.embedding,
+                force: true,
+                reconcile: true,
+                messages,
+            });
+            return result;
+        })
+        .then(async (result) => {
+            await refreshStatus();
             if (notify) {
-                showNotice(`向量已重建：${result.chunks} 个分块，重新生成 ${result.embedded} 个向量。`, 'success');
+                showNotice(`向量已重建：${result.chunks} 个片段，重新生成 ${result.embedded} 个向量。`, 'success');
             }
             return result;
         });
@@ -448,17 +581,24 @@ function queueIngestion(settings, { force = false, notify = false } = {}) {
 }
 
 function bindMessageIngestion(settings, context) {
-    const messageReceived = context.eventTypes?.MESSAGE_RECEIVED ?? context.event_types?.MESSAGE_RECEIVED;
-    if (!messageReceived) {
-        console.error('[Memory Augment] MESSAGE_RECEIVED event is unavailable.');
-        return;
-    }
-
-    context.eventSource.on(messageReceived, () => {
-        queueIngestion(settings).catch((error) => {
-            console.error('[Memory Augment] Automatic message ingestion failed.', error);
-        });
+    const bound = bindChatIngestionLifecycle(context, {
+        getContext: () => SillyTavern.getContext(),
+        ingestMessages: (messageIds) => {
+            return queueIngestion(settings, { messageIds }).catch((error) => {
+                console.error('[Memory Augment] Automatic message ingestion failed.', error);
+                throw error;
+            });
+        },
+        reconcileChat: (messageIds) => {
+            return queueChatReconciliation(settings, messageIds).catch((error) => {
+                console.error('[Memory Augment] Chat vector reconciliation failed.', error);
+                throw error;
+            });
+        },
     });
+    if (!bound) {
+        console.error('[Memory Augment] Chat lifecycle events are unavailable; automatic chat ingestion is disabled.');
+    }
 }
 
 function bindActions(settings) {
@@ -467,10 +607,25 @@ function bindActions(settings) {
         const button = event.currentTarget;
         button.classList.add('disabled');
         try {
-            await queueIngestion(settings, { force: true, notify: true });
+            await queueChatRebuild(settings, { notify: true });
         } catch (error) {
             showNotice(`聊天向量重建失败：${error.message}`, 'error');
             console.error('[Memory Augment] Chat vector rebuild failed.', error);
+        } finally {
+            button.classList.remove('disabled');
+        }
+    });
+    document.querySelector('#memory_augment_rebuild_all_vectors')?.addEventListener('click', async (event) => {
+        const button = event.currentTarget;
+        button.classList.add('disabled');
+        try {
+            const chatResult = await queueChatRebuild(settings);
+            const worldResult = await vectorizeSelectedWorldInfo(settings, SillyTavern.getContext());
+            document.querySelector('#memory_augment_refresh_worldinfo')?.click();
+            showNotice(`全部向量已重建：聊天 ${chatResult?.chunks ?? 0} 个片段，世界书 ${worldResult.chunks} 个片段。`, 'success');
+        } catch (error) {
+            showNotice(`重建所有向量失败：${error.message}`, 'error');
+            console.error('[Memory Augment] Full vector rebuild failed.', error);
         } finally {
             button.classList.remove('disabled');
         }
@@ -500,8 +655,26 @@ function bindActions(settings) {
 
 async function initialize() {
     const context = SillyTavern.getContext();
+    const hadLegacySummaryMaxTokens = Object.hasOwn(
+        extension_settings[EXTENSION_KEY]?.context ?? {},
+        'summaryMaxTokens',
+    );
+    const hadLegacyChunkSize = Object.hasOwn(
+        extension_settings[EXTENSION_KEY]?.rag ?? {},
+        'chunkSize',
+    );
+    const hadLegacySummaryInterval = Object.hasOwn(
+        extension_settings[EXTENSION_KEY]?.context ?? {},
+        'summaryInterval',
+    );
     const settings = mergeSettings(defaultSettings, extension_settings[EXTENSION_KEY]);
+    delete settings.context.summaryMaxTokens;
+    delete settings.context.summaryInterval;
+    delete settings.rag.chunkSize;
     extension_settings[EXTENSION_KEY] = settings;
+    if (hadLegacySummaryMaxTokens || hadLegacySummaryInterval || hadLegacyChunkSize) {
+        context.saveSettingsDebounced();
+    }
 
     if (!document.querySelector('#memory_augment_settings')) {
         const html = await renderExtensionTemplateAsync(TEMPLATE_PATH, 'settings');
@@ -513,6 +686,7 @@ async function initialize() {
     bindActions(settings);
     addTopNavigationButton();
     bindMessageIngestion(settings, context);
+    initializeChatMemoryUi(settings, context);
     initializeSummaryManager(settings, context, { onSaved: refreshStatus });
     await initializeWorldInfoManager(settings, context);
     await initializeBarrageUi(settings, { templatePath: TEMPLATE_PATH });
