@@ -6,6 +6,10 @@ const TIMELINE_TRANSITIONS = new Set(['unchanged', 'advance', 'jump', 'enter_fla
 const TIMELINE_MODES = new Set(['mainline', 'flashback', 'flashforward', 'mention', 'unknown']);
 let statusUiBound = false;
 
+export function shouldShowStoryFloatingButton(options) {
+    return options?.showFloatingButton !== false;
+}
+
 function cleanText(value, maximum = 1200) {
     return String(value ?? '').trim().slice(0, maximum);
 }
@@ -675,7 +679,17 @@ export function refreshStoryStatusUi(context = globalThis.SillyTavern?.getContex
         ? 'AI 第一次回复后会在这里生成状态。'
         : '剧情状态栏已关闭，可在 KKToolbox 设置中重新开启。';
     const root = typeof document === 'undefined' ? null : document.querySelector('#memory_augment_story_status_root');
-    if (root) root.hidden = false;
+    if (root) {
+        root.hidden = false;
+        const ball = root.querySelector('#memory_augment_story_status_ball');
+        const panel = root.querySelector('#memory_augment_story_status_panel');
+        const showFloatingButton = shouldShowStoryFloatingButton(options);
+        if (ball) ball.hidden = !showFloatingButton;
+        if (!showFloatingButton && panel) {
+            panel.hidden = true;
+            ball?.setAttribute('aria-expanded', 'false');
+        }
+    }
 }
 
 export function shouldCloseStoryPanelForPointer(root, panel, target) {

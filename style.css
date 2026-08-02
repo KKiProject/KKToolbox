@@ -778,6 +778,10 @@
     touch-action: none;
 }
 
+#memory_augment_story_status_ball[hidden] {
+    display: none;
+}
+
 #memory_augment_story_status_root.is-dragging #memory_augment_story_status_ball,
 #memory_augment_story_status_root.is-dragging #memory_augment_story_status_panel > header {
     cursor: grabbing;
@@ -1324,7 +1328,20 @@
 
 @media (max-width: 600px) {
     #memory_augment_story_status_root {
-        right: max(0.65rem, env(safe-area-inset-right));
+        right: max(0.3rem, env(safe-area-inset-right));
+    }
+
+    #memory_augment_story_status_ball {
+        font-size: 1rem;
+        height: 2.5rem;
+        min-width: 2.5rem;
+        opacity: 0.82;
+        width: 2.5rem;
+    }
+
+    #memory_augment_story_status_ball:focus-visible,
+    #memory_augment_story_status_ball:hover {
+        opacity: 1;
     }
 
     #memory_augment_story_status_panel {

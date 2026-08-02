@@ -58,6 +58,7 @@ export const defaultSettings = Object.freeze({
     },
     status: {
         enabled: false,
+        showFloatingButton: true,
         showGoals: true,
         customFields: [],
         position: {},
