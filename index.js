@@ -26,6 +26,7 @@ const EXTENSION_FOLDER = decodeURIComponent(new URL('.', import.meta.url).pathna
     .at(-1);
 const TEMPLATE_PATH = `third-party/${EXTENSION_FOLDER}`;
 const API_TYPES = ['embedding', 'reranker', 'barrage'];
+const LEGACY_DEFAULT_BARRAGE_PROMPT = '你是一群正在观看小说直播的观众，请以弹幕/评论区风格吐槽点评';
 let ingestionQueue = Promise.resolve();
 let quickPanelPromise = null;
 
@@ -53,7 +54,7 @@ export const defaultSettings = Object.freeze({
         recentMessages: 5,
         maxTokens: 4064,
         includeRag: true,
-        systemPrompt: '你是一群正在观看小说直播的观众，请以弹幕/评论区风格吐槽点评',
+        systemPrompt: '',
     },
     status: {
         enabled: false,
@@ -790,15 +791,18 @@ async function initialize() {
     );
     const hadStatusEnabled = Object.hasOwn(savedSettings?.status ?? {}, 'enabled');
     const hadLegacyAiCustomFields = Object.hasOwn(savedSettings?.status ?? {}, 'allowCustomFields');
+    const hadLegacyDefaultBarragePrompt = String(savedSettings?.barrage?.systemPrompt ?? '').trim()
+        === LEGACY_DEFAULT_BARRAGE_PROMPT;
     const settings = mergeSettings(defaultSettings, extension_settings[EXTENSION_KEY]);
     delete settings.context.summaryMaxTokens;
     delete settings.context.summaryInterval;
     delete settings.rag.chunkSize;
     delete settings.status.allowCustomFields;
+    if (hadLegacyDefaultBarragePrompt) settings.barrage.systemPrompt = '';
     if (!hadStatusEnabled) settings.status.enabled = Boolean(savedSettings?.barrage?.enabled);
     extension_settings[EXTENSION_KEY] = settings;
     if (hadLegacySummaryMaxTokens || hadLegacySummaryInterval || hadLegacyChunkSize
-        || hadLegacyAiCustomFields || !hadStatusEnabled) {
+        || hadLegacyAiCustomFields || hadLegacyDefaultBarragePrompt || !hadStatusEnabled) {
         context.saveSettingsDebounced();
     }
 

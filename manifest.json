@@ -7,7 +7,7 @@
     "js": "index.js",
     "css": "style.css",
     "author": "KKToolbox",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "description": "SillyTavern 自动总结、向量记忆、世界书语义检索、剧情状态、地图册与弹幕工具箱",
     "homePage": "https://github.com/KKiProject/KKToolbox",
     "auto_update": true,
