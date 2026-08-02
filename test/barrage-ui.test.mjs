@@ -6,10 +6,10 @@ import {
     handleCharacterMessageRendered,
     restoreStoredBarrages,
 } from '../barrage-ui.js';
-import { STORY_STATUS_METADATA_KEY } from '../story-status.js';
+import { hashStorySource, STORY_STATUS_METADATA_KEY } from '../story-status.js';
 import { getCharacterDevelopmentSnapshot } from '../character-development.js';
 
-function createSettings({ includeRag = false } = {}) {
+function createSettings({ includeRag = false, statusEnabled = true } = {}) {
     return {
         apis: {
             embedding: includeRag
@@ -26,8 +26,18 @@ function createSettings({ includeRag = false } = {}) {
             includeRag,
             systemPrompt: 'audience system prompt',
         },
-        status: { enabled: true, showGoals: true, customFields: [] },
+        status: { enabled: statusEnabled, showGoals: true, customFields: [] },
     };
+}
+
+function getBarrageVariants(context, messageId = 5) {
+    return context.chatMetadata[BARRAGE_METADATA_KEY]?.[String(messageId)]?.variants ?? {};
+}
+
+function getOnlyBarrageVariant(context, messageId = 5) {
+    const variants = Object.values(getBarrageVariants(context, messageId));
+    assert.equal(variants.length, 1);
+    return variants[0];
 }
 
 function createContext() {
@@ -88,12 +98,15 @@ test('barrage generation renders and caches without mutating context.chat', asyn
     assert.equal(requestBody.maxTokens, 4064);
     assert.equal(renders.at(-1)[1], '观众弹幕结果');
     assert.equal(renders.at(-1)[2], 'ready');
-    assert.equal(context.chatMetadata[BARRAGE_METADATA_KEY]['5'].content, '观众弹幕结果');
+    const storedBarrage = getOnlyBarrageVariant(context);
+    assert.equal(storedBarrage.content, '观众弹幕结果');
     assert.equal(context.chatMetadata[STORY_STATUS_METADATA_KEY]['5'].status.environment.location, '王城 → 酒馆');
-    assert.equal(Number.isInteger(context.chatMetadata[BARRAGE_METADATA_KEY]['5'].timestamp), true);
+    assert.equal(Number.isInteger(storedBarrage.timestamp), true);
+    assert.equal(storedBarrage.sourceHash, hashStorySource(context.chat[5].mes));
+    assert.equal(context.chatMetadata[BARRAGE_METADATA_KEY]['5'].version, 2);
     assert.deepEqual(
-        Object.keys(context.chatMetadata[BARRAGE_METADATA_KEY]['5']).sort(),
-        ['content', 'timestamp'],
+        Object.keys(storedBarrage).sort(),
+        ['content', 'sourceHash', 'timestamp'],
     );
     assert.equal(context.saves, 1);
 
@@ -276,8 +289,9 @@ test('barrage API and render failures do not reject or mutate chat', async () =>
         assert.equal(result.generated, false);
         assert.match(result.error.message, /side API unavailable/);
         assert.deepEqual(context.chat, originalChat);
-        assert.equal(context.chatMetadata[BARRAGE_METADATA_KEY]['5'].state, 'error');
-        assert.match(context.chatMetadata[BARRAGE_METADATA_KEY]['5'].error, /side API unavailable/);
+        const storedBarrage = getOnlyBarrageVariant(context);
+        assert.equal(storedBarrage.state, 'error');
+        assert.match(storedBarrage.error, /side API unavailable/);
     } finally {
         console.warn = originalWarn;
     }
@@ -328,8 +342,14 @@ test('a failed barrage is restored after reopening and still offers the same-flo
 
 test('forced regeneration bypasses the stored barrage and replaces it', async () => {
     const context = createContext();
+    const sourceHash = hashStorySource(context.chat[5].mes);
     context.chatMetadata[BARRAGE_METADATA_KEY] = {
-        5: { content: 'old barrage', timestamp: 1 },
+        5: {
+            version: 2,
+            variants: {
+                [sourceHash]: { content: 'old barrage', sourceHash, timestamp: 1 },
+            },
+        },
     };
     context.chatMetadata[STORY_STATUS_METADATA_KEY] = {
         5: {
@@ -350,7 +370,38 @@ test('forced regeneration bypasses the stored barrage and replaces it', async ()
     }, { force: true });
 
     assert.equal(result.generated, true);
-    assert.equal(context.chatMetadata[BARRAGE_METADATA_KEY]['5'].content, 'new barrage');
+    assert.equal(getOnlyBarrageVariant(context).content, 'new barrage');
     assert.equal(context.chatMetadata[STORY_STATUS_METADATA_KEY]['5'].status.environment.location, '旧状态仍应保留');
     assert.equal(context.saves, 2, 'the stale barrage is removed before the replacement is saved');
+});
+
+test('each swiped reply keeps its own barrage and restores it when switched back', async () => {
+    const context = createContext();
+    const settings = createSettings({ statusEnabled: false });
+    context.chat[5].swipes = ['first reply', 'second reply'];
+    context.chat[5].mes = 'first reply';
+    const renders = [];
+    let calls = 0;
+    const dependencies = {
+        renderBarrage: (...args) => renders.push(args),
+        getCurrentContext: () => context,
+        async generateBarrage() {
+            calls++;
+            return { content: `barrage for ${context.chat[5].mes}` };
+        },
+    };
+
+    await handleCharacterMessageRendered(5, settings, context, dependencies);
+    context.chat[5].mes = 'second reply';
+    await handleCharacterMessageRendered(5, settings, context, dependencies);
+
+    assert.equal(Object.keys(getBarrageVariants(context)).length, 2);
+    assert.equal(calls, 2);
+
+    context.chat[5].mes = 'first reply';
+    const restored = await handleCharacterMessageRendered(5, settings, context, dependencies);
+    assert.equal(restored.cached, true);
+    assert.equal(calls, 2, 'switching back must restore instead of regenerating');
+    assert.equal(renders.at(-1)[1], 'barrage for first reply');
+    assert.equal(renders.at(-1)[2], 'ready');
 });

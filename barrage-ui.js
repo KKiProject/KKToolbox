@@ -80,8 +80,76 @@ function normalizeStoredBarrage(record) {
     }
     return {
         content,
+        sourceHash: String(record?.sourceHash ?? '').trim(),
         timestamp,
     };
+}
+
+function normalizeBarrageBucket(store, messageId, currentSourceHash = '', create = false) {
+    const key = String(messageId);
+    const existing = store?.[key];
+    if (existing?.variants && typeof existing.variants === 'object' && !Array.isArray(existing.variants)) {
+        const variants = {};
+        let migrated = Number(existing.version) !== 2;
+        for (const [storedHash, value] of Object.entries(existing.variants)) {
+            const normalized = normalizeStoredBarrage(value);
+            const sourceHash = String(normalized?.sourceHash || storedHash).trim();
+            if (!normalized || !sourceHash) {
+                migrated = true;
+                continue;
+            }
+            variants[sourceHash] = { ...normalized, sourceHash };
+            if (sourceHash !== storedHash || value?.sourceHash !== sourceHash) migrated = true;
+        }
+        const bucket = { version: 2, variants };
+        if (migrated) store[key] = bucket;
+        return { bucket, migrated };
+    }
+
+    const legacy = normalizeStoredBarrage(existing);
+    if (!legacy) {
+        const bucket = { version: 2, variants: {} };
+        if (create) store[key] = bucket;
+        return { bucket: create ? bucket : null, migrated: false };
+    }
+    const sourceHash = String(legacy.sourceHash || currentSourceHash).trim();
+    const bucket = {
+        version: 2,
+        variants: sourceHash ? { [sourceHash]: { ...legacy, sourceHash } } : {},
+    };
+    store[key] = bucket;
+    return { bucket, migrated: true };
+}
+
+function getBarrageVariant(store, messageId, sourceHash) {
+    const normalized = normalizeBarrageBucket(store, messageId, sourceHash);
+    return {
+        record: normalizeStoredBarrage(normalized.bucket?.variants?.[sourceHash]),
+        migrated: normalized.migrated,
+    };
+}
+
+function setBarrageVariant(store, messageId, sourceHash, record) {
+    const { bucket } = normalizeBarrageBucket(store, messageId, sourceHash, true);
+    bucket.variants[sourceHash] = {
+        ...record,
+        sourceHash,
+    };
+    store[String(messageId)] = bucket;
+}
+
+function deleteBarrageVariant(store, messageId, sourceHash) {
+    const { bucket } = normalizeBarrageBucket(store, messageId, sourceHash);
+    if (!bucket?.variants?.[sourceHash]) return false;
+    delete bucket.variants[sourceHash];
+    if (Object.keys(bucket.variants).length === 0) delete store[String(messageId)];
+    else store[String(messageId)] = bucket;
+    return true;
+}
+
+function getMessageSourceHashes(message) {
+    const texts = [message?.mes, ...(Array.isArray(message?.swipes) ? message.swipes : [])];
+    return new Set(texts.map(text => String(text ?? '').trim()).filter(Boolean).map(hashStorySource));
 }
 
 export function collectRecentMessages(chat, messageId, count) {
@@ -233,13 +301,15 @@ function safelyRender(render, messageId, content, state) {
 export async function handleCharacterMessageRendered(messageId, settings, context, dependencies = {}, options = {}) {
     const numericId = Number(messageId);
     const message = Number.isInteger(numericId) ? context?.chat?.[numericId] : null;
+    const messageText = String(message?.mes ?? '').trim();
     const barrageEnabled = settings?.barrage?.enabled === true;
     const statusEnabled = settings?.status?.enabled === true;
     const developmentEnabled = settings?.development?.enabled === true;
     const hasPriorUserMessage = Number.isInteger(numericId)
         && context?.chat?.slice(0, numericId).some(item => item?.is_user);
     if ((!barrageEnabled && !statusEnabled && !developmentEnabled)
-        || !message || message.is_user || message.is_system || !hasPriorUserMessage) {
+        || !message || message.is_user || message.is_system || !messageText || messageText === '...'
+        || !hasPriorUserMessage) {
         return { generated: false, reason: 'disabled-or-ineligible' };
     }
 
@@ -249,10 +319,15 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
     }
 
     const chatId = getChatId(context);
-    const sourceHash = hashStorySource(message.mes);
+    const sourceHash = hashStorySource(messageText);
     const render = dependencies.renderBarrage ?? renderBarragePanel;
     const store = getBarrageStore(context.chatMetadata);
-    const cached = store[String(numericId)];
+    const cachedResult = getBarrageVariant(store, numericId, sourceHash);
+    const cached = cachedResult.record;
+    if (cachedResult.migrated) {
+        void Promise.resolve(context.saveMetadata?.())
+            .catch(error => console.warn('[Memory Augment] Barrage metadata migration save failed.', error));
+    }
     const cachedStatus = getStoryStatusAt(context, numericId);
     const developmentProcessed = isCharacterDevelopmentProcessed(context, numericId, sourceHash);
     const hasRequiredCache = (!barrageEnabled || cached?.content)
@@ -265,13 +340,14 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
         return { generated: false, cached: true };
     }
     if (options.force && barrageEnabled && cached) {
-        delete store[String(numericId)];
+        deleteBarrageVariant(store, numericId, sourceHash);
         try {
             await context.saveMetadata?.();
         } catch (error) {
             console.warn('[Memory Augment] Stale barrage removal save failed.', error);
         }
     }
+    const requestBarrage = barrageEnabled && (options.force || !cached?.content);
 
     const requestKey = `${chatId}:${numericId}:${sourceHash}`;
     if (inFlight.has(requestKey)) {
@@ -279,7 +355,8 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
     }
 
     const task = (async () => {
-        if (barrageEnabled) safelyRender(render, numericId, '正在生成观众弹幕…', 'loading');
+        if (requestBarrage) safelyRender(render, numericId, '正在生成观众弹幕…', 'loading');
+        else if (barrageEnabled && cached?.content) safelyRender(render, numericId, cached.content, 'ready');
         const recentMessages = collectRecentMessages(
             context.chat,
             numericId,
@@ -315,11 +392,11 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
             previousTimeline,
             developmentSnapshot,
             statusOptions,
-            outputOptions: { barrageEnabled, statusEnabled, developmentEnabled },
+            outputOptions: { barrageEnabled: requestBarrage, statusEnabled, developmentEnabled },
         });
         const parsed = parseSideResponse(response?.content);
-        const content = parsed.barrage;
-        if (barrageEnabled && !content) {
+        const generatedContent = parsed.barrage;
+        if (requestBarrage && !generatedContent) {
             throw new Error('Barrage endpoint returned empty content.');
         }
         if (statusEnabled && !parsed.status && !barrageEnabled) {
@@ -334,13 +411,16 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
             return { generated: false, discarded: true };
         }
 
-        if (barrageEnabled) {
+        const content = requestBarrage ? generatedContent : String(cached?.content ?? '').trim();
+        if (barrageEnabled && content) {
             safelyRender(render, numericId, content, 'ready');
+        }
+        if (requestBarrage) {
             const currentStore = getBarrageStore(currentContext.chatMetadata, true);
-            currentStore[String(numericId)] = {
+            setBarrageVariant(currentStore, numericId, sourceHash, {
                 content,
                 timestamp: Math.floor(Date.now() / 1000),
-            };
+            });
         }
         let finalStatus = applyStoryStatusOptions(parsed.status, statusOptions);
         if (statusEnabled && finalStatus) {
@@ -387,20 +467,21 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
         const currentMessage = currentContext.chat?.[numericId];
         if (getChatId(currentContext) === chatId && hashStorySource(currentMessage?.mes) === sourceHash) {
             const detail = String(error?.message ?? error ?? '未知错误').trim();
-            if (barrageEnabled) {
+            if (requestBarrage) {
                 safelyRender(render, numericId, `弹幕生成失败：${detail}`, 'error');
                 const currentStore = getBarrageStore(currentContext.chatMetadata, true);
-                currentStore[String(numericId)] = {
+                setBarrageVariant(currentStore, numericId, sourceHash, {
                     state: 'error',
                     error: detail,
-                    sourceHash,
                     timestamp: Math.floor(Date.now() / 1000),
-                };
+                });
                 try {
                     await currentContext.saveMetadata?.();
                 } catch (saveError) {
                     console.warn('[Memory Augment] Barrage failure metadata save failed.', saveError);
                 }
+            } else if (barrageEnabled && cached?.content) {
+                safelyRender(render, numericId, cached.content, 'ready');
             }
         }
         console.warn('[Memory Augment] Barrage generation failed.', error);
@@ -415,27 +496,44 @@ export function restoreStoredBarrages(context, settings, render = renderBarrageP
     if (settings?.barrage?.enabled !== true) return;
     const store = getBarrageStore(context.chatMetadata);
     let migrated = false;
-    for (const [messageId, record] of Object.entries(store)) {
+    for (const [messageId] of Object.entries(store)) {
         const message = context.chat?.[Number(messageId)];
-        const normalized = normalizeStoredBarrage(record);
-        if (!normalized) {
-            continue;
-        }
-        const sourceChanged = normalized.state === 'error'
-            && normalized.sourceHash
-            && message
-            && normalized.sourceHash !== hashStorySource(message.mes);
-        if (!message || message.is_user || message.is_system || sourceChanged) {
+        if (!message || message.is_user || message.is_system) {
             delete store[messageId];
             migrated = true;
             continue;
         }
-        const normalizedKeys = normalized.state === 'error'
-            ? ['error', 'sourceHash', 'state', 'timestamp']
-            : ['content', 'timestamp'];
-        if (normalizedKeys.some(key => record[key] !== normalized[key])
-            || Object.keys(record).some(key => !normalizedKeys.includes(key))) {
-            store[messageId] = normalized;
+
+        const sourceHash = hashStorySource(message.mes);
+        const normalizedBucket = normalizeBarrageBucket(store, messageId, sourceHash);
+        const bucket = normalizedBucket.bucket;
+        if (normalizedBucket.migrated) migrated = true;
+        if (!bucket) continue;
+
+        // A SillyTavern floor can contain several swiped replies. Keep the
+        // barrage belonging to every reply that still exists, while pruning
+        // variants deleted from the chat.
+        const validSourceHashes = getMessageSourceHashes(message);
+        for (const storedHash of Object.keys(bucket.variants)) {
+            if (!validSourceHashes.has(storedHash)) {
+                delete bucket.variants[storedHash];
+                migrated = true;
+            }
+        }
+        if (Object.keys(bucket.variants).length === 0) {
+            delete store[messageId];
+            migrated = true;
+            continue;
+        }
+        store[messageId] = bucket;
+
+        const normalized = normalizeStoredBarrage(bucket.variants[sourceHash]);
+        if (!normalized) {
+            continue;
+        }
+        const storedRecord = bucket.variants[sourceHash];
+        if (storedRecord.sourceHash !== sourceHash) {
+            bucket.variants[sourceHash] = { ...normalized, sourceHash };
             migrated = true;
         }
         const state = normalized.state === 'error' ? 'error' : 'ready';
@@ -504,6 +602,8 @@ export async function initializeBarrageUi(settings, options = {}) {
     }
     const messageRendered = context.eventTypes?.CHARACTER_MESSAGE_RENDERED
         ?? context.event_types?.CHARACTER_MESSAGE_RENDERED;
+    const messageSwiped = context.eventTypes?.MESSAGE_SWIPED
+        ?? context.event_types?.MESSAGE_SWIPED;
     const chatChanged = context.eventTypes?.CHAT_CHANGED ?? context.event_types?.CHAT_CHANGED;
 
     if (!messageRendered) {
@@ -512,8 +612,14 @@ export async function initializeBarrageUi(settings, options = {}) {
     }
 
     context.eventSource.on(messageRendered, (messageId) => {
-        scheduleBarrageGeneration(messageId, settings, { force: true });
+        scheduleBarrageGeneration(messageId, settings);
     });
+
+    if (messageSwiped) {
+        context.eventSource.on(messageSwiped, (messageId) => {
+            scheduleBarrageGeneration(messageId, settings);
+        });
+    }
 
     if (chatChanged) {
         context.eventSource.on(chatChanged, () => {
