@@ -198,10 +198,13 @@ export function renderBarragePanel(messageId, content, state = 'ready') {
         return false;
     }
 
+    const panelHost = messageBlock.querySelector('.mes_text') ?? messageBlock;
     let panel = messageBlock.querySelector('.memory-augment-barrage');
     if (!panel) {
         panel = createPanelFromTemplate();
-        messageBlock.append(panel);
+    }
+    if (panel.parentElement !== panelHost) {
+        panelHost.append(panel);
     }
 
     panel.hidden = false;
@@ -470,6 +473,12 @@ function bindRegeneration(settings) {
     }
 
     chat.addEventListener('click', (event) => {
+        const panel = event.target.closest?.('.memory-augment-barrage');
+        if (panel) {
+            // The panel lives inside .mes_text so it can inherit custom message widths.
+            // Keep its controls from bubbling into SillyTavern's click-to-edit handler.
+            event.stopPropagation();
+        }
         const button = event.target.closest?.('.memory-augment-barrage-regenerate');
         const messageElement = button?.closest?.('.mes[mesid]');
         const messageId = Number(messageElement?.getAttribute('mesid'));

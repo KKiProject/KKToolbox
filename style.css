@@ -679,8 +679,12 @@
     background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 55%, transparent);
     border: 1px solid var(--SmartThemeBorderColor);
     border-radius: 0.5rem;
+    box-sizing: border-box;
     margin-top: 0.75rem;
+    max-width: 100%;
+    min-width: 0;
     padding: 0.35rem 0.6rem;
+    width: 100%;
 }
 
 .memory-augment-barrage-toggle {
