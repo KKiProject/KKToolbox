@@ -5,8 +5,18 @@ import { bindChatIngestionLifecycle, reconcileBufferedMessageQueue } from './cha
 import { initializeChatMemoryUi } from './chat-memory-ui.js';
 import { memoryAugmentInterceptor } from './context-manager.js';
 import { fetchModels, getStatus, ingestChat, reconcileChatVectors } from './rag-client.js';
-import { initializeBarrageUi } from './barrage-ui.js';
-import { clearAllSummaries, getSummaryStatus, initializeSummaryManager } from './summary-manager.js';
+import { initializeBarrageUi, refreshBarrageVisibility } from './barrage-ui.js';
+import { correctLatestStoryTime, getMessageTimelineMetadata, refreshStoryStatusUi } from './story-status.js';
+import { initializeMapAtlasUi } from './map-atlas.js';
+import {
+    deleteDevelopmentField,
+    discardDevelopmentCandidate,
+    initializeCharacterDevelopmentUi,
+    promoteDevelopmentCandidate,
+    refreshCharacterDevelopmentUi,
+    setManualDevelopmentField,
+} from './character-development.js';
+import { clearAllSummaries, getSummaryStatus, initializeSummaryManager, repairMalformedSummaries } from './summary-manager.js';
 import { initializeWorldInfoManager, vectorizeSelectedWorldInfo } from './world-info-manager.js';
 
 const EXTENSION_KEY = 'st-memory-augment';
@@ -44,6 +54,21 @@ export const defaultSettings = Object.freeze({
         maxTokens: 4064,
         includeRag: true,
         systemPrompt: '你是一群正在观看小说直播的观众，请以弹幕/评论区风格吐槽点评',
+    },
+    status: {
+        enabled: false,
+        showGoals: true,
+        customFields: [],
+        position: {},
+    },
+    development: {
+        enabled: true,
+    },
+    map: {
+        includeInPrompt: true,
+        maxTokens: 16000,
+        atlases: {},
+        sourceEntryKeysByOwner: {},
     },
 });
 
@@ -114,8 +139,83 @@ function bindSettings(settings, context) {
             setValueByPath(settings, input.dataset.setting, readInputValue(input));
             updateValueLabel(input);
             context.saveSettingsDebounced();
+            if (input.dataset.setting.startsWith('status.')) refreshStoryStatusUi(context);
+            if (input.dataset.setting.startsWith('development.')) refreshCharacterDevelopmentUi(context);
+            if (input.dataset.setting === 'barrage.enabled') refreshBarrageVisibility(settings, context);
         });
     });
+}
+
+function bindStatusCustomFields(settings, context) {
+    const container = document.querySelector('#memory_augment_status_custom_fields');
+    const addButton = document.querySelector('#memory_augment_add_status_custom_field');
+    if (!container || !addButton) return;
+    if (!Array.isArray(settings.status.customFields)) settings.status.customFields = [];
+
+    const save = () => {
+        context.saveSettingsDebounced();
+        refreshStoryStatusUi(context);
+    };
+    const render = () => {
+        container.replaceChildren();
+        if (settings.status.customFields.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'memory-augment-status-custom-empty';
+            empty.textContent = '尚未添加自定义状态项。';
+            container.append(empty);
+            return;
+        }
+
+        settings.status.customFields.forEach((field, index) => {
+            const row = document.createElement('div');
+            row.className = 'memory-augment-status-custom-row';
+            const enabledLabel = document.createElement('label');
+            enabledLabel.className = 'checkbox_label';
+            const enabled = document.createElement('input');
+            enabled.type = 'checkbox';
+            enabled.checked = field?.enabled !== false;
+            const enabledText = document.createElement('span');
+            enabledText.textContent = '启用';
+            enabledLabel.append(enabled, enabledText);
+            const name = document.createElement('input');
+            name.type = 'text';
+            name.className = 'text_pole';
+            name.maxLength = 80;
+            name.placeholder = '例如：伤势、疲惫、魔力状态';
+            name.value = String(field?.label ?? '');
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'menu_button';
+            remove.textContent = '删除';
+
+            enabled.addEventListener('input', () => {
+                field.enabled = enabled.checked;
+                save();
+            });
+            name.addEventListener('input', () => {
+                field.label = name.value.slice(0, 80);
+                save();
+            });
+            remove.addEventListener('click', () => {
+                settings.status.customFields.splice(index, 1);
+                render();
+                save();
+            });
+            row.append(enabledLabel, name, remove);
+            container.append(row);
+        });
+    };
+
+    addButton.addEventListener('click', () => {
+        settings.status.customFields.push({
+            id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+            label: '',
+            enabled: true,
+        });
+        render();
+        save();
+    });
+    render();
 }
 
 function setModelStatus(apiType, message = '', state = '') {
@@ -420,13 +520,14 @@ function normalizeTimestamp(value) {
     return Number.isNaN(milliseconds) ? 0 : Math.floor(milliseconds / 1000);
 }
 
-function serializeChatMessage(message, id) {
+function serializeChatMessage(message, id, context) {
     return {
         id,
         name: message?.name ?? '',
         role: message?.is_user ? 'user' : 'assistant',
         text: message?.mes ?? '',
         timestamp: normalizeTimestamp(message?.send_date),
+        timeline: getMessageTimelineMetadata(context, id),
     };
 }
 
@@ -441,7 +542,7 @@ function createChatSnapshot(settings) {
 
     return {
         chatId,
-        messages: context.chat.map(serializeChatMessage),
+        messages: context.chat.map((message, id) => serializeChatMessage(message, id, context)),
         embedding: hasCompleteEmbeddingConfig(embedding) ? embedding : null,
         targetChars: settings.rag.segmentTargetChars,
     };
@@ -651,10 +752,30 @@ function bindActions(settings) {
             button.classList.remove('disabled');
         }
     });
+    document.querySelector('#memory_augment_repair_summaries')?.addEventListener('click', async (event) => {
+        const button = event.currentTarget;
+        button.classList.add('disabled');
+        button.disabled = true;
+        try {
+            const context = SillyTavern.getContext();
+            const repaired = await repairMalformedSummaries(settings, context, {
+                getCurrentContext: () => SillyTavern.getContext(),
+                onSaved: refreshStatus,
+            });
+            showNotice(repaired > 0 ? `已修复 ${repaired} 条异常摘要。` : '没有发现需要修复的摘要。', repaired > 0 ? 'success' : 'info');
+        } catch (error) {
+            showNotice(`修复摘要失败：${error.message}`, 'error');
+            console.error('[Memory Augment] Failed to repair malformed summaries.', error);
+        } finally {
+            button.classList.remove('disabled');
+            button.disabled = false;
+        }
+    });
 }
 
 async function initialize() {
     const context = SillyTavern.getContext();
+    const savedSettings = extension_settings[EXTENSION_KEY] ?? {};
     const hadLegacySummaryMaxTokens = Object.hasOwn(
         extension_settings[EXTENSION_KEY]?.context ?? {},
         'summaryMaxTokens',
@@ -667,12 +788,17 @@ async function initialize() {
         extension_settings[EXTENSION_KEY]?.context ?? {},
         'summaryInterval',
     );
+    const hadStatusEnabled = Object.hasOwn(savedSettings?.status ?? {}, 'enabled');
+    const hadLegacyAiCustomFields = Object.hasOwn(savedSettings?.status ?? {}, 'allowCustomFields');
     const settings = mergeSettings(defaultSettings, extension_settings[EXTENSION_KEY]);
     delete settings.context.summaryMaxTokens;
     delete settings.context.summaryInterval;
     delete settings.rag.chunkSize;
+    delete settings.status.allowCustomFields;
+    if (!hadStatusEnabled) settings.status.enabled = Boolean(savedSettings?.barrage?.enabled);
     extension_settings[EXTENSION_KEY] = settings;
-    if (hadLegacySummaryMaxTokens || hadLegacySummaryInterval || hadLegacyChunkSize) {
+    if (hadLegacySummaryMaxTokens || hadLegacySummaryInterval || hadLegacyChunkSize
+        || hadLegacyAiCustomFields || !hadStatusEnabled) {
         context.saveSettingsDebounced();
     }
 
@@ -682,6 +808,7 @@ async function initialize() {
     }
 
     bindSettings(settings, context);
+    bindStatusCustomFields(settings, context);
     bindModelDiscovery(settings, context);
     bindActions(settings);
     addTopNavigationButton();
@@ -690,6 +817,68 @@ async function initialize() {
     initializeSummaryManager(settings, context, { onSaved: refreshStatus });
     await initializeWorldInfoManager(settings, context);
     await initializeBarrageUi(settings, { templatePath: TEMPLATE_PATH });
+    initializeCharacterDevelopmentUi(context);
+    initializeMapAtlasUi(settings, context, {
+        confirm: (title, message) => Popup.show.confirm(title, message),
+    });
+    document.addEventListener('memory-augment-edit-story-time', async (event) => {
+        const current = SillyTavern.getContext();
+        const oldValue = String(event.detail?.value ?? '').trim();
+        const nextValue = await Popup.show.input(
+            '修正剧情时间',
+            '这里修改的是当前聊天的时间锚点，人工修正优先于自动判断。',
+            oldValue,
+        );
+        if (typeof nextValue !== 'string' || !nextValue.trim()) return;
+        if (!correctLatestStoryTime(current, nextValue)) {
+            showNotice('当前聊天还没有可修正的剧情时间。', 'warning');
+            return;
+        }
+        await current.saveMetadata?.();
+        refreshStoryStatusUi(current);
+        showNotice('当前剧情时间已修正。', 'success');
+    });
+    document.addEventListener('memory-augment-development-edit', async (event) => {
+        const current = SillyTavern.getContext();
+        const { character, field } = event.detail ?? {};
+        const value = await Popup.show.input(
+            `修改 ${character ?? ''} 的人物发展`,
+            '人工修改优先于自动观察；玩家之后明确给出的新设定仍可覆盖它。',
+            String(field?.value ?? ''),
+        );
+        if (typeof value !== 'string' || !value.trim()) return;
+        setManualDevelopmentField(current, {
+            character,
+            dimension: field?.dimension,
+            target: field?.target,
+            before: field?.value,
+            value,
+        });
+        await current.saveMetadata?.();
+        refreshCharacterDevelopmentUi(current);
+    });
+    document.addEventListener('memory-augment-development-delete', async (event) => {
+        const current = SillyTavern.getContext();
+        const { character, field } = event.detail ?? {};
+        if (!await Popup.show.confirm('删除人物变化', `确定删除“${character} · ${field?.value ?? ''}”吗？`)) return;
+        deleteDevelopmentField(current, character, field?.key);
+        await current.saveMetadata?.();
+        refreshCharacterDevelopmentUi(current);
+    });
+    document.addEventListener('memory-augment-development-promote', async (event) => {
+        const current = SillyTavern.getContext();
+        if (!promoteDevelopmentCandidate(current, event.detail?.candidateId)) return;
+        await current.saveMetadata?.();
+        refreshCharacterDevelopmentUi(current);
+        showNotice('这项人物变化已由你确认并立即采用。', 'success');
+    });
+    document.addEventListener('memory-augment-development-discard', async (event) => {
+        const current = SillyTavern.getContext();
+        if (!await Popup.show.confirm('忽略候选变化', '确定删除这项尚未采用的观察吗？')) return;
+        if (!discardDevelopmentCandidate(current, event.detail?.candidateId)) return;
+        await current.saveMetadata?.();
+        refreshCharacterDevelopmentUi(current);
+    });
     await refreshStatus();
 }
 

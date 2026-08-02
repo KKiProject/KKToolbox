@@ -1,3 +1,6 @@
+import { generateSummary as generateSummaryWithSideApi } from './rag-client.js';
+import { getMessageTimelineMetadata } from './story-status.js';
+
 export const SUMMARY_KEY_PREFIX = '[KKT摘要]';
 export const SUMMARY_STATE_KEY = 'kktoolbox_summary_state';
 
@@ -103,6 +106,9 @@ async function bindSummaryBookToCharacter(context, character, bookName) {
     binding.extraBooks.push(bookName);
     Object.assign(worldModule.world_info, { charLore });
     context.saveSettingsDebounced?.();
+    const settingsUpdated = context?.eventTypes?.WORLDINFO_SETTINGS_UPDATED
+        ?? context?.event_types?.WORLDINFO_SETTINGS_UPDATED;
+    if (settingsUpdated) await context.eventSource?.emit?.(settingsUpdated);
 }
 
 async function getSummaryBookName(context, create = false) {
@@ -194,9 +200,25 @@ async function upsertSummaryEntry(context, events, start, end, createdAt) {
         return isManagedSummaryEntry(entry) && keys.some(value => hasMatchingRange(value, start, end));
     });
 
-    if (matches.length > 0 && typeof context?.saveWorldInfo === 'function') {
-        const [keptUid, keptEntry] = matches[0];
+    if (data && typeof context?.saveWorldInfo === 'function') {
+        let keptUid;
+        let keptEntry;
+        if (matches.length > 0) {
+            [keptUid, keptEntry] = matches[0];
+        } else if (typeof context?.createWorldInfoEntry === 'function') {
+            keptEntry = await context.createWorldInfoEntry(bookName, data);
+            keptUid = keptEntry?.uid;
+        } else {
+            const worldModule = await import('../../../world-info.js');
+            keptEntry = worldModule.createWorldInfoEntry(bookName, data);
+            keptUid = keptEntry?.uid;
+        }
+        if (!keptEntry || keptUid === undefined || keptUid === null) {
+            throw new Error(`创建摘要世界书条目失败：${key}`);
+        }
         keptEntry.key = [key];
+        keptEntry.comment = key;
+        keptEntry.addMemo = true;
         keptEntry.content = content;
         keptEntry.constant = true;
         keptEntry.position = WORLD_INFO_POSITION_AT_DEPTH;
@@ -207,6 +229,10 @@ async function upsertSummaryEntry(context, events, start, end, createdAt) {
             delete data.entries[duplicateUid];
         }
         await context.saveWorldInfo(bookName, data, true);
+        const verified = await context.loadWorldInfo(bookName);
+        if (String(verified?.entries?.[keptUid]?.content ?? '').trim() !== content) {
+            throw new Error(`摘要世界书正文保存失败：${key}`);
+        }
         return {
             start,
             end,
@@ -222,7 +248,15 @@ async function upsertSummaryEntry(context, events, start, end, createdAt) {
     if (!uid) {
         throw new Error(`创建摘要世界书条目失败：${key}`);
     }
+    await setEntryField(context, bookName, uid, 'content', content);
     await configureSummaryEntry(context, bookName, uid);
+    const verifiedContent = getPipe(await runSlash(
+        context,
+        `/getentryfield file=${quoteSlashValue(bookName)} field=content ${quoteSlashValue(uid)}`,
+    ));
+    if (verifiedContent !== content) {
+        throw new Error(`摘要世界书正文保存失败：${key}`);
+    }
     return {
         start,
         end,
@@ -254,27 +288,45 @@ function limitText(value, maximum) {
     return Array.from(String(value ?? '').replace(/\s+/g, ' ').trim()).slice(0, maximum).join('');
 }
 
+const COMPLETE_SENTENCE_END = /[。！？…!?；;.!」』）)】]$/u;
+const REFUSAL_OR_DRAFT_PATTERN = /(?:抱歉|对不起|无法|不能|不便).{0,30}(?:总结|概括|处理|协助|提供)|(?:内容|题材).{0,20}(?:敏感|不当|违规)|作为(?:一个)?AI|\b(?:drafting|analyzing|analysis|we need|i cannot|i can't|sorry)\b/i;
+
+export function isUnusableSummaryOutput(output) {
+    const text = String(output ?? '').trim();
+    return !text || REFUSAL_OR_DRAFT_PATTERN.test(text);
+}
+
+function normalizeOverview(value) {
+    const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+    if (!text) return '';
+    const characters = Array.from(text);
+    if (characters.length > 150) return `${characters.slice(0, 149).join('')}…`;
+    return COMPLETE_SENTENCE_END.test(text) ? text : '';
+}
+
 function getField(block, label, nextLabels = []) {
-    const ending = nextLabels.length > 0 ? `(?=\\n(?:${nextLabels.join('|')})\\s*[：:]|$)` : '$';
+    const ending = nextLabels.length > 0 ? `(?=\\s+(?:${nextLabels.join('|')})\\s*[：:]|$)` : '$';
     const match = block.match(new RegExp(`${label}\\s*[：:]\\s*([\\s\\S]*?)${ending}`, 'm'));
     return String(match?.[1] ?? '').trim();
 }
 
 export function parseSummaryEvents(output) {
     const text = String(output ?? '').trim();
+    if (isUnusableSummaryOutput(text)) return [];
     const headers = [...text.matchAll(/\[事件\s*\d+\]/g)];
-    const blocks = headers.slice(0, 3).map((header, index) => {
+    const blocks = headers.slice(0, 8).map((header, index) => {
         const start = header.index + header[0].length;
         const end = headers[index + 1]?.index ?? text.length;
         return text.slice(start, end).trim();
     });
     const events = blocks.map((block) => {
-        const importanceText = getField(block, '重要度', ['时间', '涉及角色', '地点', '事件概述']);
-        const time = getField(block, '时间', ['涉及角色', '地点', '事件概述']);
-        const characters = getField(block, '涉及角色', ['地点', '事件概述']);
-        const location = getField(block, '地点', ['事件概述']);
-        const overview = getField(block, '事件概述');
-        if (!overview) {
+        const importanceText = getField(block, '重要度', ['事件概述', '时间', '地点', '涉及角色']);
+        const overview = getField(block, '事件概述', ['重要度', '时间', '地点', '涉及角色']);
+        const time = getField(block, '时间', ['重要度', '事件概述', '地点', '涉及角色']);
+        const location = getField(block, '地点', ['重要度', '事件概述', '时间', '涉及角色']);
+        const characters = getField(block, '涉及角色', ['重要度', '事件概述', '时间', '地点']);
+        const normalizedOverview = normalizeOverview(overview);
+        if (!normalizedOverview) {
             return null;
         }
         return {
@@ -282,14 +334,17 @@ export function parseSummaryEvents(output) {
             time: limitText(time, 80) || '未明确',
             characters: limitText(characters, 100) || '未明确',
             location: limitText(location, 100) || '未明确',
-            overview: limitText(overview, 150),
+            overview: normalizedOverview,
         };
     }).filter(Boolean);
 
     if (events.length > 0) {
         return events;
     }
-    const fallback = limitText(text, 150);
+    if (headers.length > 0 || /(?:重要度|事件概述|涉及角色|地点|时间)\s*[：:]/.test(text)) {
+        return [];
+    }
+    const fallback = normalizeOverview(text);
     return fallback ? [{
         importance: 1,
         time: '未明确',
@@ -302,19 +357,49 @@ export function parseSummaryEvents(output) {
 export function formatEventContent(event) {
     return [
         `[${getImportanceStars(event.importance)}]`,
-        `⏰ ${event.time}`,
+        `⏰ 固定历史时间锚点：${event.time}（不得按当前回合重新解释）`,
         ` ${event.characters}`,
         ` ${event.location}`,
         ` ${event.overview}`,
     ].join('\n');
 }
 
+function guardHistoricalSummaryTimes(content) {
+    return String(content ?? '').replace(
+        /^⏰\s+(?!固定历史时间锚点：)(.+)$/gmu,
+        '⏰ 固定历史时间锚点：$1（不得按当前回合重新解释）',
+    );
+}
+
 export function formatSummaryContent(events) {
     return [...events]
         .sort((left, right) => right.importance - left.importance)
-        .slice(0, 3)
+        .slice(0, 8)
         .map(formatEventContent)
         .join('\n\n');
+}
+
+export function isMalformedSummaryContent(content) {
+    const text = String(content ?? '').trim();
+    return isUnusableSummaryOutput(text)
+        || /\[事件\s*\d+\]|(?:重要度|事件概述)\s*[：:]/.test(text)
+        || !COMPLETE_SENTENCE_END.test(text);
+}
+
+async function findMalformedSummaryRange(context, state) {
+    const bookName = await getSummaryBookName(context, false);
+    if (!bookName || typeof context?.loadWorldInfo !== 'function') return null;
+    const data = await context.loadWorldInfo(bookName);
+    const records = [...state.entries]
+        .filter(entry => Number.isInteger(Number(entry?.start)) && Number.isInteger(Number(entry?.end)))
+        .sort((left, right) => Number(left.start) - Number(right.start));
+    for (const record of records) {
+        const entry = data?.entries?.[record.uid];
+        if (!entry || isMalformedSummaryContent(entry.content)) {
+            return { start: Number(record.start), end: Number(record.end), uid: String(record.uid ?? '') };
+        }
+    }
+    return null;
 }
 
 function formatLegacyEventEntry(entry, key) {
@@ -338,16 +423,36 @@ function formatDialogue(messages, start) {
     }).join('\n');
 }
 
-export function buildSummaryPrompt(messages, start, end) {
+function formatSummaryTimeline(timelineContext) {
+    const lines = (Array.isArray(timelineContext) ? timelineContext : [])
+        .flatMap((item) => {
+            const parts = [
+                `第 ${Number(item.messageId) + 1} 楼`,
+                item.sceneTime && `场景时间=${item.sceneTime}`,
+                item.mainlineTime && `主线时间=${item.mainlineTime}`,
+                item.sceneAnchorId && `场景锚点=${item.sceneAnchorId}`,
+                item.mainlineAnchorId && `主线锚点=${item.mainlineAnchorId}`,
+            ].filter(Boolean);
+            const floor = parts.length > 1 ? parts.join('｜') : '';
+            const segments = (Array.isArray(item.segments) ? item.segments : [])
+                .filter(segment => segment?.startQuote && (segment?.anchorLabel || segment?.time))
+                .map(segment => `  ↳ 从“${limitText(segment.startQuote, 60)}”开始｜片段时间=${segment.anchorLabel || segment.time}｜类型=${segment.mode || 'unknown'}`);
+            return [floor, ...segments].filter(Boolean);
+        })
+        .filter(Boolean);
+    return lines.length > 0 ? lines.join('\n') : '（这段旧剧情尚未建立时间锚点；无法确定时写“未明确”，禁止猜测。）';
+}
+
+export function buildSummaryPrompt(messages, start, end, timelineContext = []) {
     return [
-        `将以下${end - start + 1}楼的内容提取为1-3个关键事件，按重要度从高到低排列。每个事件严格按以下格式输出，不要输出其他内容：`,
+        `以下${end - start + 1}楼只是本次处理窗口，不是事件边界。请按剧情自然发生的事件提取1-8个关键事件，按重要度从高到低排列。跨楼的同一事件应合并；同一楼若发生时间跳跃，应拆成不同事件。每个事件严格按以下格式输出，不要输出其他内容：`,
         '',
         '[事件1]',
         '重要度：X（1-5，5为最重要）',
-        '时间：（从对话上下文推断的故事内时间点）',
-        '涉及角色：（角色名，逗号分隔）',
-        '地点：（事件发生的地点）',
         '事件概述：（最多150字，抓取核心骨干和重要细节，忽略氛围描写和无关对话）',
+        '时间：（优先复制下方时间锚点；未明确就写“未明确”，禁止把历史中的相对时间按总结时的现在重算）',
+        '地点：（事件发生的地点）',
+        '涉及角色：（角色名，逗号分隔；放在最后）',
         '',
         '[事件2]',
         '...',
@@ -356,6 +461,11 @@ export function buildSummaryPrompt(messages, start, end) {
         '- 有矛盾冲突、清晰脉络、角色关系变化、重大决策的事件 = 高重要度',
         '- 纯日常流水账、寒暄、无实质进展 = 低重要度',
         '- 如果这段对话全是日常闲聊没有值得记录的事件，只输出一个1星事件简单概括即可',
+        '- “昨天、三天前、十年前”等词只相对于它所在的场景时间有效；不要因为当前主线后来推进而改写其间隔',
+        '- 回忆、转述历史与主线正在发生是不同时间层；只提到旧事，不代表主线倒退',
+        '',
+        '以下是插件保存的时间锚点（优先级高于你对楼层间隔的猜测）：',
+        formatSummaryTimeline(timelineContext),
         '',
         `以下是需要分析的对话（第${start + 1}-${end + 1}楼）：`,
         '',
@@ -363,14 +473,36 @@ export function buildSummaryPrompt(messages, start, end) {
     ].join('\n');
 }
 
-async function callSummaryModel(context, prompt, generateSummary) {
+function buildSummaryRetryPrompt(messages, start, end, timelineContext = []) {
+    return [
+        `概括下面第${start + 1}-${end + 1}楼发生的关键事件。`,
+        '上一次结构化回答被意外截断，这次只输出一段完整的中文事件概述，最多150字。',
+        '不要输出标题、序号、字段名、角色名单或解释；宁可简短，也必须把核心事件写完整。',
+        '保留原剧情中的时间关系；楼层数不代表时间流逝，不能自行把“三天前”改成“昨天”。',
+        '',
+        '时间锚点：',
+        formatSummaryTimeline(timelineContext),
+        '',
+        formatDialogue(messages, start),
+    ].join('\n');
+}
+
+async function callSummaryModel(settings, _context, prompt, generateSummary) {
     if (generateSummary) {
         return generateSummary(prompt, SUMMARY_GENERATION_MAX_TOKENS);
     }
-    if (typeof context.generateQuietPrompt !== 'function') {
-        throw new Error('generateQuietPrompt is unavailable.');
+    const sideApi = settings?.apis?.barrage;
+    if (String(sideApi?.url ?? '').trim()
+        && String(sideApi?.apiKey ?? '').trim()
+        && String(sideApi?.model ?? '').trim()) {
+        const response = await generateSummaryWithSideApi({
+            barrage: sideApi,
+            prompt,
+            maxTokens: SUMMARY_GENERATION_MAX_TOKENS,
+        });
+        return response?.content;
     }
-    return context.generateQuietPrompt(prompt, false, true, '', '', SUMMARY_GENERATION_MAX_TOKENS);
+    throw new Error('请先填写完整的副 API 地址、Key 和模型；自动总结不会调用正文主 API。');
 }
 
 async function hideSummarizedMessages(context, start, end, recentMessages, getCurrentContext) {
@@ -509,6 +641,15 @@ async function migrateLegacyLorebookEntries(context, state) {
     if (consolidatedUids.size > 0) {
         state.entries = state.entries.filter(item => !consolidatedUids.has(String(item.uid)));
     }
+    for (const entry of Object.values(data?.entries ?? {})) {
+        if (!isManagedSummaryEntry(entry)) continue;
+        const guardedContent = guardHistoricalSummaryTimes(entry.content);
+        if (guardedContent !== String(entry.content ?? '')) {
+            entry.content = guardedContent;
+            worldInfoChanged = true;
+            migrated++;
+        }
+    }
     if (worldInfoChanged && typeof context?.saveWorldInfo === 'function') {
         await context.saveWorldInfo(bookName, data, true);
     }
@@ -597,25 +738,35 @@ export async function summarizePendingMessages(settings, context, options = {}) 
 
     await migrateLegacySummaries(context);
     const state = getSummaryState(metadata, true);
-    const start = Math.max(0, state.lastSummarizedMessageIndex + 1);
+    const malformed = options.repairMalformed === true
+        ? await findMalformedSummaryRange(context, state)
+        : null;
+    const start = malformed?.start ?? Math.max(0, state.lastSummarizedMessageIndex + 1);
     const firstIndexInsideRecentWindow = Math.max(0, chat.length - recentMessages);
     const pendingFloors = Math.max(0, firstIndexInsideRecentWindow - start);
-    if (pendingFloors < batchSize) {
+    if (!malformed && pendingFloors < batchSize) {
         return { created: 0, pendingFloors };
     }
 
-    const end = start + batchSize - 1;
+    const end = malformed?.end ?? start + batchSize - 1;
     const messages = chat.slice(start, end + 1).map(message => ({
         name: message?.name,
         is_user: message?.is_user,
         mes: message?.mes,
     }));
-    const prompt = buildSummaryPrompt(messages, start, end);
-    const output = String(await callSummaryModel(context, prompt, options.generateSummary) ?? '').trim();
-    if (!output) {
-        throw new Error(`Summary model returned empty content for messages ${start}-${end}.`);
+    const timelineContext = Array.from({ length: end - start + 1 }, (_, offset) => {
+        const messageId = start + offset;
+        const timeline = getMessageTimelineMetadata(context, messageId);
+        return timeline ? { messageId, ...timeline } : null;
+    }).filter(Boolean);
+    const prompt = buildSummaryPrompt(messages, start, end, timelineContext);
+    let output = String(await callSummaryModel(settings, context, prompt, options.generateSummary) ?? '').trim();
+    let events = parseSummaryEvents(output);
+    if (events.length === 0) {
+        const retryPrompt = buildSummaryRetryPrompt(messages, start, end, timelineContext);
+        output = String(await callSummaryModel(settings, context, retryPrompt, options.generateSummary) ?? '').trim();
+        events = parseSummaryEvents(output);
     }
-    const events = parseSummaryEvents(output);
     if (events.length === 0) {
         throw new Error(`Summary model returned no usable events for messages ${start}-${end}.`);
     }
@@ -629,7 +780,7 @@ export async function summarizePendingMessages(settings, context, options = {}) 
     const saved = await upsertSummaryEntry(currentContext, events, start, end, createdAt);
     state.entries = state.entries.filter(entry => entry.start !== start || entry.end !== end);
     state.entries.push(saved);
-    state.lastSummarizedMessageIndex = end;
+    state.lastSummarizedMessageIndex = Math.max(state.lastSummarizedMessageIndex, end);
     await currentContext.saveMetadata?.();
     await hideSummarizedMessages(
         currentContext,
@@ -639,7 +790,28 @@ export async function summarizePendingMessages(settings, context, options = {}) 
         options.getCurrentContext,
     );
     options.onSaved?.(saved);
-    return { created: 1, pendingFloors: pendingFloors - batchSize, start, end };
+    return {
+        created: 1,
+        pendingFloors: Math.max(0, pendingFloors - (end - start + 1)),
+        start,
+        end,
+        ...(malformed ? { repaired: true } : {}),
+    };
+}
+
+export async function repairMalformedSummaries(settings, context, options = {}) {
+    let repaired = 0;
+    for (let attempt = 0; attempt < 20; attempt++) {
+        const state = getSummaryState(context?.chatMetadata);
+        if (!state || !await findMalformedSummaryRange(context, state)) break;
+        const result = await summarizePendingMessages(settings, context, {
+            ...options,
+            repairMalformed: true,
+        });
+        if (!result?.repaired) break;
+        repaired++;
+    }
+    return repaired;
 }
 
 export function initializeSummaryManager(settings, context, options = {}) {
@@ -658,12 +830,16 @@ export function initializeSummaryManager(settings, context, options = {}) {
                 if (!chatId || getChatId(currentContext) !== chatId) {
                     return null;
                 }
-                return summarizePendingMessages(settings, currentContext, {
+                const summaryOptions = {
                     getCurrentContext: () => SillyTavern.getContext(),
                     onSaved: options.onSaved,
-                });
+                    generateSummary: options.generateSummary,
+                };
+                return summarizePendingMessages(settings, currentContext, summaryOptions);
             })
-            .catch(error => console.error('[Memory Augment] Automatic summary generation failed.', error));
+            .catch((error) => {
+                console.error('[Memory Augment] Automatic summary generation failed.', error);
+            });
     };
 
     void migrateLegacySummaries(context).then(options.onSaved).catch(error => {

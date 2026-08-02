@@ -1,6 +1,24 @@
 import { generateBarrage, rerankMemory, searchMemory } from './rag-client.js';
 import { normalizeBaseUrl } from './api-utils.js';
 import { getActiveWorldInfoBookIds } from './world-info-manager.js';
+import {
+    applyStoryStatusOptions,
+    applyStoryTimelineUpdate,
+    getLatestStoryStatus,
+    getMessageTimelineMetadata,
+    getStoryStatusAt,
+    hashStorySource,
+    initializeStoryStatusUi,
+    parseSideResponse,
+    refreshStoryStatusUi,
+    saveStoryStatus,
+} from './story-status.js';
+import {
+    applyCharacterDevelopmentUpdate,
+    getCharacterDevelopmentSnapshot,
+    isCharacterDevelopmentProcessed,
+    refreshCharacterDevelopmentUi,
+} from './character-development.js';
 
 const BARRAGE_METADATA_KEY = 'memory_augment_barrages';
 const WORLD_INFO_TOP_K = 7;
@@ -27,15 +45,6 @@ function getChatId(context) {
     return context?.getCurrentChatId?.() ?? context?.chatId;
 }
 
-function textHash(value) {
-    let hash = 2166136261;
-    for (const character of String(value ?? '')) {
-        hash ^= character.codePointAt(0);
-        hash = Math.imul(hash, 16777619);
-    }
-    return (hash >>> 0).toString(16).padStart(8, '0');
-}
-
 function getBarrageStore(metadata, create = false) {
     const existing = metadata?.[BARRAGE_METADATA_KEY];
     if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
@@ -49,20 +58,29 @@ function getBarrageStore(metadata, create = false) {
 }
 
 function normalizeStoredBarrage(record) {
+    const existingTimestamp = Math.trunc(Number(record?.timestamp));
+    const legacyTimestamp = Math.floor(Date.parse(record?.createdAt) / 1000);
+    const timestamp = Number.isInteger(existingTimestamp) && existingTimestamp > 0
+        ? existingTimestamp
+        : Number.isInteger(legacyTimestamp) && legacyTimestamp > 0
+            ? legacyTimestamp
+            : Math.floor(Date.now() / 1000);
+    const error = String(record?.error ?? '').trim();
+    if ((record?.state === 'error' || error) && error) {
+        return {
+            state: 'error',
+            error,
+            sourceHash: String(record?.sourceHash ?? '').trim(),
+            timestamp,
+        };
+    }
     const content = String(record?.content ?? '').trim();
     if (!content) {
         return null;
     }
-
-    const existingTimestamp = Math.trunc(Number(record?.timestamp));
-    const legacyTimestamp = Math.floor(Date.parse(record?.createdAt) / 1000);
     return {
         content,
-        timestamp: Number.isInteger(existingTimestamp) && existingTimestamp > 0
-            ? existingTimestamp
-            : Number.isInteger(legacyTimestamp) && legacyTimestamp > 0
-                ? legacyTimestamp
-                : Math.floor(Date.now() / 1000),
+        timestamp,
     };
 }
 
@@ -95,8 +113,8 @@ async function getRagFragments(settings, context, recentMessages, clients) {
 
     const topK = clampInteger(settings?.rag?.topK, 20, 1, 100);
     const topN = clampInteger(settings?.rag?.topN, 5, 1, Math.min(50, topK));
-    const rawRecentMessages = clampInteger(settings?.context?.recentMessages, 20, 1, 1000);
-    const chatMessageIdBefore = Math.max(0, (context?.chat?.length ?? 0) - rawRecentMessages);
+    const recentMessageIds = recentMessages.map(message => Number(message.id)).filter(Number.isInteger);
+    const chatMessageIdBefore = recentMessageIds.length > 0 ? Math.min(...recentMessageIds) : 0;
     const search = clients.searchMemory ?? searchMemory;
     const activeBookIds = Array.isArray(settings?.rag?.activeWorldInfoBookIds)
         ? settings.rag.activeWorldInfoBookIds.map(String)
@@ -212,7 +230,13 @@ function safelyRender(render, messageId, content, state) {
 export async function handleCharacterMessageRendered(messageId, settings, context, dependencies = {}, options = {}) {
     const numericId = Number(messageId);
     const message = Number.isInteger(numericId) ? context?.chat?.[numericId] : null;
-    if (!settings?.barrage?.enabled || !message || message.is_user || message.is_system) {
+    const barrageEnabled = settings?.barrage?.enabled === true;
+    const statusEnabled = settings?.status?.enabled === true;
+    const developmentEnabled = settings?.development?.enabled === true;
+    const hasPriorUserMessage = Number.isInteger(numericId)
+        && context?.chat?.slice(0, numericId).some(item => item?.is_user);
+    if ((!barrageEnabled && !statusEnabled && !developmentEnabled)
+        || !message || message.is_user || message.is_system || !hasPriorUserMessage) {
         return { generated: false, reason: 'disabled-or-ineligible' };
     }
 
@@ -222,15 +246,22 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
     }
 
     const chatId = getChatId(context);
-    const sourceHash = textHash(message.mes);
+    const sourceHash = hashStorySource(message.mes);
     const render = dependencies.renderBarrage ?? renderBarragePanel;
     const store = getBarrageStore(context.chatMetadata);
     const cached = store[String(numericId)];
-    if (!options.force && cached?.content) {
-        safelyRender(render, numericId, cached.content, 'ready');
+    const cachedStatus = getStoryStatusAt(context, numericId);
+    const developmentProcessed = isCharacterDevelopmentProcessed(context, numericId, sourceHash);
+    const hasRequiredCache = (!barrageEnabled || cached?.content)
+        && (!statusEnabled || cachedStatus)
+        && (!developmentEnabled || developmentProcessed);
+    if (!options.force && hasRequiredCache) {
+        if (barrageEnabled) safelyRender(render, numericId, cached.content, 'ready');
+        refreshStoryStatusUi(context);
+        refreshCharacterDevelopmentUi(context);
         return { generated: false, cached: true };
     }
-    if (options.force && cached) {
+    if (options.force && barrageEnabled && cached) {
         delete store[String(numericId)];
         try {
             await context.saveMetadata?.();
@@ -245,7 +276,7 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
     }
 
     const task = (async () => {
-        safelyRender(render, numericId, '正在生成观众弹幕…', 'loading');
+        if (barrageEnabled) safelyRender(render, numericId, '正在生成观众弹幕…', 'loading');
         const recentMessages = collectRecentMessages(
             context.chat,
             numericId,
@@ -259,46 +290,115 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
         }
 
         const request = dependencies.generateBarrage ?? generateBarrage;
+        const statusOptions = {
+            customFields: Array.isArray(settings?.status?.customFields) ? settings.status.customFields : [],
+            showGoals: settings?.status?.showGoals !== false,
+        };
+        const previousStatusRecord = getLatestStoryStatus(context, { beforeMessageId: numericId });
+        const previousStatus = applyStoryStatusOptions(previousStatusRecord?.status, statusOptions);
+        const previousTimeline = previousStatusRecord
+            ? getMessageTimelineMetadata(context, previousStatusRecord.messageId)
+            : null;
+        const developmentSnapshot = developmentEnabled
+            ? getCharacterDevelopmentSnapshot(context, { limitProfiles: 12 })
+            : null;
         const response = await request({
             barrage,
             systemPrompt: String(settings.barrage.systemPrompt ?? '').trim(),
             maxTokens: settings.barrage.maxTokens,
             recentMessages,
             ragFragments,
+            previousStatus,
+            previousTimeline,
+            developmentSnapshot,
+            statusOptions,
+            outputOptions: { barrageEnabled, statusEnabled, developmentEnabled },
         });
-        const content = String(response?.content ?? '').trim();
-        if (!content) {
+        const parsed = parseSideResponse(response?.content);
+        const content = parsed.barrage;
+        if (barrageEnabled && !content) {
             throw new Error('Barrage endpoint returned empty content.');
+        }
+        if (statusEnabled && !parsed.status && !barrageEnabled) {
+            throw new Error('Story status endpoint returned no valid status.');
         }
 
         const currentContext = dependencies.getCurrentContext?.()
             ?? globalThis.SillyTavern?.getContext?.()
             ?? context;
         const currentMessage = currentContext.chat?.[numericId];
-        if (getChatId(currentContext) !== chatId || textHash(currentMessage?.mes) !== sourceHash) {
+        if (getChatId(currentContext) !== chatId || hashStorySource(currentMessage?.mes) !== sourceHash) {
             return { generated: false, discarded: true };
         }
 
-        safelyRender(render, numericId, content, 'ready');
-        const currentStore = getBarrageStore(currentContext.chatMetadata, true);
-        currentStore[String(numericId)] = {
-            content,
-            timestamp: Math.floor(Date.now() / 1000),
-        };
+        if (barrageEnabled) {
+            safelyRender(render, numericId, content, 'ready');
+            const currentStore = getBarrageStore(currentContext.chatMetadata, true);
+            currentStore[String(numericId)] = {
+                content,
+                timestamp: Math.floor(Date.now() / 1000),
+            };
+        }
+        let finalStatus = applyStoryStatusOptions(parsed.status, statusOptions);
+        if (statusEnabled && finalStatus) {
+            finalStatus = applyStoryTimelineUpdate(
+                currentContext,
+                numericId,
+                finalStatus,
+                parsed.timeline,
+                sourceHash,
+            ).status;
+        }
+        const statusSaved = statusEnabled
+            ? saveStoryStatus(currentContext, numericId, finalStatus, sourceHash)
+            : false;
+        const currentTimeline = statusEnabled && finalStatus
+            ? getMessageTimelineMetadata(currentContext, numericId)
+            : null;
+        const developmentResult = developmentEnabled && response?.partial !== true
+            ? applyCharacterDevelopmentUpdate(currentContext, numericId, parsed.development, {
+                status: finalStatus,
+                timeline: currentTimeline,
+                sourceHash,
+            })
+            : null;
         try {
             await currentContext.saveMetadata?.();
         } catch (error) {
             console.warn('[Memory Augment] Barrage metadata save failed.', error);
         }
-        return { generated: true, content, ragCount: ragFragments.length };
-    })().catch((error) => {
+        refreshStoryStatusUi(currentContext);
+        refreshCharacterDevelopmentUi(currentContext);
+        return {
+            generated: true,
+            content,
+            status: finalStatus,
+            statusSaved,
+            development: developmentResult,
+            ragCount: ragFragments.length,
+        };
+    })().catch(async (error) => {
         const currentContext = dependencies.getCurrentContext?.()
             ?? globalThis.SillyTavern?.getContext?.()
             ?? context;
         const currentMessage = currentContext.chat?.[numericId];
-        if (getChatId(currentContext) === chatId && textHash(currentMessage?.mes) === sourceHash) {
+        if (getChatId(currentContext) === chatId && hashStorySource(currentMessage?.mes) === sourceHash) {
             const detail = String(error?.message ?? error ?? '未知错误').trim();
-            safelyRender(render, numericId, `弹幕生成失败：${detail}`, 'error');
+            if (barrageEnabled) {
+                safelyRender(render, numericId, `弹幕生成失败：${detail}`, 'error');
+                const currentStore = getBarrageStore(currentContext.chatMetadata, true);
+                currentStore[String(numericId)] = {
+                    state: 'error',
+                    error: detail,
+                    sourceHash,
+                    timestamp: Math.floor(Date.now() / 1000),
+                };
+                try {
+                    await currentContext.saveMetadata?.();
+                } catch (saveError) {
+                    console.warn('[Memory Augment] Barrage failure metadata save failed.', saveError);
+                }
+            }
         }
         console.warn('[Memory Augment] Barrage generation failed.', error);
         return { generated: false, error };
@@ -308,7 +408,8 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
     return task;
 }
 
-function restoreStoredBarrages(context) {
+export function restoreStoredBarrages(context, settings, render = renderBarragePanel) {
+    if (settings?.barrage?.enabled !== true) return;
     const store = getBarrageStore(context.chatMetadata);
     let migrated = false;
     for (const [messageId, record] of Object.entries(store)) {
@@ -317,15 +418,28 @@ function restoreStoredBarrages(context) {
         if (!normalized) {
             continue;
         }
-        if (record.content !== normalized.content
-            || record.timestamp !== normalized.timestamp
-            || Object.keys(record).some(key => key !== 'content' && key !== 'timestamp')) {
+        const sourceChanged = normalized.state === 'error'
+            && normalized.sourceHash
+            && message
+            && normalized.sourceHash !== hashStorySource(message.mes);
+        if (!message || message.is_user || message.is_system || sourceChanged) {
+            delete store[messageId];
+            migrated = true;
+            continue;
+        }
+        const normalizedKeys = normalized.state === 'error'
+            ? ['error', 'sourceHash', 'state', 'timestamp']
+            : ['content', 'timestamp'];
+        if (normalizedKeys.some(key => record[key] !== normalized[key])
+            || Object.keys(record).some(key => !normalizedKeys.includes(key))) {
             store[messageId] = normalized;
             migrated = true;
         }
-        if (message && !message.is_user && !message.is_system) {
-            safelyRender(renderBarragePanel, messageId, normalized.content, 'ready');
-        }
+        const state = normalized.state === 'error' ? 'error' : 'ready';
+        const content = state === 'error'
+            ? `弹幕生成失败：${normalized.error}\n点击下方“重新生成弹幕”即可重试本楼。`
+            : normalized.content;
+        safelyRender(render, messageId, content, state);
     }
     if (migrated) {
         void Promise.resolve(context.saveMetadata?.())
@@ -372,6 +486,7 @@ function bindRegeneration(settings) {
 
 export async function initializeBarrageUi(settings, options = {}) {
     const context = SillyTavern.getContext();
+    initializeStoryStatusUi(context, settings);
     try {
         barrageTemplate = await context.renderExtensionTemplateAsync(options.templatePath, 'barrage');
     } catch (error) {
@@ -395,7 +510,7 @@ export async function initializeBarrageUi(settings, options = {}) {
         context.eventSource.on(chatChanged, () => {
             setTimeout(() => {
                 try {
-                    restoreStoredBarrages(SillyTavern.getContext());
+                    restoreStoredBarrages(SillyTavern.getContext(), settings);
                 } catch (error) {
                     console.warn('[Memory Augment] Stored barrage restoration failed.', error);
                 }
@@ -405,10 +520,17 @@ export async function initializeBarrageUi(settings, options = {}) {
 
     bindRegeneration(settings);
     try {
-        restoreStoredBarrages(context);
+        restoreStoredBarrages(context, settings);
     } catch (error) {
         console.warn('[Memory Augment] Stored barrage restoration failed.', error);
     }
+}
+
+export function refreshBarrageVisibility(settings, context = globalThis.SillyTavern?.getContext?.()) {
+    if (typeof document === 'undefined') return;
+    const enabled = settings?.barrage?.enabled === true;
+    document.querySelectorAll('.memory-augment-barrage').forEach(panel => panel.hidden = !enabled);
+    if (enabled && context) restoreStoredBarrages(context, settings);
 }
 
 export { BARRAGE_METADATA_KEY };

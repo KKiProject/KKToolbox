@@ -174,12 +174,20 @@ async function loadVectorStatuses() {
     if (currentBooks.length === 0) return;
     try {
         const response = await getWorldInfoStatuses(currentBooks.map(book => book.id));
-        for (const book of currentBooks) {
-            book.vectorizedEntries = Number(response?.statuses?.[book.id]?.entryCount ?? 0);
-        }
+        applyWorldInfoVectorStatuses(currentBooks, response);
     } catch (error) {
         console.warn('[Memory Augment] Failed to load world info vector status.', error);
     }
+}
+
+export function applyWorldInfoVectorStatuses(books, response) {
+    const statuses = response?.statuses && typeof response.statuses === 'object'
+        ? response.statuses
+        : response;
+    for (const book of Array.isArray(books) ? books : []) {
+        book.vectorizedEntries = Number(statuses?.[book.id]?.entryCount ?? 0);
+    }
+    return books;
 }
 
 function updateSelectorStatus(settings) {

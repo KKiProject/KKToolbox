@@ -1,6 +1,9 @@
 import { rerankMemory, searchMemory } from './rag-client.js';
 import { normalizeBaseUrl } from './api-utils.js';
 import { getActiveWorldInfoBookIds } from './world-info-manager.js';
+import { getMessageTimelineMetadata, injectLatestStoryStatus } from './story-status.js';
+import { injectMapAtlasContext } from './map-atlas.js';
+import { injectCharacterDevelopment } from './character-development.js';
 
 const EXTENSION_KEY = 'st-memory-augment';
 const MEMORY_MARKER = 'memory_augment_rag';
@@ -79,7 +82,31 @@ function formatRecallMessage(results, prefix, intro, kind) {
     };
 }
 
-export function formatMemoryMessage(results) {
+function formatTemporalRecall(result, context, messageId) {
+    const timeline = getMessageTimelineMetadata(context, Number(messageId));
+    const matchingSegment = timeline?.segments?.find(segment => result?.timeline_anchor_id
+        && String(segment?.anchorId) === String(result.timeline_anchor_id));
+    const sceneTime = String(result?.timeline_time
+        ?? matchingSegment?.anchorLabel
+        ?? timeline?.sceneTime
+        ?? '').trim();
+    const mainlineTime = String(result?.timeline_mainline_time ?? timeline?.mainlineTime ?? '').trim();
+    const isPrecedingAnchor = result?.timeline_anchor_id
+        && String(result.timeline_anchor_id) === String(timeline?.precedingSceneAnchorId);
+    const relation = String(matchingSegment?.relationToCurrent
+        ?? (isPrecedingAnchor ? timeline?.precedingRelationToCurrent : timeline?.relationToCurrent)
+        ?? '').trim();
+    if (!sceneTime && !mainlineTime && !relation) return '';
+    return [
+        '[该片段的历史时间锚点]',
+        sceneTime && `当时场景：${sceneTime}`,
+        mainlineTime && `当时主线：${mainlineTime}`,
+        relation && `与当前主线：${relation}`,
+        '片段内“今天、昨天、三天前”等相对时间均以这个历史锚点为基准，不得按当前回合重新解释。',
+    ].filter(Boolean).join('；');
+}
+
+export function formatMemoryMessage(results, context = null) {
     const getMessageIds = result => result?.message_id !== undefined
         ? [result.message_id]
         : Array.isArray(result?.message_ids) ? result.message_ids : [];
@@ -99,7 +126,8 @@ export function formatMemoryMessage(results) {
         const label = floor !== undefined
             ? `[记忆召回-第${floor}楼]`
             : '[记忆召回]';
-        return `${label} ${text}`;
+        const temporal = formatTemporalRecall(result, context, ids[0]);
+        return temporal ? `${label}\n${temporal}\n${text}` : `${label} ${text}`;
     }).filter(Boolean);
     if (fragments.length === 0) {
         return null;
@@ -267,7 +295,7 @@ export async function retrieveAndInject(chat, settings, context, clients = {}) {
     const worldInfoMessage = semanticWorldInfo
         ? formatWorldInfoMessage(worldInfoSelection.results)
         : null;
-    const memoryMessage = formatMemoryMessage(chatSelection.results);
+    const memoryMessage = formatMemoryMessage(chatSelection.results, context);
     const recallMessages = [worldInfoMessage, memoryMessage].filter(Boolean);
     if (recallMessages.length === 0) {
         return { injected: false, reason: 'filtered', usedReranker };
@@ -320,6 +348,24 @@ export async function memoryAugmentInterceptor(chat, contextSize, abort, type) {
         await retrieveAndInject(generationChat, settings, context);
     } catch (error) {
         console.error('[Memory Augment] RAG interceptor failed; generation will continue without memory injection.', error);
+    }
+
+    try {
+        injectMapAtlasContext(generationChat, settings, context);
+    } catch (error) {
+        console.error('[Memory Augment] Map atlas injection failed; generation will continue without it.', error);
+    }
+
+    try {
+        injectCharacterDevelopment(generationChat, context);
+    } catch (error) {
+        console.error('[Memory Augment] Character development injection failed; generation will continue without it.', error);
+    }
+
+    try {
+        injectLatestStoryStatus(generationChat, context);
+    } catch (error) {
+        console.error('[Memory Augment] Story status injection failed; generation will continue without it.', error);
     }
 
     chat.splice(0, chat.length, ...generationChat);

@@ -1,6 +1,8 @@
 import {
     createEmbeddings,
     generateBarrageCompletion,
+    generateSummaryCompletion,
+    generateAtlasCompletion,
     listModels,
     rerankCandidates,
 } from './browser-api-client.js';
@@ -166,6 +168,14 @@ export function rerankMemory(payload) {
 
 export function generateBarrage(payload) {
     return generateBarrageCompletion(payload);
+}
+
+export function generateSummary(payload) {
+    return generateSummaryCompletion(payload);
+}
+
+export function generateMapAtlas(payload) {
+    return generateAtlasCompletion(payload);
 }
 
 export function clearChat(chatId) {

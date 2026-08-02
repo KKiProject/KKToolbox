@@ -127,6 +127,18 @@ test('legacy multi-message chunks still produce a usable floor-range label', () 
     assert.match(message.mes, /\[记忆召回-第10-12楼\] 旧格式原文块$/);
 });
 
+test('recalled chunks carry their original time anchor instead of borrowing the current time', () => {
+    const message = formatMemoryMessage([{
+        message_id: 12,
+        text: '她说三天前曾在花园见过候补。',
+        timeline_time: '王历100年春三月初一',
+        timeline_mainline_time: '王历100年春三月初一',
+    }]);
+    assert.match(message.mes, /该片段的历史时间锚点/);
+    assert.match(message.mes, /当时场景：王历100年春三月初一/);
+    assert.match(message.mes, /不得按当前回合重新解释/);
+});
+
 test('registered generation interceptor injects memory into a multi-turn generation chat', async (context) => {
     const chat = createChat(8);
     const originalSillyTavern = globalThis.SillyTavern;

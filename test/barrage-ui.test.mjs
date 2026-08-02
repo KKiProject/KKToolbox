@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BARRAGE_METADATA_KEY, collectRecentMessages, handleCharacterMessageRendered } from '../barrage-ui.js';
+import {
+    BARRAGE_METADATA_KEY,
+    collectRecentMessages,
+    handleCharacterMessageRendered,
+    restoreStoredBarrages,
+} from '../barrage-ui.js';
+import { STORY_STATUS_METADATA_KEY } from '../story-status.js';
+import { getCharacterDevelopmentSnapshot } from '../character-development.js';
 
 function createSettings({ includeRag = false } = {}) {
     return {
@@ -19,6 +26,7 @@ function createSettings({ includeRag = false } = {}) {
             includeRag,
             systemPrompt: 'audience system prompt',
         },
+        status: { enabled: true, showGoals: true, customFields: [] },
     };
 }
 
@@ -60,7 +68,14 @@ test('barrage generation renders and caches without mutating context.chat', asyn
         getCurrentContext: () => context,
         async generateBarrage(payload) {
             requestBody = payload;
-            return { content: '观众弹幕结果' };
+            return { content: JSON.stringify({
+                barrage: '观众弹幕结果',
+                status: {
+                    environment: { time: '夜晚', location: '王城 → 酒馆', season: '冬季', weather: '雪' },
+                    characters: [{ name: '玩家', role: 'user', emotion: '警觉' }],
+                    event: { activity: '交谈', situation: '局势紧张', goals: ['找到线索'] },
+                },
+            }) };
         },
     });
 
@@ -74,6 +89,7 @@ test('barrage generation renders and caches without mutating context.chat', asyn
     assert.equal(renders.at(-1)[1], '观众弹幕结果');
     assert.equal(renders.at(-1)[2], 'ready');
     assert.equal(context.chatMetadata[BARRAGE_METADATA_KEY]['5'].content, '观众弹幕结果');
+    assert.equal(context.chatMetadata[STORY_STATUS_METADATA_KEY]['5'].status.environment.location, '王城 → 酒馆');
     assert.equal(Number.isInteger(context.chatMetadata[BARRAGE_METADATA_KEY]['5'].timestamp), true);
     assert.deepEqual(
         Object.keys(context.chatMetadata[BARRAGE_METADATA_KEY]['5']).sort(),
@@ -120,7 +136,7 @@ test('RAG switch attaches retrieved fragments to the barrage request', async () 
     assert.equal(searchPayload.embedding.baseUrl, 'https://embedding.example');
     assert.deepEqual(searchPayload.scope, {
         chat_id: 'barrage-chat',
-        chat_message_id_before: 0,
+        chat_message_id_before: 2,
         book_ids: [],
     });
     assert.equal(barragePayload.ragFragments[0].text, 'recalled history');
@@ -142,6 +158,78 @@ test('missing barrage API configuration produces no request or chat mutation', a
     assert.equal(result.reason, 'missing-config');
     assert.equal(requested, false);
     assert.deepEqual(context.chat, originalChat);
+});
+
+test('status can run without rendering or storing barrage', async () => {
+    const context = createContext();
+    const settings = createSettings();
+    settings.barrage.enabled = false;
+    let rendered = false;
+    const result = await handleCharacterMessageRendered(5, settings, context, {
+        renderBarrage: () => rendered = true,
+        getCurrentContext: () => context,
+        async generateBarrage(payload) {
+            assert.deepEqual(payload.outputOptions, {
+                barrageEnabled: false,
+                statusEnabled: true,
+                developmentEnabled: false,
+            });
+            return { content: JSON.stringify({
+                barrage: '',
+                status: {
+                    environment: { time: '清晨' },
+                    characters: [{ name: '玩家', role: 'user' }, { name: '角色', role: 'char' }],
+                    event: { activity: '赶路' },
+                },
+            }) };
+        },
+    });
+
+    assert.equal(result.generated, true);
+    assert.equal(rendered, false);
+    assert.equal(context.chatMetadata[BARRAGE_METADATA_KEY], undefined);
+    assert.equal(context.chatMetadata[STORY_STATUS_METADATA_KEY]['5'].status.environment.time, '清晨');
+});
+
+test('player-declared character development shares the same side request and is cached', async () => {
+    const context = createContext();
+    context.chat[4].mes = '十年后，Character 已经从开朗变得阴郁寡言。';
+    const settings = createSettings();
+    settings.development = { enabled: true };
+    let calls = 0;
+    const dependencies = {
+        renderBarrage: () => true,
+        getCurrentContext: () => context,
+        async generateBarrage(payload) {
+            calls++;
+            assert.equal(payload.outputOptions.developmentEnabled, true);
+            return { content: JSON.stringify({
+                barrage: '时间跳跃！',
+                status: {
+                    environment: { time: '十年后' },
+                    characters: [{ name: 'User', role: 'user' }, { name: 'Character', role: 'char' }],
+                    event: { activity: '重逢' },
+                },
+                timeline: { transition: 'jump', currentTime: '十年后', elapsed: '十年后', segments: [] },
+                development: { changes: [{
+                    character: 'Character',
+                    dimension: 'temperament',
+                    before: '开朗',
+                    after: '阴郁寡言',
+                    reason: '',
+                    source: 'user_direct',
+                    evidence: [{ messageId: 4, quote: '十年后，Character 已经从开朗变得阴郁寡言。' }],
+                }] },
+            }) };
+        },
+    };
+
+    const generated = await handleCharacterMessageRendered(5, settings, context, dependencies);
+    assert.equal(generated.development.confirmed, 1);
+    assert.equal(getCharacterDevelopmentSnapshot(context).profiles[0].fields[0].value, '阴郁寡言');
+    const cached = await handleCharacterMessageRendered(5, settings, context, dependencies);
+    assert.equal(cached.cached, true);
+    assert.equal(calls, 1);
 });
 
 test('RAG failure is isolated and barrage generation continues with recent messages only', async () => {
@@ -188,7 +276,8 @@ test('barrage API and render failures do not reject or mutate chat', async () =>
         assert.equal(result.generated, false);
         assert.match(result.error.message, /side API unavailable/);
         assert.deepEqual(context.chat, originalChat);
-        assert.equal(context.chatMetadata[BARRAGE_METADATA_KEY], undefined);
+        assert.equal(context.chatMetadata[BARRAGE_METADATA_KEY]['5'].state, 'error');
+        assert.match(context.chatMetadata[BARRAGE_METADATA_KEY]['5'].error, /side API unavailable/);
     } finally {
         console.warn = originalWarn;
     }
@@ -215,10 +304,41 @@ test('barrage panel displays the detailed upstream API error', async () => {
     }
 });
 
+test('a failed barrage is restored after reopening and still offers the same-floor retry panel', async () => {
+    const context = createContext();
+    const originalWarn = console.warn;
+    console.warn = () => undefined;
+    try {
+        await handleCharacterMessageRendered(5, createSettings(), context, {
+            renderBarrage: () => true,
+            async generateBarrage() {
+                throw new Error('temporary upstream failure');
+            },
+        });
+        const renders = [];
+        restoreStoredBarrages(context, createSettings(), (...args) => renders.push(args));
+        assert.equal(renders.length, 1);
+        assert.equal(renders[0][0], '5');
+        assert.equal(renders[0][2], 'error');
+        assert.match(renders[0][1], /重新生成弹幕/);
+    } finally {
+        console.warn = originalWarn;
+    }
+});
+
 test('forced regeneration bypasses the stored barrage and replaces it', async () => {
     const context = createContext();
     context.chatMetadata[BARRAGE_METADATA_KEY] = {
         5: { content: 'old barrage', timestamp: 1 },
+    };
+    context.chatMetadata[STORY_STATUS_METADATA_KEY] = {
+        5: {
+            status: {
+                environment: { location: '旧状态仍应保留' },
+                characters: [],
+                event: {},
+            },
+        },
     };
 
     const result = await handleCharacterMessageRendered(5, createSettings(), context, {
@@ -231,5 +351,6 @@ test('forced regeneration bypasses the stored barrage and replaces it', async ()
 
     assert.equal(result.generated, true);
     assert.equal(context.chatMetadata[BARRAGE_METADATA_KEY]['5'].content, 'new barrage');
+    assert.equal(context.chatMetadata[STORY_STATUS_METADATA_KEY]['5'].status.environment.location, '旧状态仍应保留');
     assert.equal(context.saves, 2, 'the stale barrage is removed before the replacement is saved');
 });

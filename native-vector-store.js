@@ -224,7 +224,7 @@ async function ensureIndexed(scope, document, config, { force = false } = {}) {
         document.embedding_signature = signature;
         document.vector_dimension = active[0]?.vector_dimension ?? 0;
         await writeScope(scope, document);
-        return { embedded, removed: 0, rebuilt: true };
+        return { embedded, removed: 0, rebuilt: true, written: true };
     }
 
     assignVectorHashes(document.chunks, signature);
@@ -237,8 +237,9 @@ async function ensureIndexed(scope, document, config, { force = false } = {}) {
     document.vector_dimension = active.find(chunk => chunk.vector_dimension)?.vector_dimension
         ?? document.vector_dimension
         ?? 0;
-    if (removed.length > 0 || embedded > 0) await writeScope(scope, document);
-    return { embedded, removed: removed.length, rebuilt: false };
+    const written = removed.length > 0 || embedded > 0;
+    if (written) await writeScope(scope, document);
+    return { embedded, removed: removed.length, rebuilt: false, written };
 }
 
 function getCharacterCount(text) {
@@ -297,6 +298,63 @@ export function splitMessageText(text, targetChars = 400) {
     return segments;
 }
 
+export function splitMessageTextWithTimeline(text, targetChars = 400, timeline = null) {
+    const normalized = String(text ?? '').trim();
+    if (!normalized) return [];
+    const hasLocatedTransition = (Array.isArray(timeline?.segments) ? timeline.segments : [])
+        .some(segment => String(segment?.startQuote ?? '').trim()
+            && normalized.includes(String(segment.startQuote).trim()));
+    const fallback = timeline && typeof timeline === 'object' ? {
+        anchorId: String(hasLocatedTransition
+            ? timeline.precedingSceneAnchorId || timeline.sceneAnchorId || ''
+            : timeline.sceneAnchorId ?? ''),
+        time: String(hasLocatedTransition
+            ? timeline.precedingSceneTime || timeline.sceneTime || ''
+            : timeline.sceneTime ?? ''),
+        mainlineAnchorId: String(hasLocatedTransition
+            ? timeline.precedingMainlineAnchorId || timeline.mainlineAnchorId || ''
+            : timeline.mainlineAnchorId ?? ''),
+        mainlineTime: String(hasLocatedTransition
+            ? timeline.precedingMainlineTime || timeline.mainlineTime || ''
+            : timeline.mainlineTime ?? ''),
+        mode: 'unknown',
+        relation: '',
+    } : null;
+    const located = (Array.isArray(timeline?.segments) ? timeline.segments : [])
+        .map((segment) => {
+            const quote = String(segment?.startQuote ?? '').trim();
+            const offset = quote ? normalized.indexOf(quote) : -1;
+            if (offset < 0) return null;
+            return {
+                offset,
+                timeline: {
+                    anchorId: String(segment?.anchorId ?? ''),
+                    time: String(segment?.anchorLabel ?? segment?.time ?? ''),
+                    mainlineAnchorId: String(timeline?.mainlineAnchorId ?? ''),
+                    mainlineTime: String(timeline?.mainlineTime ?? ''),
+                    mode: String(segment?.mode ?? 'unknown'),
+                    relation: String(segment?.relation ?? ''),
+                },
+            };
+        })
+        .filter(Boolean)
+        .sort((left, right) => left.offset - right.offset)
+        .filter((item, index, items) => index === 0 || item.offset !== items[index - 1].offset);
+    const boundaries = [{ offset: 0, timeline: fallback }];
+    for (const item of located) {
+        if (item.offset === 0) boundaries[0] = item;
+        else boundaries.push(item);
+    }
+    return boundaries.flatMap((boundary, index) => {
+        const end = boundaries[index + 1]?.offset ?? normalized.length;
+        const section = normalized.slice(boundary.offset, end).trim();
+        return splitMessageText(section, targetChars).map(segment => ({
+            text: segment,
+            timeline: boundary.timeline,
+        }));
+    });
+}
+
 function normalizeMessages(messages, message) {
     const input = Array.isArray(messages) ? messages : message ? [message] : [];
     const byId = new Map();
@@ -309,14 +367,15 @@ function normalizeMessages(messages, message) {
             role: item?.role === 'user' ? 'user' : 'assistant',
             text,
             timestamp: Number(item?.timestamp) || Math.floor(Date.now() / 1000),
+            timeline: item?.timeline && typeof item.timeline === 'object' ? item.timeline : null,
         });
     });
     return [...byId.values()];
 }
 
 function buildChatDrafts(chatId, messages, targetChars) {
-    return messages.flatMap(message => splitMessageText(message.text, targetChars)
-        .map((text, segmentIndex) => ({
+    return messages.flatMap(message => splitMessageTextWithTimeline(message.text, targetChars, message.timeline)
+        .map(({ text, timeline }, segmentIndex) => ({
             id: `msg${message.id}_seg${segmentIndex}`,
             chat_id: String(chatId),
             message_id: message.id,
@@ -328,6 +387,14 @@ function buildChatDrafts(chatId, messages, targetChars) {
             type: CHAT_KIND,
             manual_override: false,
             disabled: false,
+            ...(timeline ? {
+                timeline_anchor_id: timeline.anchorId,
+                timeline_time: timeline.time,
+                timeline_mainline_anchor_id: timeline.mainlineAnchorId,
+                timeline_mainline_time: timeline.mainlineTime,
+                timeline_mode: timeline.mode,
+                timeline_relation: timeline.relation,
+            } : {}),
         })));
 }
 
@@ -367,6 +434,7 @@ export async function ingestChatScope(payload) {
         const indexResult = await ensureIndexed(scope, document, payload?.embedding, {
             force: payload?.force === true,
         });
+        if (!indexResult.written) await writeScope(scope, document);
         return {
             accepted: messages.length,
             chunks: drafts.length,

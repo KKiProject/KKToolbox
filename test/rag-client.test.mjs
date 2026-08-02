@@ -8,6 +8,34 @@ import {
     updateChatMemory,
 } from '../rag-client.js';
 import { installNativeFetch } from './native-fetch-fixture.mjs';
+import { splitMessageTextWithTimeline } from '../native-vector-store.js';
+
+test('an explicit in-floor time jump is a mandatory vector split boundary', () => {
+    const text = `现在，众人仍在王城议事。${'甲'.repeat(40)}十年后，旧王城已经荒废。${'乙'.repeat(40)}`;
+    const chunks = splitMessageTextWithTimeline(text, 400, {
+        sceneAnchorId: 't2-mainline',
+        sceneTime: '王历110年',
+        mainlineAnchorId: 't2-mainline',
+        mainlineTime: '王历110年',
+        precedingSceneAnchorId: 't1-mainline',
+        precedingSceneTime: '王历100年',
+        precedingMainlineAnchorId: 't1-mainline',
+        precedingMainlineTime: '王历100年',
+        segments: [{
+            startQuote: '十年后，旧王城已经荒废。',
+            anchorId: 't2-mainline',
+            anchorLabel: '王历110年',
+            mode: 'mainline',
+            relation: '十年后',
+        }],
+    });
+
+    assert.equal(chunks.length, 2);
+    assert.match(chunks[0].text, /^现在/);
+    assert.match(chunks[1].text, /^十年后/);
+    assert.equal(chunks[0].timeline.time, '王历100年');
+    assert.equal(chunks[1].timeline.time, '王历110年');
+});
 
 test('fetchModels calls the configured provider directly from the browser', async (context) => {
     const originalSillyTavern = globalThis.SillyTavern;
@@ -61,9 +89,28 @@ test('native chat memory writes, searches, edits, and disables fragments without
     });
     assert.equal(ingested.chunks, 2);
 
+    const annotated = await ingestChat({
+        chatId: 'chat name',
+        embedding,
+        targetChars: 400,
+        messages: [{
+            id: 10,
+            role: 'user',
+            text: '第十楼的原始记忆',
+            timeline: {
+                sceneAnchorId: 't10-mainline',
+                sceneTime: '王历100年春',
+                mainlineAnchorId: 't10-mainline',
+                mainlineTime: '王历100年春',
+            },
+        }],
+    });
+    assert.equal(annotated.embedded, 0, 'adding an anchor must not regenerate an unchanged vector');
+
     const listed = await getChatMemory('chat name', { offset: 0, limit: 25, query: '第十楼' });
     assert.equal(listed.total, 1);
     assert.equal(listed.items[0].id, 'msg10_seg0');
+    assert.equal(listed.items[0].timeline_time, '王历100年春');
 
     const updated = await updateChatMemory({
         chatId: 'chat name',

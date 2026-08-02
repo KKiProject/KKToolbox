@@ -2,15 +2,35 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
     clearAllSummaries,
+    buildSummaryPrompt,
     getSummaries,
     getSummaryStatus,
     initializeSummaryManager,
+    isMalformedSummaryContent,
+    isUnusableSummaryOutput,
     migrateLegacySummaries,
     parseSummaryEvents,
     SUMMARY_KEY_PREFIX,
     SUMMARY_STATE_KEY,
     summarizePendingMessages,
 } from '../summary-manager.js';
+
+test('summary prompt treats floor batches as processing windows and uses saved anchors', () => {
+    const prompt = buildSummaryPrompt([
+        { name: '角色', is_user: false, mes: '三天前，她曾在花园见过候补。' },
+    ], 12, 12, [{
+        messageId: 12,
+        sceneTime: '王历100年春三月初一',
+        mainlineTime: '王历100年春三月初一',
+        sceneAnchorId: 't12-mainline',
+        mainlineAnchorId: 't12-mainline',
+        segments: [{ startQuote: '三天前', anchorLabel: '王历100年二月廿七', mode: 'mention' }],
+    }]);
+    assert.match(prompt, /只是本次处理窗口，不是事件边界/);
+    assert.match(prompt, /场景时间=王历100年春三月初一/);
+    assert.match(prompt, /从“三天前”开始｜片段时间=王历100年二月廿七/);
+    assert.match(prompt, /“昨天、三天前、十年前”等词只相对于它所在的场景时间有效/);
+});
 
 function unescapeSlashValue(value) {
     return value.replace(/\\([\\"{}|])/g, '$1');
@@ -43,6 +63,22 @@ function createContext(messages = []) {
         },
         async createNewWorldInfo(name) {
             lorebooks.set(name, { entries: {} });
+        },
+        createWorldInfoEntry(_name, data) {
+            const ids = Object.keys(data.entries).map(Number);
+            const uid = ids.length ? Math.max(...ids) + 1 : 0;
+            const entry = {
+                uid,
+                key: [],
+                comment: '',
+                content: '',
+                constant: false,
+                position: 0,
+                order: 100,
+                disable: false,
+            };
+            data.entries[uid] = entry;
+            return entry;
         },
         async bindAdditionalWorldInfoBook(name) {
             if (!additionalBooks.includes(name)) additionalBooks.push(name);
@@ -164,7 +200,7 @@ test('a summary starts only after one full batch has left the recent-message win
     assert.deepEqual(result, { created: 1, pendingFloors: 0, start: 0, end: 9 });
     assert.match(prompts[0].prompt, /\[第 1 楼\].*dialogue 0/);
     assert.match(prompts[0].prompt, /\[第 10 楼\].*dialogue 9/);
-    assert.match(prompts[0].prompt, /将以下10楼的内容提取为1-3个关键事件，按重要度从高到低排列/);
+    assert.match(prompts[0].prompt, /以下10楼只是本次处理窗口，不是事件边界/);
     assert.match(prompts[0].prompt, /如果这段对话全是日常闲聊/);
     assert.equal(prompts[0].maxTokens, 1200);
     assert.equal(context.chatMetadata[SUMMARY_STATE_KEY].lastSummarizedMessageIndex, 9);
@@ -176,23 +212,20 @@ test('a summary starts only after one full batch has left the recent-message win
     assert.equal(entries[0].constant, true);
     assert.equal(entries[0].content, [
         '[★★★★☆]',
-        '⏰ 黄昏时分',
+        '⏰ 固定历史时间锚点：黄昏时分（不得按当前回合重新解释）',
         ' A、B',
         ' 王都北区酒馆',
         ' A与B发生冲突，B亮出身份令牌，A决定暂时退让。',
         '',
         '[★★☆☆☆]',
-        '⏰ 入夜后',
+        '⏰ 固定历史时间锚点：入夜后（不得按当前回合重新解释）',
         ' A、C',
         ' 酒馆后巷',
         ' A暗中通知C留意B的行动。',
     ].join('\n'));
     assert.deepEqual(context.additionalBooks, ['金钰琳-自动总结']);
     assert.equal(context.characters[0].data.extensions.world, '角色主世界书');
-    assert.ok(context.calls.some(command => command.startsWith('/createentry ')));
-    assert.ok(context.calls.some(command => command.includes('field=constant')));
-    assert.ok(context.calls.some(command => command.includes('field=position') && command.endsWith('"4"')));
-    assert.ok(context.calls.some(command => command.includes('field=depth') && command.endsWith('"4"')));
+    assert.equal(context.calls.some(command => command.startsWith('/createentry ')), false);
     assert.deepEqual(
         context.calls.filter(command => command.startsWith('/hide ')),
         [0, 1, 2, 4, 5, 6, 7, 8, 9].map(index => `/hide ${index}`),
@@ -200,7 +233,7 @@ test('a summary starts only after one full batch has left the recent-message win
     assert.equal(context.chat.slice(0, 10).every(message => message.is_system === true), true);
 });
 
-test('event parser keeps at most three events and limits each overview to 150 characters', () => {
+test('event parser keeps natural events up to eight and limits each overview to 150 characters', () => {
     const longOverview = '细'.repeat(180);
     const output = Array.from({ length: 4 }, (_, index) => [
         `[事件${index + 1}]`,
@@ -211,9 +244,97 @@ test('event parser keeps at most three events and limits each overview to 150 ch
         `事件概述：${longOverview}`,
     ].join('\n')).join('\n\n');
     const events = parseSummaryEvents(output);
-    assert.equal(events.length, 3);
-    assert.deepEqual(events.map(event => event.importance), [2, 3, 4]);
+    assert.equal(events.length, 4);
+    assert.deepEqual(events.map(event => event.importance), [2, 3, 4, 5]);
     assert.equal(Array.from(events[0].overview).length, 150);
+});
+
+test('event parser accepts fields on one line and rejects truncated structured output', () => {
+    const oneLine = '[事件1] 重要度：5 事件概述：A找到了失踪多年的王冠。 时间：午夜 地点：旧王宫 涉及角色：A、B';
+    const [event] = parseSummaryEvents(oneLine);
+    assert.equal(event.importance, 5);
+    assert.equal(event.overview, 'A找到了失踪多年的王冠。');
+    assert.equal(event.time, '午夜');
+    assert.equal(event.location, '旧王宫');
+    assert.equal(event.characters, 'A、B');
+
+    const truncated = '[事件1] 重要度：5 时间：午夜 涉及角色：奥蕾莉亚·';
+    assert.deepEqual(parseSummaryEvents(truncated), []);
+    assert.equal(isMalformedSummaryContent('[★☆☆☆☆]\n⏰ 未明确\n 未明确\n 未明确\n ' + truncated), true);
+    assert.equal(isUnusableSummaryOutput('抱歉，我无法总结这类敏感内容。'), true);
+    assert.equal(isUnusableSummaryOutput('Drafting Event 3 (analysis)'), true);
+});
+
+test('a malformed summary is rebuilt from hidden messages before new ranges advance', async () => {
+    const context = createContext(dialoguePairs(15));
+    context.chat.slice(0, 10).forEach(message => message.is_system = true);
+    context.chatMetadata[SUMMARY_STATE_KEY] = {
+        lastSummarizedMessageIndex: 9,
+        entries: [{ uid: '0', start: 0, end: 9, createdAt: '2026-08-02T00:00:00.000Z' }],
+    };
+    context.lorebooks.set('金钰琳-自动总结', { entries: {
+        0: {
+            uid: 0,
+            key: [`${SUMMARY_KEY_PREFIX}[第1-10楼]`],
+            content: '[★☆☆☆☆]\n⏰ 未明确\n 未明确\n 未明确\n [事件1] 重要度：5 时间：午夜 涉及角色：金钰琳',
+            constant: true,
+        },
+    } });
+
+    const result = await summarizePendingMessages({ context: { recentMessages: 20, summaryBatchSize: 10 } }, context, {
+        getCurrentContext: () => context,
+        repairMalformed: true,
+        generateSummary: async (prompt) => {
+            assert.match(prompt, /\[第 1 楼\].*dialogue 0/);
+            return '[事件1] 重要度：5 事件概述：A重新取得了关键线索。 时间：午夜 地点：旧王宫 涉及角色：A';
+        },
+    });
+
+    assert.equal(result.repaired, true);
+    assert.equal(result.start, 0);
+    assert.equal(result.end, 9);
+    assert.equal(context.chatMetadata[SUMMARY_STATE_KEY].lastSummarizedMessageIndex, 9);
+    assert.match(context.lorebooks.get('金钰琳-自动总结').entries[0].content, /A重新取得了关键线索/);
+    assert.equal(context.calls.some(command => command.startsWith('/hide ')), false);
+});
+
+test('ordinary automatic summary checks do not repair old malformed entries in the background', async () => {
+    const context = createContext(dialoguePairs(15));
+    context.chatMetadata[SUMMARY_STATE_KEY] = {
+        lastSummarizedMessageIndex: 9,
+        entries: [{ uid: '0', start: 0, end: 9, createdAt: '2026-08-02T00:00:00.000Z' }],
+    };
+    context.lorebooks.set('金钰琳-自动总结', { entries: {
+        0: { uid: 0, key: [`${SUMMARY_KEY_PREFIX}[第1-10楼]`], content: 'Drafting Event 1', constant: true },
+    } });
+    let generationCalls = 0;
+    const result = await summarizePendingMessages({ context: { recentMessages: 20, summaryBatchSize: 10 } }, context, {
+        getCurrentContext: () => context,
+        generateSummary: async () => { generationCalls++; return '不应调用。'; },
+    });
+    assert.deepEqual(result, { created: 0, pendingFloors: 0 });
+    assert.equal(generationCalls, 0);
+});
+
+test('a truncated structured summary retries as a plain complete overview before hiding', async () => {
+    const context = createContext(dialoguePairs(15));
+    let generationCalls = 0;
+    const result = await summarizePendingMessages({ context: { recentMessages: 20, summaryBatchSize: 10 } }, context, {
+        getCurrentContext: () => context,
+        generateSummary: async (prompt) => {
+            generationCalls++;
+            if (generationCalls === 1) {
+                return '[事件1] 重要度：5 时间：午夜 涉及角色：奥蕾莉亚·';
+            }
+            assert.match(prompt, /只输出一段完整的中文事件概述/);
+            return '主角在旧王宫找回王冠，并决定翌日公开失踪多年的真相。';
+        },
+    });
+
+    assert.equal(result.created, 1);
+    assert.equal(generationCalls, 2);
+    assert.match(context.lorebooks.get('金钰琳-自动总结').entries[0].content, /主角在旧王宫找回王冠/);
+    assert.equal(context.chat.slice(0, 10).every(message => message.is_system === true), true);
 });
 
 test('the next summary starts immediately after the previous summarized range', async () => {
@@ -314,7 +435,7 @@ test('MESSAGE_SENT checks window overflow while swipe events remain ignored', as
         CHAT_CHANGED: 'changed',
     };
     context.eventSource = { on: (event, handler) => handlers.set(event, handler) };
-    context.generateQuietPrompt = async (...args) => {
+    const generateSummary = async (...args) => {
         calls.push(args);
         return '[事件1]\n重要度：1\n时间：午后\n涉及角色：A\n地点：家中\n事件概述：A进行了一段普通的日常交谈。';
     };
@@ -322,13 +443,13 @@ test('MESSAGE_SENT checks window overflow while swipe events remain ignored', as
     const originalSillyTavern = globalThis.SillyTavern;
     testContext.after(() => globalThis.SillyTavern = originalSillyTavern);
     globalThis.SillyTavern = { getContext: () => context };
-    initializeSummaryManager({ context: { recentMessages: 20, summaryBatchSize: 10 } }, context);
+    initializeSummaryManager({ context: { recentMessages: 20, summaryBatchSize: 10 } }, context, { generateSummary });
 
     assert.equal(handlers.has('received'), false, 'swipe/regenerate events must not trigger summaries');
     handlers.get('sent')(28);
     await new Promise(resolve => setTimeout(resolve, 35));
 
     assert.equal(calls.length, 1);
-    assert.equal(calls[0][5], 1200);
+    assert.equal(calls[0][1], 1200);
     assert.match((await getSummaries(context))[0].summary, /普通的日常交谈/);
 });
