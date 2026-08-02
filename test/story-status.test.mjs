@@ -13,7 +13,6 @@ import {
     parseSideResponse,
     saveStoryStatus,
     shouldCloseStoryPanelForPointer,
-    shouldShowStoryFloatingButton,
 } from '../story-status.js';
 
 function status(label) {
@@ -36,13 +35,6 @@ test('confirmation popups do not close the floating story panel', () => {
     assert.equal(shouldCloseStoryPanelForPointer(root, panel, popupTarget), false);
     assert.equal(shouldCloseStoryPanelForPointer(root, panel, ordinaryOutsideTarget), true);
     assert.equal(shouldCloseStoryPanelForPointer(root, panel, root), false);
-});
-
-test('the floating story button can be hidden independently from status generation', () => {
-    assert.equal(shouldShowStoryFloatingButton(undefined), true);
-    assert.equal(shouldShowStoryFloatingButton({}), true);
-    assert.equal(shouldShowStoryFloatingButton({ showFloatingButton: true }), true);
-    assert.equal(shouldShowStoryFloatingButton({ showFloatingButton: false }), false);
 });
 
 test('combined side response separates barrage text from structured status', () => {

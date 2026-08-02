@@ -6,7 +6,12 @@ import { initializeChatMemoryUi } from './chat-memory-ui.js';
 import { memoryAugmentInterceptor } from './context-manager.js';
 import { fetchModels, getStatus, ingestChat, reconcileChatVectors } from './rag-client.js';
 import { initializeBarrageUi, refreshBarrageVisibility } from './barrage-ui.js';
-import { correctLatestStoryTime, getMessageTimelineMetadata, refreshStoryStatusUi } from './story-status.js';
+import {
+    correctLatestStoryTime,
+    getMessageTimelineMetadata,
+    initializeStoryStatusUi,
+    refreshStoryStatusUi,
+} from './story-status.js';
 import { initializeMapAtlasUi } from './map-atlas.js';
 import {
     deleteDevelopmentField,
@@ -58,7 +63,6 @@ export const defaultSettings = Object.freeze({
     },
     status: {
         enabled: false,
-        showFloatingButton: true,
         showGoals: true,
         customFields: [],
         position: {},
@@ -820,6 +824,8 @@ async function initialize() {
     bindMessageIngestion(settings, context);
     initializeChatMemoryUi(settings, context);
     initializeSummaryManager(settings, context, { onSaved: refreshStatus });
+    // Create the always-available status/map launcher before optional async managers run.
+    initializeStoryStatusUi(context, settings);
     await initializeWorldInfoManager(settings, context);
     await initializeBarrageUi(settings, { templatePath: TEMPLATE_PATH });
     initializeCharacterDevelopmentUi(context);

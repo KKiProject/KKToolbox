@@ -6,10 +6,6 @@ const TIMELINE_TRANSITIONS = new Set(['unchanged', 'advance', 'jump', 'enter_fla
 const TIMELINE_MODES = new Set(['mainline', 'flashback', 'flashforward', 'mention', 'unknown']);
 let statusUiBound = false;
 
-export function shouldShowStoryFloatingButton(options) {
-    return options?.showFloatingButton !== false;
-}
-
 function cleanText(value, maximum = 1200) {
     return String(value ?? '').trim().slice(0, maximum);
 }
@@ -682,13 +678,7 @@ export function refreshStoryStatusUi(context = globalThis.SillyTavern?.getContex
     if (root) {
         root.hidden = false;
         const ball = root.querySelector('#memory_augment_story_status_ball');
-        const panel = root.querySelector('#memory_augment_story_status_panel');
-        const showFloatingButton = shouldShowStoryFloatingButton(options);
-        if (ball) ball.hidden = !showFloatingButton;
-        if (!showFloatingButton && panel) {
-            panel.hidden = true;
-            ball?.setAttribute('aria-expanded', 'false');
-        }
+        if (ball) ball.hidden = false;
     }
 }
 
@@ -698,10 +688,27 @@ export function shouldCloseStoryPanelForPointer(root, panel, target) {
     return true;
 }
 
+function clampStoryLauncherToViewport(root) {
+    const ball = root.querySelector('#memory_augment_story_status_ball');
+    const rectangle = ball?.getBoundingClientRect?.();
+    if (!rectangle || rectangle.width <= 0 || rectangle.height <= 0) return;
+    const x = Math.max(8, Math.min(globalThis.innerWidth - rectangle.width - 8, rectangle.left));
+    const y = Math.max(8, Math.min(globalThis.innerHeight - rectangle.height - 8, rectangle.top));
+    root.style.left = `${x}px`;
+    root.style.top = `${y}px`;
+    root.style.right = 'auto';
+    root.style.bottom = 'auto';
+    root.dataset.horizontal = x < globalThis.innerWidth / 2 ? 'left' : 'right';
+    root.dataset.vertical = y < globalThis.innerHeight / 2 ? 'top' : 'bottom';
+}
+
 function applySavedPosition(root, settings) {
     const xRatio = Number(settings?.status?.position?.x);
     const yRatio = Number(settings?.status?.position?.y);
-    if (!Number.isFinite(xRatio) || !Number.isFinite(yRatio)) return;
+    if (!Number.isFinite(xRatio) || !Number.isFinite(yRatio)) {
+        clampStoryLauncherToViewport(root);
+        return;
+    }
     const ball = root.querySelector('#memory_augment_story_status_ball');
     const width = ball?.offsetWidth || 48;
     const height = ball?.offsetHeight || 48;
@@ -713,6 +720,7 @@ function applySavedPosition(root, settings) {
     root.style.bottom = 'auto';
     root.dataset.horizontal = x < globalThis.innerWidth / 2 ? 'left' : 'right';
     root.dataset.vertical = y < globalThis.innerHeight / 2 ? 'top' : 'bottom';
+    clampStoryLauncherToViewport(root);
 }
 
 function bindStatusDragging(root, settings, context) {
