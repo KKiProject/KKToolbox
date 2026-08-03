@@ -85,71 +85,133 @@ function normalizeStoredBarrage(record) {
     };
 }
 
-function normalizeBarrageBucket(store, messageId, currentSourceHash = '', create = false) {
+function getBarrageVariantKey(message) {
+    const swipeId = Math.trunc(Number(message?.swipe_id));
+    if (Number.isInteger(swipeId) && swipeId >= 0) {
+        return `swipe:${swipeId}`;
+    }
+    const currentText = String(message?.mes ?? '').trim();
+    const matchedIndex = Array.isArray(message?.swipes)
+        ? message.swipes.findIndex(text => String(text ?? '').trim() === currentText)
+        : -1;
+    return `swipe:${matchedIndex >= 0 ? matchedIndex : 0}`;
+}
+
+function getBarrageVariantKeys(message) {
+    const count = Array.isArray(message?.swipes) && message.swipes.length > 0
+        ? message.swipes.length
+        : 1;
+    const keys = new Set(Array.from({ length: count }, (_, index) => `swipe:${index}`));
+    keys.add(getBarrageVariantKey(message));
+    return keys;
+}
+
+function findVariantKeysBySourceHash(message, sourceHash) {
+    const texts = Array.isArray(message?.swipes) && message.swipes.length > 0
+        ? message.swipes
+        : [message?.mes];
+    return texts
+        .map((text, index) => ({ index, sourceHash: hashStorySource(String(text ?? '').trim()) }))
+        .filter(item => item.sourceHash === sourceHash)
+        .map(item => `swipe:${item.index}`);
+}
+
+function normalizeBarrageBucket(store, messageId, message, create = false) {
     const key = String(messageId);
     const existing = store?.[key];
     if (existing?.variants && typeof existing.variants === 'object' && !Array.isArray(existing.variants)) {
         const variants = {};
-        let migrated = Number(existing.version) !== 2;
-        for (const [storedHash, value] of Object.entries(existing.variants)) {
+        let migrated = Number(existing.version) !== 3;
+        const currentVariantKey = getBarrageVariantKey(message);
+        const unmatched = [];
+        for (const [storedKey, value] of Object.entries(existing.variants)) {
             const normalized = normalizeStoredBarrage(value);
-            const sourceHash = String(normalized?.sourceHash || storedHash).trim();
-            if (!normalized || !sourceHash) {
+            if (!normalized) {
                 migrated = true;
                 continue;
             }
-            variants[sourceHash] = { ...normalized, sourceHash };
-            if (sourceHash !== storedHash || value?.sourceHash !== sourceHash) migrated = true;
+
+            if (Number(existing.version) === 3 && /^swipe:\d+$/.test(storedKey)) {
+                variants[storedKey] = normalized;
+                continue;
+            }
+
+            // Version 2 used the complete reply text hash as identity. Match
+            // those records to their SillyTavern swipe slots once, so later
+            // text edits no longer change the barrage identity.
+            const sourceHash = String(normalized.sourceHash || storedKey).trim();
+            const matchedKeys = sourceHash ? findVariantKeysBySourceHash(message, sourceHash) : [];
+            if (matchedKeys.length > 0) {
+                for (const matchedKey of matchedKeys) {
+                    variants[matchedKey] = { ...normalized, sourceHash };
+                }
+            } else {
+                unmatched.push({ ...normalized, sourceHash });
+            }
+            migrated = true;
         }
-        const bucket = { version: 2, variants };
+
+        // If the current candidate was edited before this migration, its old
+        // hash no longer exists in `swipes`. Preserve that remaining barrage
+        // on the currently selected candidate instead of throwing it away.
+        const fallbackKeys = [
+            currentVariantKey,
+            ...getBarrageVariantKeys(message),
+        ].filter((variantKey, index, keys) => keys.indexOf(variantKey) === index && !variants[variantKey]);
+        for (const fallbackKey of fallbackKeys) {
+            const record = unmatched.shift();
+            if (!record) break;
+            variants[fallbackKey] = record;
+        }
+        const bucket = { version: 3, variants };
         if (migrated) store[key] = bucket;
         return { bucket, migrated };
     }
 
     const legacy = normalizeStoredBarrage(existing);
     if (!legacy) {
-        const bucket = { version: 2, variants: {} };
+        const bucket = { version: 3, variants: {} };
         if (create) store[key] = bucket;
         return { bucket: create ? bucket : null, migrated: false };
     }
-    const sourceHash = String(legacy.sourceHash || currentSourceHash).trim();
+    const sourceHash = String(legacy.sourceHash || hashStorySource(message?.mes)).trim();
+    const variantKey = getBarrageVariantKey(message);
     const bucket = {
-        version: 2,
-        variants: sourceHash ? { [sourceHash]: { ...legacy, sourceHash } } : {},
+        version: 3,
+        variants: { [variantKey]: { ...legacy, sourceHash } },
     };
     store[key] = bucket;
     return { bucket, migrated: true };
 }
 
-function getBarrageVariant(store, messageId, sourceHash) {
-    const normalized = normalizeBarrageBucket(store, messageId, sourceHash);
+function getBarrageVariant(store, messageId, message) {
+    const normalized = normalizeBarrageBucket(store, messageId, message);
+    const variantKey = getBarrageVariantKey(message);
     return {
-        record: normalizeStoredBarrage(normalized.bucket?.variants?.[sourceHash]),
+        record: normalizeStoredBarrage(normalized.bucket?.variants?.[variantKey]),
+        variantKey,
         migrated: normalized.migrated,
     };
 }
 
-function setBarrageVariant(store, messageId, sourceHash, record) {
-    const { bucket } = normalizeBarrageBucket(store, messageId, sourceHash, true);
-    bucket.variants[sourceHash] = {
+function setBarrageVariant(store, messageId, message, sourceHash, record) {
+    const { bucket } = normalizeBarrageBucket(store, messageId, message, true);
+    const variantKey = getBarrageVariantKey(message);
+    bucket.variants[variantKey] = {
         ...record,
         sourceHash,
     };
     store[String(messageId)] = bucket;
 }
 
-function deleteBarrageVariant(store, messageId, sourceHash) {
-    const { bucket } = normalizeBarrageBucket(store, messageId, sourceHash);
-    if (!bucket?.variants?.[sourceHash]) return false;
-    delete bucket.variants[sourceHash];
+function deleteBarrageVariant(store, messageId, message) {
+    const { bucket } = normalizeBarrageBucket(store, messageId, message);
+    const variantKey = getBarrageVariantKey(message);
+    if (!bucket?.variants?.[variantKey]) return false;
+    delete bucket.variants[variantKey];
     if (Object.keys(bucket.variants).length === 0) delete store[String(messageId)];
     else store[String(messageId)] = bucket;
     return true;
-}
-
-function getMessageSourceHashes(message) {
-    const texts = [message?.mes, ...(Array.isArray(message?.swipes) ? message.swipes : [])];
-    return new Set(texts.map(text => String(text ?? '').trim()).filter(Boolean).map(hashStorySource));
 }
 
 export function collectRecentMessages(chat, messageId, count) {
@@ -322,7 +384,7 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
     const sourceHash = hashStorySource(messageText);
     const render = dependencies.renderBarrage ?? renderBarragePanel;
     const store = getBarrageStore(context.chatMetadata);
-    const cachedResult = getBarrageVariant(store, numericId, sourceHash);
+    const cachedResult = getBarrageVariant(store, numericId, message);
     const cached = cachedResult.record;
     if (cachedResult.migrated) {
         void Promise.resolve(context.saveMetadata?.())
@@ -340,7 +402,7 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
         return { generated: false, cached: true };
     }
     if (options.force && barrageEnabled && cached) {
-        deleteBarrageVariant(store, numericId, sourceHash);
+        deleteBarrageVariant(store, numericId, message);
         try {
             await context.saveMetadata?.();
         } catch (error) {
@@ -417,7 +479,7 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
         }
         if (requestBarrage) {
             const currentStore = getBarrageStore(currentContext.chatMetadata, true);
-            setBarrageVariant(currentStore, numericId, sourceHash, {
+            setBarrageVariant(currentStore, numericId, currentMessage, sourceHash, {
                 content,
                 timestamp: Math.floor(Date.now() / 1000),
             });
@@ -470,7 +532,7 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
             if (requestBarrage) {
                 safelyRender(render, numericId, `弹幕生成失败：${detail}`, 'error');
                 const currentStore = getBarrageStore(currentContext.chatMetadata, true);
-                setBarrageVariant(currentStore, numericId, sourceHash, {
+                setBarrageVariant(currentStore, numericId, currentMessage, sourceHash, {
                     state: 'error',
                     error: detail,
                     timestamp: Math.floor(Date.now() / 1000),
@@ -504,19 +566,18 @@ export function restoreStoredBarrages(context, settings, render = renderBarrageP
             continue;
         }
 
-        const sourceHash = hashStorySource(message.mes);
-        const normalizedBucket = normalizeBarrageBucket(store, messageId, sourceHash);
+        const normalizedBucket = normalizeBarrageBucket(store, messageId, message);
         const bucket = normalizedBucket.bucket;
         if (normalizedBucket.migrated) migrated = true;
         if (!bucket) continue;
 
-        // A SillyTavern floor can contain several swiped replies. Keep the
-        // barrage belonging to every reply that still exists, while pruning
-        // variants deleted from the chat.
-        const validSourceHashes = getMessageSourceHashes(message);
-        for (const storedHash of Object.keys(bucket.variants)) {
-            if (!validSourceHashes.has(storedHash)) {
-                delete bucket.variants[storedHash];
+        // A SillyTavern floor can contain several swiped replies. Keep each
+        // candidate's barrage by swipe slot; editing its text must not change
+        // that identity.
+        const validVariantKeys = getBarrageVariantKeys(message);
+        for (const storedKey of Object.keys(bucket.variants)) {
+            if (!validVariantKeys.has(storedKey)) {
+                delete bucket.variants[storedKey];
                 migrated = true;
             }
         }
@@ -527,14 +588,10 @@ export function restoreStoredBarrages(context, settings, render = renderBarrageP
         }
         store[messageId] = bucket;
 
-        const normalized = normalizeStoredBarrage(bucket.variants[sourceHash]);
+        const variantKey = getBarrageVariantKey(message);
+        const normalized = normalizeStoredBarrage(bucket.variants[variantKey]);
         if (!normalized) {
             continue;
-        }
-        const storedRecord = bucket.variants[sourceHash];
-        if (storedRecord.sourceHash !== sourceHash) {
-            bucket.variants[sourceHash] = { ...normalized, sourceHash };
-            migrated = true;
         }
         const state = normalized.state === 'error' ? 'error' : 'ready';
         const content = state === 'error'
@@ -604,6 +661,8 @@ export async function initializeBarrageUi(settings, options = {}) {
         ?? context.event_types?.CHARACTER_MESSAGE_RENDERED;
     const messageSwiped = context.eventTypes?.MESSAGE_SWIPED
         ?? context.event_types?.MESSAGE_SWIPED;
+    const messageUpdated = context.eventTypes?.MESSAGE_UPDATED
+        ?? context.event_types?.MESSAGE_UPDATED;
     const chatChanged = context.eventTypes?.CHAT_CHANGED ?? context.event_types?.CHAT_CHANGED;
 
     if (!messageRendered) {
@@ -617,6 +676,15 @@ export async function initializeBarrageUi(settings, options = {}) {
 
     if (messageSwiped) {
         context.eventSource.on(messageSwiped, (messageId) => {
+            scheduleBarrageGeneration(messageId, settings);
+        });
+    }
+
+    if (messageUpdated) {
+        context.eventSource.on(messageUpdated, (messageId) => {
+            // SillyTavern rebuilds .mes_text after an edit, which removes the
+            // injected panel from the DOM. Reattach the same swipe's cached
+            // barrage after that rebuild; do not regenerate it automatically.
             scheduleBarrageGeneration(messageId, settings);
         });
     }

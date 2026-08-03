@@ -103,7 +103,8 @@ test('barrage generation renders and caches without mutating context.chat', asyn
     assert.equal(context.chatMetadata[STORY_STATUS_METADATA_KEY]['5'].status.environment.location, '王城 → 酒馆');
     assert.equal(Number.isInteger(storedBarrage.timestamp), true);
     assert.equal(storedBarrage.sourceHash, hashStorySource(context.chat[5].mes));
-    assert.equal(context.chatMetadata[BARRAGE_METADATA_KEY]['5'].version, 2);
+    assert.equal(context.chatMetadata[BARRAGE_METADATA_KEY]['5'].version, 3);
+    assert.equal(getBarrageVariants(context)['swipe:0'].content, '观众弹幕结果');
     assert.deepEqual(
         Object.keys(storedBarrage).sort(),
         ['content', 'sourceHash', 'timestamp'],
@@ -345,9 +346,9 @@ test('forced regeneration bypasses the stored barrage and replaces it', async ()
     const sourceHash = hashStorySource(context.chat[5].mes);
     context.chatMetadata[BARRAGE_METADATA_KEY] = {
         5: {
-            version: 2,
+            version: 3,
             variants: {
-                [sourceHash]: { content: 'old barrage', sourceHash, timestamp: 1 },
+                'swipe:0': { content: 'old barrage', sourceHash, timestamp: 1 },
             },
         },
     };
@@ -379,6 +380,7 @@ test('each swiped reply keeps its own barrage and restores it when switched back
     const context = createContext();
     const settings = createSettings({ statusEnabled: false });
     context.chat[5].swipes = ['first reply', 'second reply'];
+    context.chat[5].swipe_id = 0;
     context.chat[5].mes = 'first reply';
     const renders = [];
     let calls = 0;
@@ -392,16 +394,75 @@ test('each swiped reply keeps its own barrage and restores it when switched back
     };
 
     await handleCharacterMessageRendered(5, settings, context, dependencies);
+    context.chat[5].swipe_id = 1;
     context.chat[5].mes = 'second reply';
     await handleCharacterMessageRendered(5, settings, context, dependencies);
 
     assert.equal(Object.keys(getBarrageVariants(context)).length, 2);
     assert.equal(calls, 2);
 
+    context.chat[5].swipe_id = 0;
     context.chat[5].mes = 'first reply';
     const restored = await handleCharacterMessageRendered(5, settings, context, dependencies);
     assert.equal(restored.cached, true);
     assert.equal(calls, 2, 'switching back must restore instead of regenerating');
     assert.equal(renders.at(-1)[1], 'barrage for first reply');
     assert.equal(renders.at(-1)[2], 'ready');
+});
+
+test('editing a reply keeps and reattaches the barrage for the same swipe', async () => {
+    const context = createContext();
+    const settings = createSettings({ statusEnabled: false });
+    context.chat[5].swipes = ['original reply', 'other reply'];
+    context.chat[5].swipe_id = 0;
+    context.chat[5].mes = 'original reply';
+    const renders = [];
+    let calls = 0;
+    const dependencies = {
+        renderBarrage: (...args) => renders.push(args),
+        getCurrentContext: () => context,
+        async generateBarrage() {
+            calls++;
+            return { content: 'keep this barrage' };
+        },
+    };
+
+    await handleCharacterMessageRendered(5, settings, context, dependencies);
+    context.chat[5].mes = 'edited reply';
+    context.chat[5].swipes[0] = 'edited reply';
+    const restored = await handleCharacterMessageRendered(5, settings, context, dependencies);
+
+    assert.equal(restored.cached, true);
+    assert.equal(calls, 1, 'editing must not regenerate or replace the existing barrage');
+    assert.equal(Object.keys(getBarrageVariants(context)).length, 1);
+    assert.equal(getBarrageVariants(context)['swipe:0'].content, 'keep this barrage');
+    assert.equal(renders.at(-1)[1], 'keep this barrage');
+    assert.equal(renders.at(-1)[2], 'ready');
+});
+
+test('version 2 text-hash barrages migrate to swipe slots without losing an edited current reply', () => {
+    const context = createContext();
+    context.chat[5].swipes = ['edited current reply', 'other reply'];
+    context.chat[5].swipe_id = 0;
+    context.chat[5].mes = 'edited current reply';
+    const oldCurrentHash = hashStorySource('current reply before edit');
+    const otherHash = hashStorySource('other reply');
+    context.chatMetadata[BARRAGE_METADATA_KEY] = {
+        5: {
+            version: 2,
+            variants: {
+                [oldCurrentHash]: { content: 'current barrage', sourceHash: oldCurrentHash, timestamp: 1 },
+                [otherHash]: { content: 'other barrage', sourceHash: otherHash, timestamp: 2 },
+            },
+        },
+    };
+    const renders = [];
+
+    restoreStoredBarrages(context, createSettings({ statusEnabled: false }), (...args) => renders.push(args));
+
+    const bucket = context.chatMetadata[BARRAGE_METADATA_KEY]['5'];
+    assert.equal(bucket.version, 3);
+    assert.equal(bucket.variants['swipe:0'].content, 'current barrage');
+    assert.equal(bucket.variants['swipe:1'].content, 'other barrage');
+    assert.equal(renders.at(-1)[1], 'current barrage');
 });
