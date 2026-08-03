@@ -442,7 +442,12 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
             ? getMessageTimelineMetadata(context, previousStatusRecord.messageId)
             : null;
         const developmentSnapshot = developmentEnabled
-            ? getCharacterDevelopmentSnapshot(context, { limitProfiles: 12 })
+            ? getCharacterDevelopmentSnapshot(context, {
+                includeCandidates: true,
+                compactCandidates: true,
+                limitCandidates: 40,
+                limitProfiles: 12,
+            })
             : null;
         const response = await request({
             barrage,

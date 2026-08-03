@@ -103,6 +103,133 @@ test('ordinary observations stay private until repeated across separate situatio
     assert.equal(getCharacterDevelopmentSnapshot(context).profiles.length, 1);
 });
 
+test('semantically equivalent wording accumulates into one lasting change', () => {
+    const context = makeContext(20);
+    const observations = [
+        [2, '莉亚今天显得脾气暴躁。', '脾气暴躁'],
+        [8, '莉亚的脾气比过去火爆许多。', '脾气比过去火爆'],
+        [14, '莉亚越来越容易动怒。', '越来越容易动怒'],
+    ];
+    let result;
+    for (const [id, quote, after] of observations) {
+        context.chat[id].mes = quote;
+        result = applyCharacterDevelopmentUpdate(context, id, { changes: [change({
+            after,
+            evidence: [{ messageId: id, quote }],
+        })] }, {
+            status: { event: { activity: `事件${id}` }, characters: [{ name: '玩家', role: 'user' }] },
+            timeline: { sceneAnchorId: `scene-${id}` },
+        });
+    }
+
+    assert.equal(result.confirmed, 1);
+    assert.equal(getCharacterDevelopmentSnapshot(context, { includeCandidates: true }).candidates.length, 0);
+    assert.match(getCharacterDevelopmentSnapshot(context).profiles[0].fields[0].value, /动怒|火爆|暴躁/);
+});
+
+test('opposite personality directions are never merged merely because they share a field', () => {
+    const context = makeContext(10);
+    context.chat[2].mes = '莉亚待人越来越温和。';
+    context.chat[4].mes = '莉亚在压力下变得十分暴躁。';
+    applyCharacterDevelopmentUpdate(context, 2, { changes: [change({
+        after: '待人越来越温和',
+        evidence: [{ messageId: 2, quote: '莉亚待人越来越温和。' }],
+    })] }, { status: { event: { activity: '休息' } } });
+    applyCharacterDevelopmentUpdate(context, 4, { changes: [change({
+        after: '在压力下变得十分暴躁',
+        evidence: [{ messageId: 4, quote: '莉亚在压力下变得十分暴躁。' }],
+    })] }, { status: { event: { activity: '争执' } } });
+
+    assert.equal(getCharacterDevelopmentSnapshot(context, { includeCandidates: true }).candidates.length, 2);
+});
+
+test('the side API can explicitly attach different wording to an existing candidate id', () => {
+    const context = makeContext(12);
+    context.chat[2].mes = '莉亚开始回避任何亲密接触。';
+    context.chat[8].mes = '莉亚不再愿意让别人真正靠近自己。';
+    applyCharacterDevelopmentUpdate(context, 2, { changes: [change({
+        trend: '回避亲密',
+        after: '开始回避任何亲密接触',
+        evidence: [{ messageId: 2, quote: '莉亚开始回避任何亲密接触。' }],
+    })] }, { status: { event: { activity: '初次冲突' } } });
+    const candidateId = getCharacterDevelopmentSnapshot(context, { includeCandidates: true }).candidates[0].id;
+    applyCharacterDevelopmentUpdate(context, 8, { changes: [change({
+        candidateId,
+        trend: '回避亲密',
+        after: '不再愿意让别人真正靠近自己',
+        evidence: [{ messageId: 8, quote: '莉亚不再愿意让别人真正靠近自己。' }],
+    })] }, { status: { event: { activity: '再次冲突' } } });
+
+    const candidates = getCharacterDevelopmentSnapshot(context, { includeCandidates: true }).candidates;
+    assert.equal(candidates.length, 1);
+    assert.equal(candidates[0].evidence.length, 2);
+});
+
+test('side API merge suggestions consolidate old candidates while preserving their evidence', () => {
+    const context = makeContext(12);
+    context.chat[2].mes = '莉亚拒绝让别人触碰自己。';
+    context.chat[4].mes = '莉亚总会避开他人的拥抱。';
+    applyCharacterDevelopmentUpdate(context, 2, { changes: [change({
+        after: '拒绝让别人触碰自己',
+        evidence: [{ messageId: 2, quote: '莉亚拒绝让别人触碰自己。' }],
+    })] }, { status: { event: { activity: '触碰' } } });
+    applyCharacterDevelopmentUpdate(context, 4, { changes: [change({
+        after: '总会避开他人的拥抱',
+        evidence: [{ messageId: 4, quote: '莉亚总会避开他人的拥抱。' }],
+    })] }, { status: { event: { activity: '拥抱' } } });
+    const before = getCharacterDevelopmentSnapshot(context, { includeCandidates: true }).candidates;
+    assert.equal(before.length, 2);
+
+    applyCharacterDevelopmentUpdate(context, 6, {
+        changes: [],
+        merges: [{
+            intoId: before[0].id,
+            fromIds: [before[1].id],
+            trend: '回避身体亲密',
+            after: '持续回避他人的身体接触',
+        }],
+    });
+
+    const after = getCharacterDevelopmentSnapshot(context, { includeCandidates: true }).candidates;
+    assert.equal(after.length, 1);
+    assert.equal(after[0].trend, '回避身体亲密');
+    assert.equal(after[0].evidence.length, 2);
+});
+
+test('legacy detailed candidate backlog is consolidated during migration', () => {
+    const context = makeContext(120);
+    const candidates = {};
+    const variants = ['今天显得脾气暴躁', '脾气比以前火爆', '越来越容易动怒'];
+    for (let index = 0; index < 60; index++) {
+        candidates[`legacy-${index}`] = {
+            id: `legacy-${index}`,
+            character: '莉亚',
+            dimension: 'temperament',
+            target: '',
+            before: '从前较为平和',
+            after: `${variants[index % variants.length]}，这是第${index}次非常详细的描述`,
+            reason: '',
+            evidence: [{ messageId: index + 2, quote: `证据${index}` }],
+            sceneKeys: [`scene-${index}`],
+            firstSeenMessageId: index + 2,
+            lastSeenMessageId: index + 2,
+        };
+    }
+    context.chatMetadata.memory_augment_character_development = {
+        version: 1,
+        profiles: {},
+        candidates,
+        processed: {},
+        dismissed: {},
+    };
+
+    const snapshot = getCharacterDevelopmentSnapshot(context, { includeCandidates: true });
+    assert.equal(snapshot.candidates.length, 0);
+    assert.equal(snapshot.profiles.length, 1, 'the merged backlog already satisfies the original confirmation threshold');
+    assert.match(snapshot.profiles[0].fields[0].value, /动怒|火爆|暴躁/);
+    assert.equal(context.chatMetadata.memory_augment_character_development.version, 2);
+});
+
 test('the plugin never infers a player character personality change from observed behavior', () => {
     const context = makeContext(5);
     context.chat[3].mes = '玩家这次选择了沉默。';

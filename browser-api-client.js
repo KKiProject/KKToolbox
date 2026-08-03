@@ -300,7 +300,7 @@ function buildBarrageUserContent(
         previousTimelineText,
         ...(developmentEnabled ? [
             '',
-            '【已经确认的人物发展】（不要重复提交；只判断最新内容是否产生了新的长期变化）',
+            '【人物发展档案】（profiles 是已确认变化，不要重复提交；candidates 是观察中的同类趋势）',
             developmentSnapshot && typeof developmentSnapshot === 'object'
                 ? JSON.stringify(developmentSnapshot)
                 : '（无）',
@@ -337,11 +337,19 @@ function buildBarrageUserContent(
         '      "character": "人物名",',
         '      "dimension": "temperament、belief、relationship、habit、boundary 或 self_view",',
         '      "target": "仅 relationship 填关系对象，其他留空",',
+        '      "candidateId": "若与 candidates 中某项是同一方向的变化，必须原样填写其 id；否则留空",',
+        '      "trend": "2至12字的稳定语义标签，例如易怒、更加信任、回避亲密",',
         '      "before": "过去的倾向；不明确则留空",',
         '      "after": "现在形成的长期变化",',
         '      "reason": "已知原因；中间过程未知就留空，不得补写",',
         '      "source": "user_direct 或 observed",',
         '      "evidence": [{ "messageId": 12, "quote": "逐字摘录的短原文" }]',
+        '    }],',
+        '    "merges": [{',
+        '      "intoId": "保留的候选 id",',
+        '      "fromIds": ["应并入它的其他候选 id"],',
+        '      "trend": "合并后的简短趋势标签",',
+        '      "after": "合并后的简洁当前倾向"',
         '    }]',
         '  }',
         '}',
@@ -360,6 +368,8 @@ function buildBarrageUserContent(
         developmentEnabled ? 'user_direct 的 evidence 必须逐字引用用户楼层中的明确事实或设定。玩家明确设定拥有最高优先级，即使与角色卡或旧档案矛盾也必须采用；时间跳跃中未交代的变化原因必须留空，不准擅自补全。' : '',
         developmentEnabled ? '仅写“十年后”只代表时间推进，不能自动改变性格。只有同时明确写出“十年后她已变得阴郁”等人物新状态时，才记录对应变化。玩家角色 user 的性格、观念和内心只允许 user_direct，禁止根据一次选择擅自推断。' : '',
         developmentEnabled ? '每条 evidence 的 messageId 必须使用上文真实楼号，quote 必须是该楼逐字存在的短原文；没有可核对原文就不要提交。不要重复已经确认的人物发展。' : '',
+        developmentEnabled ? '先比较 candidates：暴躁、火爆、易怒等措辞不同但含义和方向相同的描述必须复用同一个 candidateId，不能新建；含义相反的变化绝不能合并。after 写简洁结论，详细情节只放 evidence。' : '',
+        developmentEnabled ? '若 candidates 中已经存在明显重复项，使用 merges 合并。merges 只整理语义和方向明确相同的候选；没有可安全合并的内容时返回空数组。' : '',
         statusEnabled && customFields.length > 0
             ? `extras 只允许填写玩家指定并已启用的这些项目：${customFields.join('、')}。不得增加其他项目。`
             : statusEnabled ? '玩家没有启用任何自定义状态项，extras 必须返回空数组，不得自行增加项目。' : '',

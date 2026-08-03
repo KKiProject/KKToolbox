@@ -140,7 +140,10 @@ test('development output defaults to empty and gives direct player canon highest
             { id: 4, name: '玩家', text: '十年后，她变得阴郁寡言。' },
             { id: 5, name: '角色', text: '她站在旧宅门前。' },
         ],
-        developmentSnapshot: { profiles: [] },
+        developmentSnapshot: {
+            profiles: [],
+            candidates: [{ id: 'candidate-1', character: '角色', dimension: 'temperament', trend: '易怒', after: '脾气暴躁' }],
+        },
         outputOptions: { barrageEnabled: false, statusEnabled: false, developmentEnabled: true },
     }, {
         fetchImpl: async (_url, options) => {
@@ -153,6 +156,9 @@ test('development output defaults to empty and gives direct player canon highest
     assert.match(prompt, /玩家明确设定拥有最高优先级/);
     assert.match(prompt, /仅写“十年后”只代表时间推进/);
     assert.match(prompt, /不能冒充玩家设定/);
+    assert.match(prompt, /candidate-1/);
+    assert.match(prompt, /必须复用同一个 candidateId/);
+    assert.match(prompt, /"merges"/);
 });
 
 test('browser barrage recovers a final JSON object placed in reasoning_content', async () => {
