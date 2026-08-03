@@ -605,6 +605,27 @@ export function restoreStoredBarrages(context, settings, render = renderBarrageP
     }
 }
 
+export async function clearDeletedBarrageRecords(context, firstDeletedMessageId) {
+    const numericId = Number(firstDeletedMessageId);
+    if (!Number.isInteger(numericId) || numericId < 0) return false;
+    const store = getBarrageStore(context?.chatMetadata);
+    let changed = false;
+    for (const messageId of Object.keys(store)) {
+        const storedId = Number(messageId);
+        if (Number.isInteger(storedId) && storedId >= numericId) {
+            delete store[messageId];
+            changed = true;
+        }
+    }
+    if (!changed) return false;
+    try {
+        await context.saveMetadata?.();
+    } catch (error) {
+        console.warn('[Memory Augment] Deleted barrage cleanup save failed.', error);
+    }
+    return true;
+}
+
 function scheduleBarrageGeneration(messageId, settings, options = {}) {
     setTimeout(() => {
         try {
@@ -663,6 +684,8 @@ export async function initializeBarrageUi(settings, options = {}) {
         ?? context.event_types?.MESSAGE_SWIPED;
     const messageUpdated = context.eventTypes?.MESSAGE_UPDATED
         ?? context.event_types?.MESSAGE_UPDATED;
+    const messageDeleted = context.eventTypes?.MESSAGE_DELETED
+        ?? context.event_types?.MESSAGE_DELETED;
     const chatChanged = context.eventTypes?.CHAT_CHANGED ?? context.event_types?.CHAT_CHANGED;
 
     if (!messageRendered) {
@@ -686,6 +709,16 @@ export async function initializeBarrageUi(settings, options = {}) {
             // injected panel from the DOM. Reattach the same swipe's cached
             // barrage after that rebuild; do not regenerate it automatically.
             scheduleBarrageGeneration(messageId, settings);
+        });
+    }
+
+    if (messageDeleted) {
+        context.eventSource.on(messageDeleted, async (messageId) => {
+            try {
+                await clearDeletedBarrageRecords(SillyTavern.getContext(), messageId);
+            } catch (error) {
+                console.warn('[Memory Augment] Deleted barrage cleanup failed.', error);
+            }
         });
     }
 

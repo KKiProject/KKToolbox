@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
     BARRAGE_METADATA_KEY,
+    clearDeletedBarrageRecords,
     collectRecentMessages,
     handleCharacterMessageRendered,
     restoreStoredBarrages,
@@ -465,4 +466,43 @@ test('version 2 text-hash barrages migrate to swipe slots without losing an edit
     assert.equal(bucket.variants['swipe:0'].content, 'current barrage');
     assert.equal(bucket.variants['swipe:1'].content, 'other barrage');
     assert.equal(renders.at(-1)[1], 'current barrage');
+});
+
+test('regenerating a reply clears the deleted floor so the replacement must get a new barrage', async () => {
+    const context = createContext();
+    const settings = createSettings({ statusEnabled: false });
+    context.chat[5].swipes = ['old reply'];
+    context.chat[5].swipe_id = 0;
+    context.chat[5].mes = 'old reply';
+    let calls = 0;
+    const dependencies = {
+        renderBarrage: () => true,
+        getCurrentContext: () => context,
+        async generateBarrage() {
+            calls++;
+            return { content: calls === 1 ? 'old barrage' : 'new barrage' };
+        },
+    };
+
+    await handleCharacterMessageRendered(5, settings, context, dependencies);
+    assert.equal(getBarrageVariants(context)['swipe:0'].content, 'old barrage');
+
+    // SillyTavern's "regenerate" deletes the AI message, then creates its
+    // replacement at the same floor and swipe index.
+    context.chat.pop();
+    const cleared = await clearDeletedBarrageRecords(context, 5);
+    context.chat.push({
+        name: 'Character',
+        is_user: false,
+        is_system: false,
+        mes: 'new reply',
+        swipes: ['new reply'],
+        swipe_id: 0,
+    });
+    const regenerated = await handleCharacterMessageRendered(5, settings, context, dependencies);
+
+    assert.equal(cleared, true);
+    assert.equal(regenerated.generated, true);
+    assert.equal(calls, 2, 'the replacement reply must call the side API again');
+    assert.equal(getBarrageVariants(context)['swipe:0'].content, 'new barrage');
 });
