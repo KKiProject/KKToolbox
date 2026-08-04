@@ -411,6 +411,59 @@ test('each swiped reply keeps its own barrage and restores it when switched back
     assert.equal(renders.at(-1)[2], 'ready');
 });
 
+test('each swiped reply restores its own status and development without another side API call', async () => {
+    const context = createContext();
+    const settings = createSettings();
+    settings.development = { enabled: true };
+    context.chat[5].swipes = ['角色决定敌视玩家。', '角色决定保护玩家。'];
+    context.chat[5].swipe_id = 0;
+    context.chat[5].mes = context.chat[5].swipes[0];
+    let calls = 0;
+    const dependencies = {
+        renderBarrage: () => true,
+        getCurrentContext: () => context,
+        async generateBarrage() {
+            calls++;
+            const protects = context.chat[5].swipe_id === 1;
+            const reply = context.chat[5].mes;
+            return { content: JSON.stringify({
+                barrage: protects ? '保护分支弹幕' : '敌对分支弹幕',
+                status: {
+                    environment: { location: protects ? '城门' : '地牢' },
+                    characters: [],
+                    event: { activity: protects ? '保护玩家' : '敌视玩家' },
+                },
+                development: { changes: [{
+                    character: '角色',
+                    dimension: 'relationship',
+                    target: '玩家',
+                    after: protects ? '决定保护玩家' : '决定敌视玩家',
+                    source: 'observed',
+                    evidence: [{ messageId: 5, quote: reply }],
+                }] },
+            }) };
+        },
+    };
+
+    await handleCharacterMessageRendered(5, settings, context, dependencies);
+    context.chat[5].swipe_id = 1;
+    context.chat[5].mes = context.chat[5].swipes[1];
+    await handleCharacterMessageRendered(5, settings, context, dependencies);
+    assert.equal(calls, 2);
+    assert.equal(context.chatMetadata[STORY_STATUS_METADATA_KEY]['5'].status.environment.location, '城门');
+
+    context.chat[5].swipe_id = 0;
+    context.chat[5].mes = context.chat[5].swipes[0];
+    const restored = await handleCharacterMessageRendered(5, settings, context, dependencies);
+
+    assert.equal(restored.cached, true);
+    assert.equal(calls, 2, 'switching back must restore all side results without calling the API');
+    assert.equal(context.chatMetadata[STORY_STATUS_METADATA_KEY]['5'].status.environment.location, '地牢');
+    const candidates = getCharacterDevelopmentSnapshot(context, { includeCandidates: true }).candidates;
+    assert.equal(candidates.length, 1);
+    assert.equal(candidates[0].after, '决定敌视玩家');
+});
+
 test('editing a reply keeps and reattaches the barrage for the same swipe', async () => {
     const context = createContext();
     const settings = createSettings({ statusEnabled: false });

@@ -23,6 +23,7 @@ import {
 } from './character-development.js';
 
 const BARRAGE_METADATA_KEY = 'memory_augment_barrages';
+const SIDE_RESULT_METADATA_KEY = 'memory_augment_side_results';
 const WORLD_INFO_TOP_K = 7;
 const WORLD_INFO_TOP_N = 3;
 const inFlight = new Map();
@@ -216,6 +217,108 @@ function deleteBarrageVariant(store, messageId, message) {
     return true;
 }
 
+function cloneSideValue(value) {
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    return typeof structuredClone === 'function'
+        ? structuredClone(value)
+        : JSON.parse(JSON.stringify(value));
+}
+
+function getSideResultStore(metadata, create = false) {
+    const existing = metadata?.[SIDE_RESULT_METADATA_KEY];
+    if (existing && typeof existing === 'object' && !Array.isArray(existing)) return existing;
+    if (!create || !metadata || typeof metadata !== 'object') return {};
+    metadata[SIDE_RESULT_METADATA_KEY] = {};
+    return metadata[SIDE_RESULT_METADATA_KEY];
+}
+
+function getSideResultBucket(store, messageId, create = false) {
+    const key = String(messageId);
+    const existing = store?.[key];
+    if (existing?.variants && typeof existing.variants === 'object' && !Array.isArray(existing.variants)) {
+        existing.version = 1;
+        return existing;
+    }
+    if (!create) return null;
+    const bucket = { version: 1, variants: {} };
+    store[key] = bucket;
+    return bucket;
+}
+
+function getSideResultVariant(store, messageId, message) {
+    const bucket = getSideResultBucket(store, messageId);
+    const variantKey = getBarrageVariantKey(message);
+    const record = bucket?.variants?.[variantKey];
+    const sourceHash = hashStorySource(String(message?.mes ?? '').trim());
+    if (!record || record.sourceHash !== sourceHash) return { record: null, variantKey };
+    return { record, variantKey };
+}
+
+function setSideResultVariant(store, messageId, message, record) {
+    const bucket = getSideResultBucket(store, messageId, true);
+    const variantKey = getBarrageVariantKey(message);
+    bucket.variants[variantKey] = cloneSideValue(record);
+    store[String(messageId)] = bucket;
+}
+
+function deleteSideResultVariant(store, messageId, message) {
+    const bucket = getSideResultBucket(store, messageId);
+    const variantKey = getBarrageVariantKey(message);
+    if (!bucket?.variants?.[variantKey]) return false;
+    delete bucket.variants[variantKey];
+    if (Object.keys(bucket.variants).length === 0) delete store[String(messageId)];
+    return true;
+}
+
+function clearDeletedSideResultRecords(context, firstDeletedMessageId) {
+    const numericId = Number(firstDeletedMessageId);
+    if (!Number.isInteger(numericId) || numericId < 0) return false;
+    const store = getSideResultStore(context?.chatMetadata);
+    let changed = false;
+    for (const messageId of Object.keys(store)) {
+        const storedId = Number(messageId);
+        if (Number.isInteger(storedId) && storedId >= numericId) {
+            delete store[messageId];
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+function restoreSideResultVariant(context, messageId, message, record, settings) {
+    if (!record) return false;
+    const numericId = Number(messageId);
+    const sourceHash = hashStorySource(String(message?.mes ?? '').trim());
+    let changed = false;
+    if (settings?.status?.enabled === true && record.statusProcessed && record.status
+        && !getStoryStatusAt(context, numericId)) {
+        clearStoryStatusRecords(context, numericId);
+        const restored = applyStoryTimelineUpdate(
+            context,
+            numericId,
+            cloneSideValue(record.status),
+            cloneSideValue(record.timeline),
+            sourceHash,
+        ).status;
+        saveStoryStatus(context, numericId, restored, sourceHash);
+        changed = true;
+    }
+    if (settings?.development?.enabled === true && record.developmentProcessed
+        && !isCharacterDevelopmentProcessed(context, numericId, sourceHash)) {
+        clearCharacterDevelopmentRecords(context, numericId);
+        const status = getStoryStatusAt(context, numericId)?.status ?? record.status ?? null;
+        const timeline = status ? getMessageTimelineMetadata(context, numericId) : null;
+        applyCharacterDevelopmentUpdate(context, numericId, cloneSideValue(record.development), {
+            status,
+            timeline,
+            sourceHash,
+        });
+        changed = true;
+    }
+    return changed;
+}
+
 export function collectRecentMessages(chat, messageId, count) {
     const end = Math.min(chat.length, Number(messageId) + 1);
     // Keep N preceding floors plus the rendered AI floor, which the server
@@ -392,9 +495,25 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
         void Promise.resolve(context.saveMetadata?.())
             .catch(error => console.warn('[Memory Augment] Barrage metadata migration save failed.', error));
     }
+    const sideStore = getSideResultStore(context.chatMetadata);
+    const sideResult = getSideResultVariant(sideStore, numericId, message);
+    const cachedSideResult = sideResult.record;
+    const statusVariantReady = statusEnabled !== true
+        || Boolean(cachedSideResult?.statusProcessed && cachedSideResult.status);
+    const developmentVariantReady = developmentEnabled !== true
+        || cachedSideResult?.developmentProcessed === true;
+    if (restoreSideResultVariant(context, numericId, message, cachedSideResult, settings)) {
+        try {
+            await context.saveMetadata?.();
+        } catch (error) {
+            console.warn('[Memory Augment] Side-result restoration save failed.', error);
+        }
+    }
     const cachedStatus = getStoryStatusAt(context, numericId);
     const developmentProcessed = isCharacterDevelopmentProcessed(context, numericId, sourceHash);
     const hasRequiredCache = (!barrageEnabled || cached?.content)
+        && statusVariantReady
+        && developmentVariantReady
         && (!statusEnabled || cachedStatus)
         && (!developmentEnabled || developmentProcessed);
     if (!options.force && options.refreshDerived !== true && hasRequiredCache) {
@@ -412,9 +531,9 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
         }
     }
     const requestBarrage = barrageEnabled && (options.force || !cached?.content);
-    const requestStatus = statusEnabled && (options.refreshDerived === true || !cachedStatus);
+    const requestStatus = statusEnabled && (options.refreshDerived === true || !statusVariantReady);
     const requestDevelopment = developmentEnabled
-        && (options.refreshDerived === true || !developmentProcessed);
+        && (options.refreshDerived === true || !developmentVariantReady);
 
     const requestKey = `${chatId}:${numericId}:${sourceHash}`;
     if (inFlight.has(requestKey)) {
@@ -500,7 +619,7 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
         }
         let finalStatus = requestStatus
             ? applyStoryStatusOptions(parsed.status, statusOptions)
-            : applyStoryStatusOptions(cachedStatus?.status, statusOptions);
+            : applyStoryStatusOptions(cachedSideResult?.status ?? cachedStatus?.status, statusOptions);
         if (requestStatus && finalStatus) {
             clearStoryStatusRecords(currentContext, numericId);
             finalStatus = applyStoryTimelineUpdate(
@@ -525,6 +644,24 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
                 timeline: currentTimeline,
                 sourceHash,
             });
+        }
+        if ((requestStatus && finalStatus) || (requestDevelopment && response?.partial !== true)) {
+            const currentSideStore = getSideResultStore(currentContext.chatMetadata, true);
+            const nextSideResult = {
+                ...(cachedSideResult ? cloneSideValue(cachedSideResult) : {}),
+                sourceHash,
+                timestamp: Math.floor(Date.now() / 1000),
+            };
+            if (requestStatus && finalStatus) {
+                nextSideResult.statusProcessed = true;
+                nextSideResult.status = cloneSideValue(finalStatus);
+                nextSideResult.timeline = cloneSideValue(parsed.timeline);
+            }
+            if (requestDevelopment && response?.partial !== true) {
+                nextSideResult.developmentProcessed = true;
+                nextSideResult.development = cloneSideValue(parsed.development);
+            }
+            setSideResultVariant(currentSideStore, numericId, currentMessage, nextSideResult);
         }
         try {
             await currentContext.saveMetadata?.();
@@ -657,17 +794,47 @@ function scheduleBarrageGeneration(messageId, settings, options = {}) {
     }, 0);
 }
 
-function invalidateDerivedResults(messageId) {
+function invalidateDerivedResults(messageId, { dropCurrentVariant = false } = {}) {
     const currentContext = SillyTavern.getContext();
+    const message = currentContext.chat?.[Number(messageId)];
+    const variantChanged = dropCurrentVariant && message
+        ? deleteSideResultVariant(getSideResultStore(currentContext.chatMetadata), messageId, message)
+        : false;
     const statusChanged = clearStoryStatusRecords(currentContext, messageId);
     const developmentChanged = clearCharacterDevelopmentRecords(currentContext, messageId);
-    if (statusChanged || developmentChanged) {
+    if (variantChanged || statusChanged || developmentChanged) {
         void Promise.resolve(currentContext.saveMetadata?.())
             .catch(error => console.warn('[Memory Augment] Changed reply cleanup save failed.', error));
     }
     refreshStoryStatusUi(currentContext);
     refreshCharacterDevelopmentUi(currentContext);
     return currentContext;
+}
+
+function activateStoredSideResult(messageId, settings) {
+    const currentContext = SillyTavern.getContext();
+    const message = currentContext.chat?.[Number(messageId)];
+    if (!message) return false;
+    const record = getSideResultVariant(
+        getSideResultStore(currentContext.chatMetadata),
+        messageId,
+        message,
+    ).record;
+    let changed = false;
+    if (record) {
+        changed = restoreSideResultVariant(currentContext, messageId, message, record, settings);
+    } else {
+        const statusChanged = clearStoryStatusRecords(currentContext, messageId);
+        const developmentChanged = clearCharacterDevelopmentRecords(currentContext, messageId);
+        changed = statusChanged || developmentChanged;
+    }
+    if (changed) {
+        void Promise.resolve(currentContext.saveMetadata?.())
+            .catch(error => console.warn('[Memory Augment] Swiped side-result activation save failed.', error));
+    }
+    refreshStoryStatusUi(currentContext);
+    refreshCharacterDevelopmentUi(currentContext);
+    return Boolean(record);
 }
 
 function bindRegeneration(settings) {
@@ -731,7 +898,7 @@ export async function initializeBarrageUi(settings, options = {}) {
 
     if (messageSwiped) {
         context.eventSource.on(messageSwiped, (messageId) => {
-            invalidateDerivedResults(messageId);
+            activateStoredSideResult(messageId, settings);
             scheduleBarrageGeneration(messageId, settings);
         });
     }
@@ -741,7 +908,7 @@ export async function initializeBarrageUi(settings, options = {}) {
             // SillyTavern rebuilds .mes_text after an edit, which removes the
             // injected panel from the DOM. Reattach the same swipe's cached
             // barrage after that rebuild; do not regenerate it automatically.
-            invalidateDerivedResults(messageId);
+            invalidateDerivedResults(messageId, { dropCurrentVariant: true });
             scheduleBarrageGeneration(messageId, settings, { refreshDerived: true });
         });
     }
@@ -751,9 +918,10 @@ export async function initializeBarrageUi(settings, options = {}) {
             try {
                 const currentContext = SillyTavern.getContext();
                 const barrageChanged = clearDeletedBarrageRecords(currentContext, messageId, { save: false });
+                const sideResultChanged = clearDeletedSideResultRecords(currentContext, messageId);
                 const statusChanged = clearStoryStatusRecords(currentContext, messageId);
                 const developmentChanged = clearCharacterDevelopmentRecords(currentContext, messageId);
-                if (barrageChanged || statusChanged || developmentChanged) {
+                if (barrageChanged || sideResultChanged || statusChanged || developmentChanged) {
                     await currentContext.saveMetadata?.();
                 }
                 refreshStoryStatusUi(currentContext);
@@ -791,4 +959,4 @@ export function refreshBarrageVisibility(settings, context = globalThis.SillyTav
     if (enabled && context) restoreStoredBarrages(context, settings);
 }
 
-export { BARRAGE_METADATA_KEY };
+export { BARRAGE_METADATA_KEY, SIDE_RESULT_METADATA_KEY };
