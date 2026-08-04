@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
     applyCharacterDevelopmentUpdate,
+    clearCharacterDevelopmentRecords,
     discardDevelopmentCandidate,
     formatCharacterDevelopmentMessage,
     getCharacterDevelopmentSnapshot,
@@ -273,4 +274,27 @@ test('manual changes are injected before the latest user message and remain edit
     assert.equal(generationChat.at(-2).extra.memory_augment_character_development, true);
     assert.match(generationChat.at(-2).mes, /已经愿意把后背交给玩家/);
     assert.equal(generationChat.at(-1).is_user, true);
+});
+
+test('discarded reply development is removed while manual fields survive branch regeneration', () => {
+    const context = makeContext(8);
+    context.chat[6].mes = '莉亚开始敌视玩家。';
+    applyCharacterDevelopmentUpdate(context, 6, { changes: [change({
+        dimension: 'relationship',
+        target: '玩家',
+        after: '开始敌视玩家',
+        evidence: [{ messageId: 6, quote: '莉亚开始敌视玩家。' }],
+    })] }, { sourceHash: 'old-source', status: { event: { activity: '冲突' } } });
+    setManualDevelopmentField(context, {
+        character: '莉亚',
+        dimension: 'belief',
+        value: '玩家明确指定的信念',
+        messageId: 6,
+    });
+
+    assert.equal(clearCharacterDevelopmentRecords(context, 6), true);
+    const snapshot = getCharacterDevelopmentSnapshot(context, { includeCandidates: true });
+    assert.equal(snapshot.candidates.length, 0);
+    assert.equal(snapshot.profiles.length, 1);
+    assert.equal(snapshot.profiles[0].fields[0].value, '玩家明确指定的信念');
 });

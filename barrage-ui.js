@@ -4,6 +4,7 @@ import { getActiveWorldInfoBookIds } from './world-info-manager.js';
 import {
     applyStoryStatusOptions,
     applyStoryTimelineUpdate,
+    clearStoryStatusRecords,
     getLatestStoryStatus,
     getMessageTimelineMetadata,
     getStoryStatusAt,
@@ -15,6 +16,7 @@ import {
 } from './story-status.js';
 import {
     applyCharacterDevelopmentUpdate,
+    clearCharacterDevelopmentRecords,
     getCharacterDevelopmentSnapshot,
     isCharacterDevelopmentProcessed,
     refreshCharacterDevelopmentUi,
@@ -395,7 +397,7 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
     const hasRequiredCache = (!barrageEnabled || cached?.content)
         && (!statusEnabled || cachedStatus)
         && (!developmentEnabled || developmentProcessed);
-    if (!options.force && hasRequiredCache) {
+    if (!options.force && options.refreshDerived !== true && hasRequiredCache) {
         if (barrageEnabled) safelyRender(render, numericId, cached.content, 'ready');
         refreshStoryStatusUi(context);
         refreshCharacterDevelopmentUi(context);
@@ -410,6 +412,9 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
         }
     }
     const requestBarrage = barrageEnabled && (options.force || !cached?.content);
+    const requestStatus = statusEnabled && (options.refreshDerived === true || !cachedStatus);
+    const requestDevelopment = developmentEnabled
+        && (options.refreshDerived === true || !developmentProcessed);
 
     const requestKey = `${chatId}:${numericId}:${sourceHash}`;
     if (inFlight.has(requestKey)) {
@@ -459,14 +464,18 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
             previousTimeline,
             developmentSnapshot,
             statusOptions,
-            outputOptions: { barrageEnabled: requestBarrage, statusEnabled, developmentEnabled },
+            outputOptions: {
+                barrageEnabled: requestBarrage,
+                statusEnabled: requestStatus,
+                developmentEnabled: requestDevelopment,
+            },
         });
         const parsed = parseSideResponse(response?.content);
         const generatedContent = parsed.barrage;
         if (requestBarrage && !generatedContent) {
             throw new Error('Barrage endpoint returned empty content.');
         }
-        if (statusEnabled && !parsed.status && !barrageEnabled) {
+        if (requestStatus && !parsed.status && !requestBarrage) {
             throw new Error('Story status endpoint returned no valid status.');
         }
 
@@ -489,8 +498,11 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
                 timestamp: Math.floor(Date.now() / 1000),
             });
         }
-        let finalStatus = applyStoryStatusOptions(parsed.status, statusOptions);
-        if (statusEnabled && finalStatus) {
+        let finalStatus = requestStatus
+            ? applyStoryStatusOptions(parsed.status, statusOptions)
+            : applyStoryStatusOptions(cachedStatus?.status, statusOptions);
+        if (requestStatus && finalStatus) {
+            clearStoryStatusRecords(currentContext, numericId);
             finalStatus = applyStoryTimelineUpdate(
                 currentContext,
                 numericId,
@@ -499,19 +511,21 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
                 sourceHash,
             ).status;
         }
-        const statusSaved = statusEnabled
+        const statusSaved = requestStatus
             ? saveStoryStatus(currentContext, numericId, finalStatus, sourceHash)
             : false;
-        const currentTimeline = statusEnabled && finalStatus
+        const currentTimeline = finalStatus
             ? getMessageTimelineMetadata(currentContext, numericId)
             : null;
-        const developmentResult = developmentEnabled && response?.partial !== true
-            ? applyCharacterDevelopmentUpdate(currentContext, numericId, parsed.development, {
+        let developmentResult = null;
+        if (requestDevelopment && response?.partial !== true) {
+            clearCharacterDevelopmentRecords(currentContext, numericId);
+            developmentResult = applyCharacterDevelopmentUpdate(currentContext, numericId, parsed.development, {
                 status: finalStatus,
                 timeline: currentTimeline,
                 sourceHash,
-            })
-            : null;
+            });
+        }
         try {
             await currentContext.saveMetadata?.();
         } catch (error) {
@@ -610,7 +624,7 @@ export function restoreStoredBarrages(context, settings, render = renderBarrageP
     }
 }
 
-export async function clearDeletedBarrageRecords(context, firstDeletedMessageId) {
+export function clearDeletedBarrageRecords(context, firstDeletedMessageId, { save = true } = {}) {
     const numericId = Number(firstDeletedMessageId);
     if (!Number.isInteger(numericId) || numericId < 0) return false;
     const store = getBarrageStore(context?.chatMetadata);
@@ -623,10 +637,10 @@ export async function clearDeletedBarrageRecords(context, firstDeletedMessageId)
         }
     }
     if (!changed) return false;
-    try {
-        await context.saveMetadata?.();
-    } catch (error) {
-        console.warn('[Memory Augment] Deleted barrage cleanup save failed.', error);
+    if (save) {
+        return Promise.resolve(context.saveMetadata?.())
+            .catch(error => console.warn('[Memory Augment] Deleted barrage cleanup save failed.', error))
+            .then(() => true);
     }
     return true;
 }
@@ -641,6 +655,19 @@ function scheduleBarrageGeneration(messageId, settings, options = {}) {
             console.warn('[Memory Augment] Barrage scheduling failed.', error);
         }
     }, 0);
+}
+
+function invalidateDerivedResults(messageId) {
+    const currentContext = SillyTavern.getContext();
+    const statusChanged = clearStoryStatusRecords(currentContext, messageId);
+    const developmentChanged = clearCharacterDevelopmentRecords(currentContext, messageId);
+    if (statusChanged || developmentChanged) {
+        void Promise.resolve(currentContext.saveMetadata?.())
+            .catch(error => console.warn('[Memory Augment] Changed reply cleanup save failed.', error));
+    }
+    refreshStoryStatusUi(currentContext);
+    refreshCharacterDevelopmentUi(currentContext);
+    return currentContext;
 }
 
 function bindRegeneration(settings) {
@@ -704,6 +731,7 @@ export async function initializeBarrageUi(settings, options = {}) {
 
     if (messageSwiped) {
         context.eventSource.on(messageSwiped, (messageId) => {
+            invalidateDerivedResults(messageId);
             scheduleBarrageGeneration(messageId, settings);
         });
     }
@@ -713,16 +741,25 @@ export async function initializeBarrageUi(settings, options = {}) {
             // SillyTavern rebuilds .mes_text after an edit, which removes the
             // injected panel from the DOM. Reattach the same swipe's cached
             // barrage after that rebuild; do not regenerate it automatically.
-            scheduleBarrageGeneration(messageId, settings);
+            invalidateDerivedResults(messageId);
+            scheduleBarrageGeneration(messageId, settings, { refreshDerived: true });
         });
     }
 
     if (messageDeleted) {
         context.eventSource.on(messageDeleted, async (messageId) => {
             try {
-                await clearDeletedBarrageRecords(SillyTavern.getContext(), messageId);
+                const currentContext = SillyTavern.getContext();
+                const barrageChanged = clearDeletedBarrageRecords(currentContext, messageId, { save: false });
+                const statusChanged = clearStoryStatusRecords(currentContext, messageId);
+                const developmentChanged = clearCharacterDevelopmentRecords(currentContext, messageId);
+                if (barrageChanged || statusChanged || developmentChanged) {
+                    await currentContext.saveMetadata?.();
+                }
+                refreshStoryStatusUi(currentContext);
+                refreshCharacterDevelopmentUi(currentContext);
             } catch (error) {
-                console.warn('[Memory Augment] Deleted barrage cleanup failed.', error);
+                console.warn('[Memory Augment] Deleted side-result cleanup failed.', error);
             }
         });
     }

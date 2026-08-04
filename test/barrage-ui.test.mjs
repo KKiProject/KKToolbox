@@ -441,6 +441,73 @@ test('editing a reply keeps and reattaches the barrage for the same swipe', asyn
     assert.equal(renders.at(-1)[2], 'ready');
 });
 
+test('editing a reply preserves its barrage but replaces status and development derived from the old text', async () => {
+    const context = createContext();
+    const settings = createSettings();
+    settings.development = { enabled: true };
+    context.chat[5].swipes = ['角色开始敌视玩家。'];
+    context.chat[5].swipe_id = 0;
+    context.chat[5].mes = '角色开始敌视玩家。';
+    let calls = 0;
+    const dependencies = {
+        renderBarrage: () => true,
+        getCurrentContext: () => context,
+        async generateBarrage(payload) {
+            calls++;
+            if (calls === 1) {
+                return { content: JSON.stringify({
+                    barrage: '保留下来的旧弹幕',
+                    status: {
+                        environment: { location: '旧地点' },
+                        characters: [],
+                        event: { activity: '彼此敌对' },
+                    },
+                    development: { changes: [{
+                        character: '角色',
+                        dimension: 'relationship',
+                        target: '玩家',
+                        after: '开始敌视玩家',
+                        source: 'observed',
+                        evidence: [{ messageId: 5, quote: '角色开始敌视玩家。' }],
+                    }] },
+                }) };
+            }
+            assert.deepEqual(payload.outputOptions, {
+                barrageEnabled: false,
+                statusEnabled: true,
+                developmentEnabled: true,
+            });
+            return { content: JSON.stringify({
+                status: {
+                    environment: { location: '新地点' },
+                    characters: [],
+                    event: { activity: '保护玩家' },
+                },
+                development: { changes: [{
+                    character: '角色',
+                    dimension: 'relationship',
+                    target: '玩家',
+                    after: '决定保护玩家',
+                    source: 'observed',
+                    evidence: [{ messageId: 5, quote: '角色决定保护玩家。' }],
+                }] },
+            }) };
+        },
+    };
+
+    await handleCharacterMessageRendered(5, settings, context, dependencies);
+    context.chat[5].mes = '角色决定保护玩家。';
+    context.chat[5].swipes[0] = context.chat[5].mes;
+    await handleCharacterMessageRendered(5, settings, context, dependencies, { refreshDerived: true });
+
+    assert.equal(calls, 2);
+    assert.equal(getBarrageVariants(context)['swipe:0'].content, '保留下来的旧弹幕');
+    assert.equal(context.chatMetadata[STORY_STATUS_METADATA_KEY]['5'].status.environment.location, '新地点');
+    const candidates = getCharacterDevelopmentSnapshot(context, { includeCandidates: true }).candidates;
+    assert.equal(candidates.length, 1);
+    assert.equal(candidates[0].after, '决定保护玩家');
+});
+
 test('version 2 text-hash barrages migrate to swipe slots without losing an edited current reply', () => {
     const context = createContext();
     context.chat[5].swipes = ['edited current reply', 'other reply'];

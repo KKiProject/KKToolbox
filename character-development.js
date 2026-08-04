@@ -518,7 +518,62 @@ export function applyCharacterDevelopmentUpdate(context, ownerMessageId, value, 
 export function isCharacterDevelopmentProcessed(context, messageId, sourceHash = '') {
     const record = getStore(context?.chatMetadata)?.processed?.[String(Number(messageId))];
     if (!record) return false;
-    return !record.sourceHash || !sourceHash || record.sourceHash === sourceHash;
+    return !sourceHash || Boolean(record.sourceHash && record.sourceHash === sourceHash);
+}
+
+export function clearCharacterDevelopmentRecords(context, firstChangedMessageId) {
+    const numericId = Number(firstChangedMessageId);
+    const store = getStore(context?.chatMetadata);
+    if (!store || !Number.isInteger(numericId) || numericId < 0) return false;
+    let changed = false;
+
+    for (const messageId of Object.keys(store.processed ?? {})) {
+        const storedId = Number(messageId);
+        if (Number.isInteger(storedId) && storedId >= numericId) {
+            delete store.processed[messageId];
+            changed = true;
+        }
+    }
+
+    // Pending observations are automatic guesses. Once the reply that last
+    // supported one is edited, swiped away, or deleted, keeping the merged
+    // candidate would let a rejected plot branch affect later confirmations.
+    // Discard the affected candidate conservatively; future valid scenes can
+    // build it up again.
+    for (const [candidateId, candidate] of Object.entries(store.candidates ?? {})) {
+        const firstSeen = Number(candidate?.firstSeenMessageId);
+        const lastSeen = Number(candidate?.lastSeenMessageId);
+        if ((Number.isInteger(firstSeen) && firstSeen >= numericId)
+            || (Number.isInteger(lastSeen) && lastSeen >= numericId)) {
+            delete store.candidates[candidateId];
+            changed = true;
+        }
+    }
+
+    for (const [profileKey, profile] of Object.entries(store.profiles ?? {})) {
+        profile.history = Array.isArray(profile.history) ? profile.history : [];
+        for (const [fieldKey, field] of Object.entries(profile.fields ?? {})) {
+            if (field?.source === 'manual' || Number(field?.updatedMessageId) < numericId) continue;
+            const previousIndex = profile.history
+                .map((item, index) => ({ item, index }))
+                .filter(({ item }) => item?.key === fieldKey
+                    && Number(item?.updatedMessageId) < numericId)
+                .sort((left, right) => Number(right.item.updatedMessageId) - Number(left.item.updatedMessageId))[0]?.index;
+            if (Number.isInteger(previousIndex)) {
+                const previous = profile.history[previousIndex];
+                profile.fields[fieldKey] = { ...previous };
+            } else {
+                delete profile.fields[fieldKey];
+            }
+            changed = true;
+        }
+        profile.history = profile.history.filter(item => Number(item?.replacedAtMessageId) < numericId
+            && Number(item?.updatedMessageId) < numericId);
+        if (Object.keys(profile.fields ?? {}).length === 0) {
+            delete store.profiles[profileKey];
+        }
+    }
+    return changed;
 }
 
 export function getCharacterDevelopmentSnapshot(context, {

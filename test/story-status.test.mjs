@@ -5,6 +5,7 @@ import {
     STORY_TIMELINE_METADATA_KEY,
     applyStoryTimelineUpdate,
     applyStoryStatusOptions,
+    clearStoryStatusRecords,
     correctLatestStoryTime,
     getLatestStoryStatus,
     getMessageTimelineMetadata,
@@ -138,6 +139,26 @@ test('latest valid snapshot follows the remaining chat timeline', () => {
     assert.equal(getLatestStoryStatus(context).status.environment.time, '第二天');
     context.chat = chat.slice(0, 4);
     assert.equal(getLatestStoryStatus(context).status.environment.time, '第一天');
+});
+
+test('deleting a reply clears its status and timeline so a regenerated branch cannot reuse them', () => {
+    const chat = [
+        { mes: '开场', is_user: false },
+        { mes: '玩家', is_user: true },
+        { mes: '旧回复', is_user: false },
+    ];
+    const context = { chat, chatMetadata: {} };
+    const result = applyStoryTimelineUpdate(context, 2, status('旧时间'), {
+        transition: 'jump',
+        currentTime: '旧时间',
+    }, hashStorySource(chat[2].mes));
+    saveStoryStatus(context, 2, result.status, hashStorySource(chat[2].mes));
+
+    assert.equal(clearStoryStatusRecords(context, 2), true);
+    assert.equal(context.chatMetadata[STORY_STATUS_METADATA_KEY]['2'], undefined);
+    assert.equal(context.chatMetadata[STORY_TIMELINE_METADATA_KEY].messageStates['2'], undefined);
+    assert.equal(Object.values(context.chatMetadata[STORY_TIMELINE_METADATA_KEY].anchors)
+        .some(anchor => anchor.sourceMessageId === 2), false);
 });
 
 test('status is injected immediately before the latest user message', () => {

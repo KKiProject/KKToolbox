@@ -495,8 +495,57 @@ export function getStoryStatusAt(context, messageId) {
     const message = context?.chat?.[numericId];
     const status = normalizeStoryStatus(record?.status ?? record);
     if (!message || message.is_user || message.is_system || !status) return null;
-    if (record?.sourceHash && record.sourceHash !== hashStorySource(message.mes)) return null;
+    // A same-floor cache is only safe when it can prove which exact reply it
+    // was generated from. Legacy records without a source hash may still be
+    // used as older context by getLatestStoryStatus(), but must never suppress
+    // regeneration after an edit, swipe, or regenerated reply.
+    if (!record?.sourceHash || record.sourceHash !== hashStorySource(message.mes)) return null;
     return { messageId: numericId, status, timestamp: Number(record?.timestamp) || 0 };
+}
+
+export function clearStoryStatusRecords(context, firstDeletedMessageId) {
+    const numericId = Number(firstDeletedMessageId);
+    if (!Number.isInteger(numericId) || numericId < 0) return false;
+    let changed = false;
+    const statusStore = getStatusStore(context?.chatMetadata);
+    for (const messageId of Object.keys(statusStore)) {
+        const storedId = Number(messageId);
+        if (Number.isInteger(storedId) && storedId >= numericId) {
+            delete statusStore[messageId];
+            changed = true;
+        }
+    }
+
+    const timelineStore = getTimelineStore(context?.chatMetadata);
+    if (!timelineStore) return changed;
+    for (const messageId of Object.keys(timelineStore.messageStates ?? {})) {
+        const storedId = Number(messageId);
+        if (Number.isInteger(storedId) && storedId >= numericId) {
+            delete timelineStore.messageStates[messageId];
+            changed = true;
+        }
+    }
+    for (const [messageId, segments] of Object.entries(timelineStore.messageSegments ?? {})) {
+        const storedId = Number(messageId);
+        if (Number.isInteger(storedId) && storedId >= numericId) {
+            delete timelineStore.messageSegments[messageId];
+            changed = true;
+            continue;
+        }
+        const kept = (Array.isArray(segments) ? segments : [])
+            .filter(segment => Number(segment?.ownerMessageId) < numericId);
+        if (kept.length !== (Array.isArray(segments) ? segments.length : 0)) {
+            timelineStore.messageSegments[messageId] = kept;
+            changed = true;
+        }
+    }
+    for (const [anchorId, anchor] of Object.entries(timelineStore.anchors ?? {})) {
+        if (Number(anchor?.sourceMessageId) >= numericId) {
+            delete timelineStore.anchors[anchorId];
+            changed = true;
+        }
+    }
+    return changed;
 }
 
 function statusLines(status, timeline = null) {
