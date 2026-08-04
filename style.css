@@ -893,6 +893,24 @@
     padding: 1rem;
 }
 
+.memory-augment-story-status-actions {
+    display: flex;
+    justify-content: flex-end;
+    padding: 0.55rem 0.75rem 0.15rem;
+}
+
+#memory_augment_story_status_regenerate {
+    align-items: center;
+    display: inline-flex;
+    flex: 0 0 auto;
+    gap: 0.35rem;
+    justify-content: center;
+    text-align: center;
+    white-space: nowrap;
+    width: auto;
+    writing-mode: horizontal-tb;
+}
+
 #memory_augment_story_status_content {
     overflow-y: auto;
     overscroll-behavior: contain;

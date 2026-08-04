@@ -400,38 +400,134 @@ export function applyStoryStatusOptions(value, options = {}) {
     return normalized;
 }
 
+function extractBalancedJsonObjects(value) {
+    const text = String(value ?? '');
+    const results = [];
+    let start = -1;
+    let depth = 0;
+    let quoted = false;
+    let escaped = false;
+    for (let index = 0; index < text.length; index++) {
+        const character = text[index];
+        if (quoted) {
+            if (escaped) escaped = false;
+            else if (character === '\\') escaped = true;
+            else if (character === '"') quoted = false;
+            continue;
+        }
+        if (character === '"') {
+            quoted = true;
+            continue;
+        }
+        if (character === '{') {
+            if (depth === 0) start = index;
+            depth++;
+        } else if (character === '}' && depth > 0) {
+            depth--;
+            if (depth === 0 && start >= 0) {
+                results.push({ text: text.slice(start, index + 1), start, end: index + 1 });
+                start = -1;
+            }
+        }
+    }
+    return results;
+}
+
+function parseSideObject(value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const recognized = ['barrage', '弹幕', 'status', '状态', 'timeline', '时间线', 'development', '人物发展']
+        .some(key => Object.hasOwn(value, key));
+    const directStatus = !recognized ? normalizeStoryStatus(value) : null;
+    if (!recognized && !directStatus) return null;
+    return {
+        barrage: cleanText(value.barrage ?? value.弹幕, 100_000),
+        status: normalizeStoryStatus(value.status ?? value.状态) ?? directStatus,
+        timeline: normalizeTimelineUpdate(value.timeline ?? value.时间线),
+        development: value.development ?? value.人物发展 ?? null,
+    };
+}
+
+function extractNamedObject(raw, names) {
+    for (const name of names) {
+        const pattern = new RegExp(`["']?${name}["']?\\s*[:：]\\s*`, 'iu');
+        const match = pattern.exec(raw);
+        if (!match) continue;
+        const brace = raw.indexOf('{', match.index + match[0].length);
+        if (brace < 0) continue;
+        const balanced = extractBalancedJsonObjects(raw.slice(brace))[0]?.text;
+        if (!balanced) continue;
+        try {
+            return JSON.parse(balanced);
+        } catch {
+            // Try another alias or the tagged fallback.
+        }
+    }
+    return null;
+}
+
+function extractLooseBarrage(raw) {
+    const tagged = raw.match(/<barrage>([\s\S]*?)(?:<\/barrage>|(?=<(?:status|timeline|development)>|$))/i)?.[1];
+    if (tagged !== undefined) return cleanText(tagged, 100_000);
+
+    const labelled = raw.match(/(?:^|\n)\s*(?:barrage|弹幕)\s*[:：]\s*([\s\S]*?)(?=\n\s*(?:status|状态|timeline|时间线|development|人物发展)\s*[:：]|$)/iu)?.[1];
+    if (labelled !== undefined) return cleanText(labelled.replace(/^['"]|['",]+$/g, ''), 100_000);
+
+    const field = /["'](?:barrage|弹幕)["']\s*:\s*["']/iu.exec(raw);
+    if (field) {
+        const start = field.index + field[0].length;
+        const remainder = raw.slice(start);
+        const boundary = remainder.search(/["']\s*,\s*["'](?:status|状态|timeline|时间线|development|人物发展)["']\s*:/iu);
+        const value = boundary >= 0 ? remainder.slice(0, boundary) : remainder;
+        return cleanText(value
+            .replace(/\\n/g, '\n')
+            .replace(/\\"/g, '"')
+            .replace(/["'\s,}]+$/g, ''), 100_000);
+    }
+
+    const marker = raw.search(/<status>|["'](?:status|状态|timeline|时间线|development|人物发展)["']\s*[:：]/iu);
+    if (marker >= 0) {
+        return cleanText(raw.slice(0, marker)
+            .replace(/^```(?:json)?\s*/i, '')
+            .replace(/(?:barrage|弹幕)\s*[:：]\s*/iu, '')
+            .replace(/[\s,{]+$/g, ''), 100_000);
+    }
+    return '';
+}
+
 export function parseSideResponse(content) {
     const raw = cleanText(content, 200_000);
     if (!raw) return { barrage: '', status: null, timeline: normalizeTimelineUpdate(null), development: null };
 
-    const candidates = [
-        raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, ''),
-    ];
-    const firstBrace = raw.indexOf('{');
-    const lastBrace = raw.lastIndexOf('}');
-    if (firstBrace >= 0 && lastBrace > firstBrace) {
-        candidates.push(raw.slice(firstBrace, lastBrace + 1));
-    }
+    const candidates = [raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '')];
+    for (const match of raw.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) candidates.push(match[1].trim());
+    for (const candidate of extractBalancedJsonObjects(raw)) candidates.push(candidate.text);
 
     for (const candidate of [...new Set(candidates)]) {
         try {
-            const parsed = JSON.parse(candidate);
-            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
-            return {
-                barrage: cleanText(parsed.barrage ?? parsed.弹幕, 100_000),
-                status: normalizeStoryStatus(parsed.status ?? parsed.状态),
-                timeline: normalizeTimelineUpdate(parsed.timeline ?? parsed.时间线),
-                development: parsed.development ?? parsed.人物发展 ?? null,
-            };
+            const value = JSON.parse(candidate);
+            const hasWrapperKeys = value && typeof value === 'object' && !Array.isArray(value)
+                && ['barrage', '弹幕', 'status', '状态', 'timeline', '时间线', 'development', '人物发展']
+                    .some(key => Object.hasOwn(value, key));
+            if (!hasWrapperKeys && candidate.trim() !== candidates[0].trim()) continue;
+            const parsed = parseSideObject(value);
+            if (parsed) {
+                if (!parsed.barrage && candidate.trim() !== candidates[0].trim()) {
+                    parsed.barrage = extractLooseBarrage(raw);
+                }
+                return parsed;
+            }
         } catch {
-            // Some compatible providers ignore JSON-only instructions. Try the
-            // tagged and plain-text fallbacks below instead.
+            // Continue with field-level recovery below.
         }
     }
 
     const barrageMatch = raw.match(/<barrage>([\s\S]*?)<\/barrage>/i);
     const statusMatch = raw.match(/<status>([\s\S]*?)<\/status>/i);
+    const timelineMatch = raw.match(/<timeline>([\s\S]*?)<\/timeline>/i);
+    const developmentMatch = raw.match(/<development>([\s\S]*?)<\/development>/i);
     let taggedStatus = null;
+    let taggedTimeline = null;
+    let taggedDevelopment = null;
     if (statusMatch) {
         try {
             taggedStatus = normalizeStoryStatus(JSON.parse(statusMatch[1].trim()));
@@ -439,8 +535,31 @@ export function parseSideResponse(content) {
             taggedStatus = null;
         }
     }
-    if (barrageMatch || taggedStatus) {
-        return { barrage: cleanText(barrageMatch?.[1], 100_000), status: taggedStatus, timeline: normalizeTimelineUpdate(null), development: null };
+    try {
+        taggedTimeline = timelineMatch ? JSON.parse(timelineMatch[1].trim()) : null;
+    } catch {
+        taggedTimeline = null;
+    }
+    try {
+        taggedDevelopment = developmentMatch ? JSON.parse(developmentMatch[1].trim()) : null;
+    } catch {
+        taggedDevelopment = null;
+    }
+
+    const recoveredStatus = taggedStatus ?? normalizeStoryStatus(extractNamedObject(raw, ['status', '状态']));
+    const recoveredTimeline = taggedTimeline ?? extractNamedObject(raw, ['timeline', '时间线']);
+    const recoveredDevelopment = taggedDevelopment ?? extractNamedObject(raw, ['development', '人物发展']);
+    const hasStructuredOutput = Boolean(
+        barrageMatch || recoveredStatus || recoveredTimeline || recoveredDevelopment
+        || /["'](?:status|状态|timeline|时间线|development|人物发展)["']\s*[:：]|<(?:status|timeline|development)>/iu.test(raw),
+    );
+    if (hasStructuredOutput) {
+        return {
+            barrage: extractLooseBarrage(raw),
+            status: recoveredStatus,
+            timeline: normalizeTimelineUpdate(recoveredTimeline),
+            development: recoveredDevelopment,
+        };
     }
 
     return { barrage: raw, status: null, timeline: normalizeTimelineUpdate(null), development: null };
@@ -728,6 +847,8 @@ export function refreshStoryStatusUi(context = globalThis.SillyTavern?.getContex
         root.hidden = false;
         const ball = root.querySelector('#memory_augment_story_status_ball');
         if (ball) ball.hidden = false;
+        const regenerate = root.querySelector('#memory_augment_story_status_regenerate');
+        if (regenerate && !regenerate.dataset.busy) regenerate.disabled = options.enabled !== true;
     }
 }
 
@@ -880,6 +1001,11 @@ export function initializeStoryStatusUi(context, settings) {
                     <button type="button" class="menu_button" data-story-view="map">地图册</button>
                 </nav>
                 <div id="memory_augment_story_status_view" data-story-page="status">
+                    <div class="memory-augment-story-status-actions">
+                        <button type="button" class="menu_button" id="memory_augment_story_status_regenerate">
+                            <i class="fa-solid fa-rotate" aria-hidden="true"></i> 重新生成状态栏
+                        </button>
+                    </div>
                     <div id="memory_augment_story_status_empty">AI 第一次回复后会在这里生成状态。</div>
                     <div id="memory_augment_story_status_content" hidden></div>
                 </div>
@@ -917,6 +1043,11 @@ export function initializeStoryStatusUi(context, settings) {
         if (!wasDragged()) setOpen(panel.hidden);
     });
     document.querySelector('#memory_augment_story_status_close')?.addEventListener('click', () => setOpen(false));
+    document.querySelector('#memory_augment_story_status_regenerate')?.addEventListener('click', (event) => {
+        document.dispatchEvent(new CustomEvent('memory-augment-regenerate-story-status', {
+            detail: { button: event.currentTarget },
+        }));
+    });
     document.addEventListener('pointerdown', (event) => {
         if (shouldCloseStoryPanelForPointer(root, panel, event.target)) {
             setOpen(false);

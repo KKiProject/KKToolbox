@@ -57,6 +57,32 @@ test('combined side response separates barrage text from structured status', () 
     assert.equal(parsed.development.changes[0].after, '开始相信玩家');
 });
 
+test('malformed combined output still separates raw-line barrage from structured fields', () => {
+    const malformed = `{
+  "barrage": "第一条弹幕
+第二条弹幕",
+  "status": ${JSON.stringify(status('深夜'))},
+  "timeline": {"transition":"unchanged","currentTime":"深夜"},
+  "development": {"changes":[]}
+}`;
+    const parsed = parseSideResponse(malformed);
+
+    assert.equal(parsed.barrage, '第一条弹幕\n第二条弹幕');
+    assert.equal(parsed.status.environment.time, '深夜');
+    assert.equal(parsed.timeline.transition, 'unchanged');
+    assert.deepEqual(parsed.development, { changes: [] });
+    assert.doesNotMatch(parsed.barrage, /"status"|environment|timeline/);
+});
+
+test('labelled mixed output never leaks status JSON into barrage text', () => {
+    const mixed = `弹幕：\n围观！\n这也太突然了\n状态：${JSON.stringify(status('清晨'))}`;
+    const parsed = parseSideResponse(mixed);
+
+    assert.equal(parsed.barrage, '围观！\n这也太突然了');
+    assert.equal(parsed.status.environment.time, '清晨');
+    assert.doesNotMatch(parsed.barrage, /environment|characters/);
+});
+
 test('story timeline preserves unchanged time, supports jumps and keeps flashbacks off the mainline', () => {
     const chat = Array.from({ length: 7 }, (_, id) => ({
         mes: `message ${id}`,

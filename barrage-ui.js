@@ -29,6 +29,7 @@ const WORLD_INFO_TOP_N = 3;
 const inFlight = new Map();
 let barrageTemplate = '';
 let regenerationBound = false;
+let statusRegenerationBound = false;
 
 function clampInteger(value, fallback, minimum, maximum) {
     const number = Math.trunc(Number(value));
@@ -269,6 +270,22 @@ function deleteSideResultVariant(store, messageId, message) {
     delete bucket.variants[variantKey];
     if (Object.keys(bucket.variants).length === 0) delete store[String(messageId)];
     return true;
+}
+
+function clearSideResultStatus(store, messageId, message) {
+    const bucket = getSideResultBucket(store, messageId);
+    const variantKey = getBarrageVariantKey(message);
+    const record = bucket?.variants?.[variantKey];
+    if (!record) return false;
+    const changed = record.statusProcessed || record.status || record.timeline;
+    delete record.statusProcessed;
+    delete record.status;
+    delete record.timeline;
+    if (!record.developmentProcessed) {
+        delete bucket.variants[variantKey];
+        if (Object.keys(bucket.variants).length === 0) delete store[String(messageId)];
+    }
+    return Boolean(changed);
 }
 
 function clearDeletedSideResultRecords(context, firstDeletedMessageId) {
@@ -516,7 +533,7 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
         && developmentVariantReady
         && (!statusEnabled || cachedStatus)
         && (!developmentEnabled || developmentProcessed);
-    if (!options.force && options.refreshDerived !== true && hasRequiredCache) {
+    if (!options.force && !options.forceStatus && options.refreshDerived !== true && hasRequiredCache) {
         if (barrageEnabled) safelyRender(render, numericId, cached.content, 'ready');
         refreshStoryStatusUi(context);
         refreshCharacterDevelopmentUi(context);
@@ -530,12 +547,17 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
             console.warn('[Memory Augment] Stale barrage removal save failed.', error);
         }
     }
-    const requestBarrage = barrageEnabled && (options.force || !cached?.content);
-    const requestStatus = statusEnabled && (options.refreshDerived === true || !statusVariantReady);
-    const requestDevelopment = developmentEnabled
+    const requestBarrage = options.forceStatus !== true
+        && barrageEnabled && (options.force || !cached?.content);
+    const requestStatus = statusEnabled
+        && (options.forceStatus === true || options.refreshDerived === true || !statusVariantReady);
+    const requestDevelopment = options.forceStatus !== true && developmentEnabled
         && (options.refreshDerived === true || !developmentVariantReady);
+    if (!requestBarrage && !requestStatus && !requestDevelopment) {
+        return { generated: false, reason: 'no-output-requested' };
+    }
 
-    const requestKey = `${chatId}:${numericId}:${sourceHash}`;
+    const requestKey = `${chatId}:${numericId}:${sourceHash}:${Number(requestBarrage)}${Number(requestStatus)}${Number(requestDevelopment)}`;
     if (inFlight.has(requestKey)) {
         return inFlight.get(requestKey);
     }
@@ -868,6 +890,63 @@ function bindRegeneration(settings) {
     regenerationBound = true;
 }
 
+function getLatestAssistantMessageId(context) {
+    for (let index = (context?.chat?.length ?? 0) - 1; index >= 0; index--) {
+        const message = context.chat[index];
+        const text = String(message?.mes ?? '').trim();
+        if (!message?.is_user && !message?.is_system && text && text !== '...') return index;
+    }
+    return -1;
+}
+
+function bindStatusRegeneration(settings) {
+    if (statusRegenerationBound) return;
+    document.addEventListener('memory-augment-regenerate-story-status', async (event) => {
+        const button = event.detail?.button
+            ?? document.querySelector('#memory_augment_story_status_regenerate');
+        if (button?.dataset?.busy === 'true') return;
+        const context = SillyTavern.getContext();
+        const messageId = getLatestAssistantMessageId(context);
+        if (settings?.status?.enabled !== true || messageId < 0) return;
+        const message = context.chat[messageId];
+        if (button) {
+            button.dataset.busy = 'true';
+            button.disabled = true;
+            button.textContent = '状态栏生成中…';
+        }
+        try {
+            const sideChanged = clearSideResultStatus(
+                getSideResultStore(context.chatMetadata),
+                messageId,
+                message,
+            );
+            const statusChanged = clearStoryStatusRecords(context, messageId);
+            if (sideChanged || statusChanged) await context.saveMetadata?.();
+            refreshStoryStatusUi(context);
+            const result = await handleCharacterMessageRendered(
+                messageId,
+                settings,
+                context,
+                {},
+                { forceStatus: true },
+            );
+            if (button) button.textContent = result?.statusSaved ? '状态栏已更新' : '生成失败，请重试';
+        } catch (error) {
+            console.warn('[Memory Augment] Story status regeneration failed.', error);
+            if (button) button.textContent = '生成失败，请重试';
+        } finally {
+            if (button) {
+                setTimeout(() => {
+                    button.textContent = '重新生成状态栏';
+                    delete button.dataset.busy;
+                    button.disabled = settings?.status?.enabled !== true;
+                }, 1200);
+            }
+        }
+    });
+    statusRegenerationBound = true;
+}
+
 export async function initializeBarrageUi(settings, options = {}) {
     const context = SillyTavern.getContext();
     initializeStoryStatusUi(context, settings);
@@ -945,6 +1024,7 @@ export async function initializeBarrageUi(settings, options = {}) {
     }
 
     bindRegeneration(settings);
+    bindStatusRegeneration(settings);
     try {
         restoreStoredBarrages(context, settings);
     } catch (error) {

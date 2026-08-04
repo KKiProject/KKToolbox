@@ -314,6 +314,7 @@ function buildBarrageUserContent(
         '',
         '【必须完成的输出任务】',
         `完成：${requestedTasks || '返回空结果'}。只输出一个合法 JSON 对象，不要使用 Markdown 代码块，也不要添加 JSON 之外的文字。`,
+        'barrage、status、timeline、development 必须是这个 JSON 对象中彼此独立的四个字段，禁止用标签或自然语言把它们拼在同一个字符串里。barrage 内换行必须正确转义，不能破坏 JSON。',
         'JSON 格式：',
         '{',
         '  "barrage": "弹幕正文，可包含换行",',

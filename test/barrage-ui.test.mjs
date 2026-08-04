@@ -377,6 +377,56 @@ test('forced regeneration bypasses the stored barrage and replaces it', async ()
     assert.equal(context.saves, 2, 'the stale barrage is removed before the replacement is saved');
 });
 
+test('forced status regeneration updates only status and preserves barrage and development', async () => {
+    const context = createContext();
+    const settings = createSettings();
+    settings.development = { enabled: true };
+    context.chat[5].mes = '角色决定保护玩家。';
+    let calls = 0;
+    const dependencies = {
+        renderBarrage: () => true,
+        getCurrentContext: () => context,
+        async generateBarrage(payload) {
+            calls++;
+            if (calls === 1) {
+                return { content: JSON.stringify({
+                    barrage: '应当保留的弹幕',
+                    status: { environment: { location: '旧地点' }, characters: [], event: { activity: '交谈' } },
+                    development: { changes: [{
+                        character: '角色',
+                        dimension: 'relationship',
+                        target: '玩家',
+                        after: '决定保护玩家',
+                        source: 'observed',
+                        evidence: [{ messageId: 5, quote: '角色决定保护玩家。' }],
+                    }] },
+                }) };
+            }
+            assert.deepEqual(payload.outputOptions, {
+                barrageEnabled: false,
+                statusEnabled: true,
+                developmentEnabled: false,
+            });
+            return { content: JSON.stringify({
+                barrage: '',
+                status: { environment: { location: '新地点' }, characters: [], event: { activity: '继续交谈' } },
+                timeline: { transition: 'unchanged' },
+                development: null,
+            }) };
+        },
+    };
+
+    await handleCharacterMessageRendered(5, settings, context, dependencies);
+    const before = getCharacterDevelopmentSnapshot(context, { includeCandidates: true });
+    const regenerated = await handleCharacterMessageRendered(5, settings, context, dependencies, { forceStatus: true });
+
+    assert.equal(regenerated.statusSaved, true);
+    assert.equal(calls, 2);
+    assert.equal(getBarrageVariants(context)['swipe:0'].content, '应当保留的弹幕');
+    assert.equal(context.chatMetadata[STORY_STATUS_METADATA_KEY]['5'].status.environment.location, '新地点');
+    assert.deepEqual(getCharacterDevelopmentSnapshot(context, { includeCandidates: true }), before);
+});
+
 test('each swiped reply keeps its own barrage and restores it when switched back', async () => {
     const context = createContext();
     const settings = createSettings({ statusEnabled: false });

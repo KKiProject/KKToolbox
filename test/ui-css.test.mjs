@@ -27,6 +27,14 @@ test('the barrage regeneration control is forced to remain horizontal', async ()
     assert.match(rule, /writing-mode:\s*horizontal-tb/);
 });
 
+test('the story status regeneration control remains horizontal', async () => {
+    const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
+    const rule = css.match(/#memory_augment_story_status_regenerate\s*\{([\s\S]*?)\}/)?.[1] ?? '';
+    assert.match(rule, /display:\s*inline-flex/);
+    assert.match(rule, /white-space:\s*nowrap/);
+    assert.match(rule, /writing-mode:\s*horizontal-tb/);
+});
+
 test('the floating story launcher cannot be hidden behind mobile themes', async () => {
     const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
     const rootRule = css.match(/#memory_augment_story_status_root\s*\{([\s\S]*?)\}/)?.[1] ?? '';
