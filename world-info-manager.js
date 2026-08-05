@@ -84,6 +84,7 @@ export async function loadAssociatedWorldInfoBooks(
                 id: entry.bookId,
                 name: entry.bookId,
                 bindingTypes: getBindingTypes(entry.bookId, context, globals, personaBook, characterBooks),
+                linkedToCharacter: characterBooks.has(entry.bookId),
                 entries: [],
                 vectorizedEntries: 0,
             });

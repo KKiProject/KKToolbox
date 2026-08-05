@@ -243,6 +243,7 @@ function buildBarrageUserContent(
     previousStatus = null,
     previousTimeline = null,
     developmentSnapshot = null,
+    characterBaselines = null,
     statusOptions = {},
     outputOptions = {},
 ) {
@@ -299,6 +300,11 @@ function buildBarrageUserContent(
         '【上一份剧情时间线】（这是时间连续性的唯一基准；没有明确时间推进时必须原样继承）',
         previousTimelineText,
         ...(developmentEnabled ? [
+            '',
+            '【人物初始基准】（这是故事开始前的设定，只用于判断“是否真的发生了变化”）',
+            characterBaselines && typeof characterBaselines === 'object'
+                ? JSON.stringify(characterBaselines)
+                : '（未知；禁止根据身份刻板印象补写初始性格）',
             '',
             '【人物发展档案】（profiles 是已确认变化，不要重复提交；candidates 是观察中的同类趋势）',
             developmentSnapshot && typeof developmentSnapshot === 'object'
@@ -365,11 +371,14 @@ function buildBarrageUserContent(
         statusEnabled ? 'segments 覆盖前情回顾里尚未建立状态的最新用户楼和最新章节，按每一楼内真实发生的时间转折列出；一楼可有多个时间段。messageId 必须使用上文标出的楼号，startQuote 必须逐字摘取该时间段开头的短句，以便切片器定位；单纯提及历史而未进入场景时 mode=mention。' : '',
         statusEnabled ? 'timeline 必须返回对象。' : '剧情状态已关闭，timeline 必须返回 null。',
         developmentEnabled ? '人物发展默认没有变化，development.changes 默认必须是空数组。提供了这个字段不代表必须填写；绝大多数回复都应返回空数组。当前情绪、一次行为、临时欲望和当场失态都不属于长期变化。' : '人物发展档案已关闭，development 必须返回 null。',
+        developmentEnabled ? '必须先拿人物初始基准与已有发展档案比较。符合初始性格、初始关系或一贯保护方式的行为不是“变化”，绝不能为了填写 before/after 而虚构一个过去状态。' : '',
+        developmentEnabled ? '若人物初始基准 known=false，禁止从平民、贵族、职业、种族、阵营、性别或关系身份推断原本性格；除非玩家最新输入直接明确前后变化，否则不要提交该人物的变化。' : '',
         developmentEnabled ? '只有两类内容可以写入 changes：①玩家最新输入明确陈述人物如今已经变成怎样，此时 source=user_direct；②跨不同事件反复出现、足以支持长期改变的行为模式，此时 source=observed。AI 正文自己突然宣布性格大变，只能算 observed，不能冒充玩家设定。' : '',
         developmentEnabled ? 'user_direct 的 evidence 必须逐字引用用户楼层中的明确事实或设定。玩家明确设定拥有最高优先级，即使与角色卡或旧档案矛盾也必须采用；时间跳跃中未交代的变化原因必须留空，不准擅自补全。' : '',
         developmentEnabled ? '仅写“十年后”只代表时间推进，不能自动改变性格。只有同时明确写出“十年后她已变得阴郁”等人物新状态时，才记录对应变化。玩家角色 user 的性格、观念和内心只允许 user_direct，禁止根据一次选择擅自推断。' : '',
         developmentEnabled ? '每条 evidence 的 messageId 必须使用上文真实楼号，quote 必须是该楼逐字存在的短原文；没有可核对原文就不要提交。不要重复已经确认的人物发展。' : '',
         developmentEnabled ? '先比较 candidates：暴躁、火爆、易怒等措辞不同但含义和方向相同的描述必须复用同一个 candidateId，不能新建；含义相反的变化绝不能合并。after 写简洁结论，详细情节只放 evidence。' : '',
+        developmentEnabled ? 'after 只写中性、可持续的当前倾向，不写“完全放弃、凌驾于、挑战权威、确立地位”等未经原文明确支持的动机、目的或夸张因果；reason 不明确就留空。' : '',
         developmentEnabled ? '若 candidates 中已经存在明显重复项，使用 merges 合并。merges 只整理语义和方向明确相同的候选；没有可安全合并的内容时返回空数组。' : '',
         statusEnabled && customFields.length > 0
             ? `extras 只允许填写玩家指定并已启用的这些项目：${customFields.join('、')}。不得增加其他项目。`
@@ -467,6 +476,7 @@ export async function generateBarrageCompletion(payload, options = {}) {
         payload?.previousStatus,
         payload?.previousTimeline,
         payload?.developmentSnapshot,
+        payload?.characterBaselines,
         payload?.statusOptions,
         payload?.outputOptions,
     );

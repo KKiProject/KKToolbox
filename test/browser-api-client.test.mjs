@@ -144,6 +144,11 @@ test('development output defaults to empty and gives direct player canon highest
             profiles: [],
             candidates: [{ id: 'candidate-1', character: '角色', dimension: 'temperament', trend: '易怒', after: '脾气暴躁' }],
         },
+        characterBaselines: {
+            mode: 'character',
+            known: true,
+            entries: [{ title: '角色', text: '她原本就会平等对待所有人。' }],
+        },
         outputOptions: { barrageEnabled: false, statusEnabled: false, developmentEnabled: true },
     }, {
         fetchImpl: async (_url, options) => {
@@ -157,6 +162,11 @@ test('development output defaults to empty and gives direct player canon highest
     assert.match(prompt, /仅写“十年后”只代表时间推进/);
     assert.match(prompt, /不能冒充玩家设定/);
     assert.match(prompt, /candidate-1/);
+    assert.match(prompt, /人物初始基准/);
+    assert.match(prompt, /她原本就会平等对待所有人/);
+    assert.match(prompt, /符合初始性格.*不是“变化”/);
+    assert.match(prompt, /关系身份推断原本性格/);
+    assert.match(prompt, /完全放弃、凌驾于、挑战权威/);
     assert.match(prompt, /必须复用同一个 candidateId/);
     assert.match(prompt, /"merges"/);
 });

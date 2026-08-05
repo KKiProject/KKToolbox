@@ -21,6 +21,11 @@ import {
     isCharacterDevelopmentProcessed,
     refreshCharacterDevelopmentUi,
 } from './character-development.js';
+import {
+    buildCharacterBaselines,
+    ensureDevelopmentBaselineSource,
+    getDevelopmentBaselineOwnerKey,
+} from './character-baseline.js';
 
 const BARRAGE_METADATA_KEY = 'memory_augment_barrages';
 const SIDE_RESULT_METADATA_KEY = 'memory_augment_side_results';
@@ -488,18 +493,28 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
     const messageText = String(message?.mes ?? '').trim();
     const barrageEnabled = settings?.barrage?.enabled === true;
     const statusEnabled = settings?.status?.enabled === true;
-    const developmentEnabled = settings?.development?.enabled === true;
+    const developmentConfigured = settings?.development?.enabled === true;
     const hasPriorUserMessage = Number.isInteger(numericId)
         && context?.chat?.slice(0, numericId).some(item => item?.is_user);
-    if ((!barrageEnabled && !statusEnabled && !developmentEnabled)
+    if ((!barrageEnabled && !statusEnabled && !developmentConfigured)
         || !message || message.is_user || message.is_system || !messageText || messageText === '...'
         || !hasPriorUserMessage) {
         return { generated: false, reason: 'disabled-or-ineligible' };
     }
-
     const barrage = completeApiConfig(settings?.apis?.barrage);
     if (!barrage) {
         return { generated: false, reason: 'missing-config' };
+    }
+    const developmentSource = developmentConfigured
+        ? await ensureDevelopmentBaselineSource(settings, context)
+        : '';
+    // Contexts without a real SillyTavern character (mostly tests and imports)
+    // keep the old conservative unknown-baseline path. Real character cards must
+    // be explicitly confirmed before automatic development analysis starts.
+    const developmentEnabled = developmentConfigured
+        && (!getDevelopmentBaselineOwnerKey(context) || Boolean(developmentSource));
+    if (!barrageEnabled && !statusEnabled && !developmentEnabled) {
+        return { generated: false, reason: 'development-baseline-unconfirmed' };
     }
 
     const chatId = getChatId(context);
@@ -595,6 +610,20 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
                 limitProfiles: 12,
             })
             : null;
+        let characterBaselines = null;
+        if (requestDevelopment) {
+            try {
+                characterBaselines = await buildCharacterBaselines(settings, context, { previousStatus, recentMessages });
+            } catch (error) {
+                console.warn('[Memory Augment] Character baseline loading failed; continuing conservatively.', error);
+                characterBaselines = {
+                    mode: developmentSource || 'unknown',
+                    known: false,
+                    entries: [],
+                    note: '人物初始基准读取失败；禁止自动推断人物变化。',
+                };
+            }
+        }
         const response = await request({
             barrage,
             systemPrompt: String(settings.barrage.systemPrompt ?? '').trim(),
@@ -604,6 +633,7 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
             previousStatus,
             previousTimeline,
             developmentSnapshot,
+            characterBaselines,
             statusOptions,
             outputOptions: {
                 barrageEnabled: requestBarrage,
@@ -665,6 +695,7 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
                 status: finalStatus,
                 timeline: currentTimeline,
                 sourceHash,
+                baselineKnown: characterBaselines?.known,
             });
         }
         if ((requestStatus && finalStatus) || (requestDevelopment && response?.partial !== true)) {

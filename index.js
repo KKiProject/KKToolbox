@@ -1,5 +1,5 @@
 import { extension_settings, renderExtensionTemplateAsync } from '../../../extensions.js';
-import { Popup, POPUP_TYPE } from '../../../popup.js';
+import { Popup, POPUP_RESULT, POPUP_TYPE } from '../../../popup.js';
 import { normalizeBaseUrl } from './api-utils.js';
 import { bindChatIngestionLifecycle, reconcileBufferedMessageQueue } from './chat-lifecycle.js';
 import { initializeChatMemoryUi } from './chat-memory-ui.js';
@@ -21,6 +21,7 @@ import {
     refreshCharacterDevelopmentUi,
     setManualDevelopmentField,
 } from './character-development.js';
+import { initializeDevelopmentBaselineUi } from './character-baseline.js';
 import { clearAllSummaries, getSummaryStatus, initializeSummaryManager, repairMalformedSummaries } from './summary-manager.js';
 import { initializeWorldInfoManager, vectorizeSelectedWorldInfo } from './world-info-manager.js';
 
@@ -69,6 +70,7 @@ export const defaultSettings = Object.freeze({
     },
     development: {
         enabled: true,
+        baselineSourcesByOwner: {},
     },
     map: {
         includeInPrompt: true,
@@ -818,6 +820,40 @@ async function initialize() {
 
     bindSettings(settings, context);
     bindStatusCustomFields(settings, context);
+    initializeDevelopmentBaselineUi(settings, context, {
+        chooseSource: async (info) => {
+            const recommendation = info.recommended === 'worldbook' ? '关联世界书' : '酒馆角色卡';
+            const worldbookText = info.linkedBookCount > 0
+                ? `已找到 ${info.linkedBookCount} 本角色关联世界书：${info.linkedBookNames.join('、')}。`
+                : '当前没有找到角色关联世界书；如果仍选择它，人物基准会保持“未知”，不会靠身份猜性格。';
+            const content = document.createElement('div');
+            content.className = 'memory-augment-development-source-prompt';
+            const title = document.createElement('h3');
+            title.textContent = '先选择人物初始设定来源';
+            const explanation = document.createElement('p');
+            explanation.textContent = '人物发展必须先知道角色在故事开始前是什么样。这个选择只影响人物发展档案，不影响弹幕和状态栏。';
+            const books = document.createElement('p');
+            books.textContent = worldbookText;
+            const suggestion = document.createElement('p');
+            const strong = document.createElement('strong');
+            strong.textContent = `建议：${recommendation}`;
+            suggestion.append(strong, '。选择会按当前角色卡保存，以后可以在插件设置里更改。');
+            content.append(title, explanation, books, suggestion);
+            const result = await new Popup(content, POPUP_TYPE.TEXT, '', {
+                okButton: '使用酒馆角色卡',
+                cancelButton: '暂不选择',
+                customButtons: [{
+                    text: '使用关联世界书',
+                    result: POPUP_RESULT.CUSTOM1,
+                    classes: info.recommended === 'worldbook' ? ['menu_button_default'] : [],
+                }],
+                defaultResult: info.recommended === 'worldbook' ? POPUP_RESULT.CUSTOM1 : POPUP_RESULT.AFFIRMATIVE,
+            }).show();
+            if (result === POPUP_RESULT.AFFIRMATIVE) return 'character';
+            if (result === POPUP_RESULT.CUSTOM1) return 'worldbook';
+            return '';
+        },
+    });
     bindModelDiscovery(settings, context);
     bindActions(settings);
     addTopNavigationButton();

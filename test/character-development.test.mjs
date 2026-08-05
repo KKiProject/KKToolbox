@@ -77,6 +77,21 @@ test('a claimed direct setting is rejected unless its quote exists in a user flo
     assert.equal(getCharacterDevelopmentSnapshot(context).profiles.length, 0);
 });
 
+test('an unknown character baseline rejects automatic personality inference but keeps direct player canon available', () => {
+    const context = makeContext(8);
+    context.chat[2].mes = '莉亚挡在艾尔诺身前。';
+    const result = applyCharacterDevelopmentUpdate(context, 2, { changes: [change({
+        character: '莉亚',
+        before: '原本顺从',
+        after: '开始反抗权威',
+        source: 'observed',
+        evidence: [{ messageId: 2, quote: '莉亚挡在艾尔诺身前。' }],
+    })] }, { baselineKnown: false });
+
+    assert.equal(result.rejected, 1);
+    assert.equal(getCharacterDevelopmentSnapshot(context, { includeCandidates: true }).candidates.length, 0);
+});
+
 test('ordinary observations stay private until repeated across separate situations over time', () => {
     const context = makeContext(20);
     for (const id of [2, 8, 14]) context.chat[id].mes = '莉亚再次用沉默掩饰了自己的真实想法。';

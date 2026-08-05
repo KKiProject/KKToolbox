@@ -208,7 +208,14 @@ function getCandidateKey(change) {
 function validateEvidence(context, evidence) {
     return evidence.filter((item) => {
         const message = context?.chat?.[item.messageId];
-        return Boolean(message && String(message.mes ?? '').includes(item.quote));
+        if (!message) return false;
+        const messageText = String(message.mes ?? '');
+        if (messageText.includes(item.quote)) return true;
+        const normalizeQuote = value => String(value ?? '')
+            .toLocaleLowerCase()
+            .replace(/[\s\p{P}\p{S}]+/gu, '');
+        const quote = normalizeQuote(item.quote);
+        return quote.length >= 6 && normalizeQuote(messageText).includes(quote);
     });
 }
 
@@ -277,12 +284,23 @@ function isSameCandidateField(left, right) {
         && getFieldKey(left?.dimension, left?.target) === getFieldKey(right?.dimension, right?.target);
 }
 
-function areCandidateMeaningsCompatible(left, right) {
-    if (!isSameCandidateField(left, right)) return false;
+function isSameCandidateCharacter(left, right) {
+    return cleanText(left?.character, 120).toLocaleLowerCase()
+        === cleanText(right?.character, 120).toLocaleLowerCase();
+}
+
+function areCandidateMeaningsCompatible(left, right, { allowFieldDrift = false } = {}) {
+    if (!isSameCandidateCharacter(left, right)) return false;
+    const sameField = isSameCandidateField(left, right);
+    if (!sameField && !allowFieldDrift) return false;
+    const leftTarget = cleanText(left?.target, 120).toLocaleLowerCase();
+    const rightTarget = cleanText(right?.target, 120).toLocaleLowerCase();
+    if (!sameField && leftTarget && rightTarget && leftTarget !== rightTarget) return false;
     const leftTraits = getSemanticTraits(`${left?.trend ?? ''} ${left?.after ?? ''}`);
     const rightTraits = getSemanticTraits(`${right?.trend ?? ''} ${right?.after ?? ''}`);
     if (hasOppositeTraits(leftTraits, rightTraits)) return false;
     if (leftTraits.some(trait => rightTraits.includes(trait))) return true;
+    if (!sameField) return false;
     const leftFingerprint = getSemanticFingerprint(left);
     const rightFingerprint = getSemanticFingerprint(right);
     if (leftFingerprint && leftFingerprint === rightFingerprint) return true;
@@ -290,6 +308,23 @@ function areCandidateMeaningsCompatible(left, right) {
     const rightText = normalizeMeaningText(right?.trend || right?.after);
     return Math.min(leftText.length, rightText.length) >= 4
         && (leftText.includes(rightText) || rightText.includes(leftText));
+}
+
+function chooseConciseCandidateText(existing, incoming) {
+    const left = cleanText(existing, 600);
+    const right = cleanText(incoming, 600);
+    if (!left) return right;
+    if (!right) return left;
+    const leftMeaning = normalizeMeaningText(left);
+    const rightMeaning = normalizeMeaningText(right);
+    if (leftMeaning.includes(rightMeaning) && right.length < left.length) return right;
+    if (rightMeaning.includes(leftMeaning)) return left;
+    const leftTraits = getSemanticTraits(left);
+    const rightTraits = getSemanticTraits(right);
+    if (leftTraits.some(trait => rightTraits.includes(trait))) {
+        return right.length < left.length ? right : left;
+    }
+    return left;
 }
 
 function mergeCandidateRecords(target, source, overrides = {}) {
@@ -316,7 +351,7 @@ function mergeCandidateRecords(target, source, overrides = {}) {
         target: target.target || source.target || '',
         before: target.before || source.before || '',
         trend: cleanText(overrides.trend || target.trend || source.trend || semanticTraits[0] || '', 80),
-        after: cleanText(overrides.after || latest.after || target.after || source.after, 600),
+        after: cleanText(overrides.after || chooseConciseCandidateText(target.after, source.after) || latest.after, 600),
         reason: cleanText(latest.reason || target.reason || source.reason, 500),
         evidence: evidence.slice(-24),
         sceneKeys: [...new Set([...(target?.sceneKeys ?? []), ...(source?.sceneKeys ?? [])])].slice(-24),
@@ -380,7 +415,8 @@ function applyCandidateMerges(store, merges) {
         for (const sourceId of merge.fromIds) {
             if (sourceId === merge.intoId) continue;
             const source = store.candidates[sourceId];
-            if (!source || !isSameCandidateField(target, source)) continue;
+            if (!source || (!isSameCandidateField(target, source)
+                && !areCandidateMeaningsCompatible(target, source, { allowFieldDrift: true }))) continue;
             store.candidates[merge.intoId] = mergeCandidateRecords(store.candidates[merge.intoId], source, merge);
             delete store.candidates[sourceId];
         }
@@ -393,7 +429,7 @@ function promoteMatureCandidates(store, ownerMessageId) {
         if (!store.candidates[candidateId]) continue;
         const evidenceIds = (candidate.evidence ?? []).map(item => Number(item.messageId)).filter(Number.isInteger);
         const floorSpan = evidenceIds.length > 0 ? Math.max(...evidenceIds) - Math.min(...evidenceIds) : 0;
-        if ((candidate.sceneKeys?.length ?? 0) < 3 || floorSpan < 10) continue;
+        if ((candidate.evidence?.length ?? 0) < 3 || (candidate.sceneKeys?.length ?? 0) < 2 || floorSpan < 10) continue;
         const promoted = upsertConfirmedField(store, candidate, ownerMessageId, 'confirmed');
         delete store.candidates[candidateId];
         if (!promoted.blocked) promotedCount++;
@@ -403,7 +439,8 @@ function promoteMatureCandidates(store, ownerMessageId) {
 
 function findCandidateForChange(store, change) {
     const explicit = cleanText(change.candidateId, 1000);
-    if (explicit && store.candidates?.[explicit] && isSameCandidateField(store.candidates[explicit], change)) {
+    if (explicit && store.candidates?.[explicit]
+        && areCandidateMeaningsCompatible(store.candidates[explicit], change, { allowFieldDrift: true })) {
         return store.candidates[explicit];
     }
     return Object.values(store.candidates ?? {})
@@ -453,6 +490,10 @@ export function applyCharacterDevelopmentUpdate(context, ownerMessageId, value, 
             confirmed++;
             continue;
         }
+        if (change.source === 'observed' && options?.baselineKnown === false) {
+            rejected++;
+            continue;
+        }
         if (userCharacters.has(change.character.toLocaleLowerCase())) {
             rejected++;
             continue;
@@ -478,8 +519,8 @@ export function applyCharacterDevelopmentUpdate(context, ownerMessageId, value, 
             firstSeenMessageId: numericId,
         };
         candidate.trend = change.trend || candidate.trend || getSemanticTraits(change.after)[0] || '';
-        candidate.after = change.after || candidate.after;
-        candidate.reason = change.reason || candidate.reason;
+        candidate.after = chooseConciseCandidateText(candidate.after, change.after);
+        candidate.reason = candidate.reason || change.reason;
         candidate.lastSeenMessageId = numericId;
         candidate.sceneKeys = [...new Set([...candidate.sceneKeys, sceneKey])].slice(-12);
         const evidenceKeys = new Set(candidate.evidence.map(item => `${item.messageId}:${item.quote}`));
@@ -493,7 +534,7 @@ export function applyCharacterDevelopmentUpdate(context, ownerMessageId, value, 
 
         const evidenceIds = candidate.evidence.map(item => item.messageId);
         const floorSpan = evidenceIds.length > 0 ? Math.max(...evidenceIds) - Math.min(...evidenceIds) : 0;
-        if (candidate.sceneKeys.length >= 3 && floorSpan >= 10) {
+        if (candidate.evidence.length >= 3 && candidate.sceneKeys.length >= 2 && floorSpan >= 10) {
             const promoted = upsertConfirmedField(store, candidate, numericId, 'confirmed');
             delete store.candidates[key];
             if (!promoted.blocked) confirmed++;
