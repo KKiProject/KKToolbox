@@ -39,6 +39,8 @@ test('character-card baseline contains the actual starting description and perso
     setDevelopmentBaselineSource(settings, context, 'character');
 
     const baseline = await buildCharacterBaselines(settings, context);
+    assert.equal(baseline.mode, 'single_character');
+    assert.deepEqual(baseline.knownCharacters, ['莉亚']);
     assert.equal(baseline.known, true);
     assert.match(baseline.entries[0].text, /从不因平民身份而卑微/);
     assert.match(baseline.entries[0].text, /始终保护艾尔诺/);

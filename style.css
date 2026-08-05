@@ -977,6 +977,31 @@
     opacity: 0.78;
 }
 
+.memory-augment-development-baseline-panel {
+    display: grid;
+    gap: 0.35rem;
+    margin: 0 0 0.75rem;
+    padding: 0.65rem;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 0.55rem;
+}
+
+.memory-augment-development-baseline-panel > label {
+    display: grid;
+    gap: 0.25rem;
+}
+
+.memory-augment-development-baseline-panel .text_pole {
+    box-sizing: border-box;
+    max-width: 100%;
+    width: 22rem;
+}
+
+.memory-augment-development-baseline-panel small {
+    color: var(--SmartThemeQuoteColor);
+    line-height: 1.35;
+}
+
 .memory-augment-development-manual {
     border: 1px solid var(--SmartThemeBorderColor);
     border-radius: 0.55rem;

@@ -219,6 +219,21 @@ function validateEvidence(context, evidence) {
     });
 }
 
+function isCharacterBaselineKnown(characterBaselines, character) {
+    if (!characterBaselines || characterBaselines.known === null || characterBaselines.known === undefined) return true;
+    const target = cleanText(character, 120).toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '');
+    const knownCharacters = Array.isArray(characterBaselines.knownCharacters)
+        ? characterBaselines.knownCharacters
+        : [];
+    if (knownCharacters.length === 0) return characterBaselines.known === true;
+    return knownCharacters.some((name) => {
+        const known = cleanText(name, 120).toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '');
+        return known && target && (known === target
+            || (Math.min(known.length, target.length) >= 2
+                && (known.includes(target) || target.includes(known))));
+    });
+}
+
 function getProfile(store, name, create = false) {
     const key = cleanText(name, 120).toLocaleLowerCase();
     let profile = Object.values(store?.profiles ?? {}).find(item => item?.name?.toLocaleLowerCase() === key);
@@ -490,7 +505,8 @@ export function applyCharacterDevelopmentUpdate(context, ownerMessageId, value, 
             confirmed++;
             continue;
         }
-        if (change.source === 'observed' && options?.baselineKnown === false) {
+        if (change.source === 'observed' && (options?.baselineKnown === false
+            || !isCharacterBaselineKnown(options?.characterBaselines, change.character))) {
             rejected++;
             continue;
         }
@@ -856,6 +872,19 @@ export function initializeCharacterDevelopmentUi(context) {
         root.innerHTML = `
             <p class="memory-augment-development-disabled" hidden>人物发展档案已在设置中关闭。</p>
             <p class="memory-augment-development-intro">这里只显示已经成立的人物变化。观察中的候选不会发送给正文 AI；玩家明确设定和手动修改优先级最高。</p>
+            <section id="memory_augment_development_baseline_panel" class="memory-augment-development-baseline-panel">
+                <strong>当前角色卡的人物设定</strong>
+                <span id="memory_augment_development_baseline_owner">正在读取当前角色卡…</span>
+                <label>角色卡类型
+                    <select id="memory_augment_development_baseline_source" class="text_pole">
+                        <option value="">尚未选择</option>
+                        <option value="character">单人角色卡</option>
+                        <option value="worldbook">世界／群像卡</option>
+                    </select>
+                </label>
+                <small id="memory_augment_development_baseline_status">正在读取人物设定来源…</small>
+                <small>这里只设置当前角色卡。单人卡的主角色以酒馆角色设定为准，人物关系与重要 NPC 由关联世界书补充；世界／群像卡的所有重要人物都从关联世界书查找。</small>
+            </section>
             <div class="memory-augment-development-manual">
                 <strong>手动添加人物变化</strong>
                 <div class="memory-augment-development-manual-grid">

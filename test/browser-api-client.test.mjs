@@ -165,7 +165,9 @@ test('development output defaults to empty and gives direct player canon highest
     assert.match(prompt, /人物初始基准/);
     assert.match(prompt, /她原本就会平等对待所有人/);
     assert.match(prompt, /符合初始性格.*不是“变化”/);
-    assert.match(prompt, /关系身份推断原本性格/);
+    assert.match(prompt, /关系身份推断其原本性格/);
+    assert.match(prompt, /knownCharacters/);
+    assert.match(prompt, /不要把一个人物的设定套给另一个人/);
     assert.match(prompt, /完全放弃、凌驾于、挑战权威/);
     assert.match(prompt, /必须复用同一个 candidateId/);
     assert.match(prompt, /"merges"/);

@@ -92,6 +92,32 @@ test('an unknown character baseline rejects automatic personality inference but 
     assert.equal(getCharacterDevelopmentSnapshot(context, { includeCandidates: true }).candidates.length, 0);
 });
 
+test('a known main character baseline does not authorize inference for an unmatched NPC', () => {
+    const context = makeContext(8);
+    context.chat[2].mes = '莉亚挡在门前。陌生骑士沉默地退后。';
+    const result = applyCharacterDevelopmentUpdate(context, 2, { changes: [
+        change({
+            character: '莉亚',
+            after: '开始更谨慎地保护同伴',
+            evidence: [{ messageId: 2, quote: '莉亚挡在门前。' }],
+        }),
+        change({
+            character: '陌生骑士',
+            after: '变得顺从',
+            evidence: [{ messageId: 2, quote: '陌生骑士沉默地退后。' }],
+        }),
+    ] }, {
+        characterBaselines: { known: true, knownCharacters: ['莉亚'] },
+    });
+
+    assert.equal(result.observed, 1);
+    assert.equal(result.rejected, 1);
+    assert.deepEqual(
+        getCharacterDevelopmentSnapshot(context, { includeCandidates: true }).candidates.map(item => item.character),
+        ['莉亚'],
+    );
+});
+
 test('ordinary observations stay private until repeated across separate situations over time', () => {
     const context = makeContext(20);
     for (const id of [2, 8, 14]) context.chat[id].mes = '莉亚再次用沉默掩饰了自己的真实想法。';

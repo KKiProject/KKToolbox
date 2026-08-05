@@ -820,30 +820,39 @@ async function initialize() {
 
     bindSettings(settings, context);
     bindStatusCustomFields(settings, context);
+    bindModelDiscovery(settings, context);
+    bindActions(settings);
+    addTopNavigationButton();
+    bindMessageIngestion(settings, context);
+    initializeChatMemoryUi(settings, context);
+    initializeSummaryManager(settings, context, { onSaved: refreshStatus });
+    // Create the always-available status/map launcher before optional async managers run.
+    initializeStoryStatusUi(context, settings);
+    initializeCharacterDevelopmentUi(context);
     initializeDevelopmentBaselineUi(settings, context, {
         chooseSource: async (info) => {
-            const recommendation = info.recommended === 'worldbook' ? '关联世界书' : '酒馆角色卡';
+            const recommendation = info.recommended === 'worldbook' ? '世界／群像卡' : '单人角色卡';
             const worldbookText = info.linkedBookCount > 0
                 ? `已找到 ${info.linkedBookCount} 本角色关联世界书：${info.linkedBookNames.join('、')}。`
-                : '当前没有找到角色关联世界书；如果仍选择它，人物基准会保持“未知”，不会靠身份猜性格。';
+                : '当前没有找到角色关联世界书；世界书中的人物基准会保持“未知”，不会靠身份猜性格。';
             const content = document.createElement('div');
             content.className = 'memory-augment-development-source-prompt';
             const title = document.createElement('h3');
-            title.textContent = '先选择人物初始设定来源';
+            title.textContent = '先确认当前角色卡类型';
             const explanation = document.createElement('p');
-            explanation.textContent = '人物发展必须先知道角色在故事开始前是什么样。这个选择只影响人物发展档案，不影响弹幕和状态栏。';
+            explanation.textContent = '单人卡的主角色以酒馆角色设定为准，人物关系与重要 NPC 由关联世界书补充；世界／群像卡的所有重要人物都查关联世界书。这个选择只影响人物发展档案。';
             const books = document.createElement('p');
             books.textContent = worldbookText;
             const suggestion = document.createElement('p');
             const strong = document.createElement('strong');
             strong.textContent = `建议：${recommendation}`;
-            suggestion.append(strong, '。选择会按当前角色卡保存，以后可以在插件设置里更改。');
+            suggestion.append(strong, '。选择会按当前角色卡保存，以后可在悬浮窗的人物发展页修改。');
             content.append(title, explanation, books, suggestion);
             const result = await new Popup(content, POPUP_TYPE.TEXT, '', {
-                okButton: '使用酒馆角色卡',
+                okButton: '单人角色卡',
                 cancelButton: '暂不选择',
                 customButtons: [{
-                    text: '使用关联世界书',
+                    text: '世界／群像卡',
                     result: POPUP_RESULT.CUSTOM1,
                     classes: info.recommended === 'worldbook' ? ['menu_button_default'] : [],
                 }],
@@ -854,17 +863,8 @@ async function initialize() {
             return '';
         },
     });
-    bindModelDiscovery(settings, context);
-    bindActions(settings);
-    addTopNavigationButton();
-    bindMessageIngestion(settings, context);
-    initializeChatMemoryUi(settings, context);
-    initializeSummaryManager(settings, context, { onSaved: refreshStatus });
-    // Create the always-available status/map launcher before optional async managers run.
-    initializeStoryStatusUi(context, settings);
     await initializeWorldInfoManager(settings, context);
     await initializeBarrageUi(settings, { templatePath: TEMPLATE_PATH });
-    initializeCharacterDevelopmentUi(context);
     initializeMapAtlasUi(settings, context, {
         confirm: (title, message) => Popup.show.confirm(title, message),
     });

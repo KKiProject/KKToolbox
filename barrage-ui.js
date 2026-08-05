@@ -695,7 +695,7 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
                 status: finalStatus,
                 timeline: currentTimeline,
                 sourceHash,
-                baselineKnown: characterBaselines?.known,
+                characterBaselines,
             });
         }
         if ((requestStatus && finalStatus) || (requestDevelopment && response?.partial !== true)) {

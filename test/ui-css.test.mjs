@@ -45,3 +45,13 @@ test('the floating story launcher cannot be hidden behind mobile themes', async 
     assert.match(rootRule, /z-index:\s*2147483000/);
     assert.match(ballRule, /display:\s*flex\s*!important/);
 });
+
+test('the per-character card type control lives in character development instead of global settings', async () => {
+    const settings = await readFile(new URL('../settings.html', import.meta.url), 'utf8');
+    const development = await readFile(new URL('../character-development.js', import.meta.url), 'utf8');
+    assert.doesNotMatch(settings, /memory_augment_development_baseline_source/);
+    assert.match(development, /memory_augment_development_baseline_source/);
+    assert.match(development, /当前角色卡的人物设定/);
+    assert.match(development, /单人角色卡/);
+    assert.match(development, /世界／群像卡/);
+});

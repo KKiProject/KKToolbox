@@ -70,8 +70,15 @@ function readCharacterCard(context) {
     return {
         mode: SOURCE_CARD,
         known: Boolean(boundedText),
+        primaryCharacter: cleanText(character.name ?? data.name, 120) || '当前角色',
+        knownCharacters: boundedText ? [cleanText(character.name ?? data.name, 120) || '当前角色'] : [],
         sourceLabel: `酒馆角色卡 · ${cleanText(character.name ?? data.name, 120) || '当前角色'}`,
-        entries: boundedText ? [{ title: cleanText(character.name ?? data.name, 120) || '当前角色', text: boundedText }] : [],
+        entries: boundedText ? [{
+            source: 'character_card',
+            useFor: [cleanText(character.name ?? data.name, 120) || '当前角色'],
+            title: cleanText(character.name ?? data.name, 120) || '当前角色',
+            text: boundedText,
+        }] : [],
     };
 }
 
@@ -100,34 +107,41 @@ function scoreWorldInfoEntry(entry, names, recentText) {
     const normalizedRecent = normalizeName(recentText);
     let score = 0;
     let matchedKnownCharacter = false;
+    const matchedNames = new Set();
     for (const nameValue of names) {
         const name = normalizeName(nameValue);
         if (!name) continue;
         if (title === name) {
             score = Math.max(score, 120);
             matchedKnownCharacter = true;
+            matchedNames.add(nameValue);
         } else if (title.includes(name) || name.includes(title)) {
             score = Math.max(score, 95);
             matchedKnownCharacter = true;
+            matchedNames.add(nameValue);
         }
         if (keywords.some(key => key === name)) {
             score = Math.max(score, 110);
             matchedKnownCharacter = true;
+            matchedNames.add(nameValue);
         } else if (keywords.some(key => key.includes(name) || name.includes(key))) {
             score = Math.max(score, 85);
             matchedKnownCharacter = true;
+            matchedNames.add(nameValue);
         }
         if (name.length >= 2 && contentLead.includes(name)) {
             score = Math.max(score, 55);
             matchedKnownCharacter = true;
+            matchedNames.add(nameValue);
         }
     }
     if (title.length >= 2 && normalizedRecent.includes(title)) score = Math.max(score, 75);
     if (keywords.some(key => normalizedRecent.includes(key))) score = Math.max(score, 65);
     const looksLikeCharacterEntry = /人物|角色|性格|个性|人格|外貌|年龄|身份|关系|习惯|喜好|厌恶|信念|内心|personality|appearance|character|relationship|identity/iu.test(entry?.content ?? '')
         || (/他|她|祂/u.test(entry?.content ?? '') && title.length >= 2 && contentLead.includes(title));
-    if (!matchedKnownCharacter && !looksLikeCharacterEntry) return 0;
-    return score;
+    if (!matchedKnownCharacter && !looksLikeCharacterEntry) return { score: 0, matchedNames: [] };
+    if (!matchedKnownCharacter && score > 0) matchedNames.add(cleanText(entry?.name, 120));
+    return { score, matchedNames: [...matchedNames].filter(Boolean) };
 }
 
 async function readWorldbookBaseline(context, previousStatus, recentMessages) {
@@ -137,23 +151,36 @@ async function readWorldbookBaseline(context, previousStatus, recentMessages) {
     const recentText = (Array.isArray(recentMessages) ? recentMessages : [])
         .map(message => message?.text ?? '')
         .join('\n');
-    const ranked = books.flatMap(book => (book.entries ?? []).map(entry => ({
-        book,
-        entry,
-        score: scoreWorldInfoEntry(entry, names, recentText),
-    })))
+    const ranked = books.flatMap(book => (book.entries ?? []).map(entry => {
+        const match = scoreWorldInfoEntry(entry, names, recentText);
+        return {
+            book,
+            entry,
+            score: match.score,
+            matchedNames: match.matchedNames,
+        };
+    }))
         .filter(item => item.score > 0)
         .sort((left, right) => right.score - left.score || left.entry.name.localeCompare(right.entry.name, 'zh-CN'))
         .slice(0, 8);
     let remainingCharacters = 18000;
-    const selectedEntries = ranked.map(({ book, entry }) => {
+    const selectedEntries = ranked.map(({ book, entry, matchedNames }) => {
         const text = cleanText(entry.content, Math.min(4000, remainingCharacters));
         remainingCharacters -= text.length;
-        return { book: book.name, title: entry.name, keys: entry.entryKey, text };
+        return {
+            source: 'worldbook',
+            useFor: matchedNames,
+            book: book.name,
+            title: entry.name,
+            keys: entry.entryKey,
+            text,
+        };
     }).filter(entry => entry.text);
+    const knownCharacters = [...new Set(selectedEntries.flatMap(entry => entry.useFor))];
     return {
         mode: SOURCE_WORLDBOOK,
         known: selectedEntries.length > 0,
+        knownCharacters,
         sourceLabel: books.length > 0
             ? `关联世界书 · ${books.map(book => book.name).join('、')}`
             : '关联世界书 · 未找到角色关联书',
@@ -167,9 +194,14 @@ async function readWorldbookBaseline(context, previousStatus, recentMessages) {
 
 export async function getDevelopmentBaselineInfo(settings, context) {
     const source = getDevelopmentBaselineSource(settings, context);
-    const books = hasCharacterOwner(context)
-        ? (await loadAssociatedWorldInfoBooks(null, context)).filter(book => book.linkedToCharacter === true)
-        : [];
+    let books = [];
+    if (hasCharacterOwner(context)) {
+        try {
+            books = (await loadAssociatedWorldInfoBooks(null, context)).filter(book => book.linkedToCharacter === true);
+        } catch {
+            books = [];
+        }
+    }
     const card = readCharacterCard(context);
     const character = getCharacter(context);
     const cardText = cleanText(character?.description ?? character?.data?.description, 12000);
@@ -210,7 +242,29 @@ export async function ensureDevelopmentBaselineSource(settings, context) {
 
 export async function buildCharacterBaselines(settings, context, { previousStatus = null, recentMessages = [] } = {}) {
     const source = getDevelopmentBaselineSource(settings, context);
-    if (source === SOURCE_CARD) return readCharacterCard(context);
+    if (source === SOURCE_CARD) {
+        const card = readCharacterCard(context);
+        const primaryName = card?.primaryCharacter ?? '';
+        let worldbook = { knownCharacters: [], entries: [] };
+        try {
+            worldbook = await readWorldbookBaseline(context, previousStatus, recentMessages);
+        } catch {
+            // The main character card remains a valid baseline even when an
+            // associated worldbook is temporarily unavailable.
+        }
+        const knownCharacters = [...new Set([...(card?.knownCharacters ?? []), ...(worldbook.knownCharacters ?? [])])];
+        return {
+            mode: 'single_character',
+            known: knownCharacters.length > 0,
+            primaryCharacter: primaryName,
+            knownCharacters,
+            sourceLabel: `${card?.sourceLabel ?? '酒馆角色卡'}；人物关系与重要 NPC 补充自关联世界书`,
+            entries: [...(card?.entries ?? []), ...(worldbook.entries ?? [])],
+            note: worldbook.entries.length > 0
+                ? '主角色的基础性格以酒馆角色卡为准；关联世界书只补充可靠匹配的人物关系、背景约束与重要 NPC 条目。'
+                : '主角色以酒馆角色卡为初始基准；当前没有可靠匹配到人物关系或重要 NPC 的世界书条目，未匹配人物保持基准未知。',
+        };
+    }
     if (source === SOURCE_WORLDBOOK) return readWorldbookBaseline(context, previousStatus, recentMessages);
     if (!hasCharacterOwner(context)) {
         return { mode: 'unknown', known: null, sourceLabel: '测试或未知角色环境', entries: [] };
@@ -222,15 +276,18 @@ export async function refreshDevelopmentBaselineUi(settings, context = globalThi
     if (typeof document === 'undefined') return;
     const select = document.querySelector('#memory_augment_development_baseline_source');
     const status = document.querySelector('#memory_augment_development_baseline_status');
-    if (!select || !status) return;
+    const owner = document.querySelector('#memory_augment_development_baseline_owner');
+    if (!select || !status || !owner) return;
     const info = await getDevelopmentBaselineInfo(settings, context ?? {});
+    const character = getCharacter(context ?? {});
+    owner.textContent = `当前角色卡：${cleanText(character?.name ?? character?.data?.name, 120) || '未选择角色'}`;
     select.value = info.source;
     select.disabled = !getDevelopmentBaselineOwnerKey(context ?? {});
     status.textContent = info.source === SOURCE_CARD
-        ? '当前角色使用酒馆角色卡作为故事开始前的人物基准。'
+        ? '单人卡：主角色以酒馆角色设定为准；人物关系、背景约束和当前重要 NPC 会从关联世界书补充。'
         : info.source === SOURCE_WORLDBOOK
-            ? `当前角色使用关联世界书作为人物基准；每次只读取与当前重要人物匹配的条目。${info.linkedBookCount ? ` 已关联：${info.linkedBookNames.join('、')}。` : ' 当前没有找到关联世界书。'}`
-            : `尚未选择。首次需要判断人物变化时会请你确认；当前建议使用${info.recommended === SOURCE_WORLDBOOK ? '关联世界书' : '酒馆角色卡'}。`;
+            ? `世界／群像卡：所有重要人物都从关联世界书查找各自条目。${info.linkedBookCount ? ` 已关联：${info.linkedBookNames.join('、')}。` : ' 当前没有找到关联世界书。'}`
+            : `尚未选择。首次需要判断人物变化时会请你确认；当前建议设为${info.recommended === SOURCE_WORLDBOOK ? '世界／群像卡' : '单人角色卡'}。`;
 }
 
 export function initializeDevelopmentBaselineUi(settings, context, options = {}) {
