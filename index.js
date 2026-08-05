@@ -24,6 +24,7 @@ import {
 import { initializeDevelopmentBaselineUi } from './character-baseline.js';
 import { clearAllSummaries, getSummaryStatus, initializeSummaryManager, repairMalformedSummaries } from './summary-manager.js';
 import { initializeWorldInfoManager, vectorizeSelectedWorldInfo } from './world-info-manager.js';
+import { initializeHtmlRenderer, refreshHtmlRenderer } from './html-renderer.js';
 
 const EXTENSION_KEY = 'st-memory-augment';
 const EXTENSION_FOLDER = decodeURIComponent(new URL('.', import.meta.url).pathname)
@@ -77,6 +78,9 @@ export const defaultSettings = Object.freeze({
         maxTokens: 16000,
         atlases: {},
         sourceEntryKeysByOwner: {},
+    },
+    htmlRenderer: {
+        enabled: true,
     },
 });
 
@@ -150,6 +154,7 @@ function bindSettings(settings, context) {
             if (input.dataset.setting.startsWith('status.')) refreshStoryStatusUi(context);
             if (input.dataset.setting.startsWith('development.')) refreshCharacterDevelopmentUi(context);
             if (input.dataset.setting === 'barrage.enabled') refreshBarrageVisibility(settings, context);
+            if (input.dataset.setting === 'htmlRenderer.enabled') refreshHtmlRenderer();
         });
     });
 }
@@ -819,6 +824,7 @@ async function initialize() {
     }
 
     bindSettings(settings, context);
+    initializeHtmlRenderer(settings);
     bindStatusCustomFields(settings, context);
     bindModelDiscovery(settings, context);
     bindActions(settings);
