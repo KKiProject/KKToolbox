@@ -3,7 +3,7 @@
         <div class="memory-augment-title">
             <i class="fa-solid fa-toolbox" aria-hidden="true"></i>
             <b>KKToolbox · Memory Augment</b>
-            <span class="memory-augment-version">v1.1.8</span>
+            <span class="memory-augment-version">v1.1.9</span>
         </div>
         <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
     </div>
@@ -59,8 +59,8 @@
             <summary>RAG 设置</summary>
             <div class="memory-augment-section memory-augment-card">
                 <div class="memory-augment-field"><label>分段目标字数<input class="text_pole" type="number" min="100" max="2000" step="50" data-setting="rag.segmentTargetChars"></label><small class="memory-augment-param-help">每个向量片段的目标字数（中文字符）。在句子结束处自然断开，实际长度会有浮动。越小检索越精准但向量数量越多。</small></div>
-                <div class="memory-augment-field"><label>聊天历史粗召回 top-K<input class="text_pole" type="number" min="1" max="100" step="1" data-setting="rag.topK"></label><small class="memory-augment-param-help">先由进入本轮的剧情总结圈定楼层，再从这些楼层的正文中初选至多这么多条；另保留少量全库候选兜底。世界书独立固定为 7 个候选。</small></div>
-                <div class="memory-augment-field"><label>聊天历史精排 top-N<input class="text_pole" type="number" min="1" max="50" step="1" data-setting="rag.topN"></label><small class="memory-augment-param-help">最终发送给 AI 的正文细节片段上限，应不大于 top-K。剧情总结独立固定为初选 10 条、最多召回 3 条；世界书最多保留 3 条。</small></div>
+                <div class="memory-augment-field"><label>聊天历史粗召回 top-K<input class="text_pole" type="number" min="1" max="100" step="1" data-setting="rag.topK"></label><small class="memory-augment-param-help">先由进入本轮的剧情总结圈定楼层，再从这些楼层的正文中初选至多这么多条；另保留少量全库候选兜底。世界书独立固定为 10 个候选。</small></div>
+                <div class="memory-augment-field"><label>聊天历史精排 top-N<input class="text_pole" type="number" min="1" max="50" step="1" data-setting="rag.topN"></label><small class="memory-augment-param-help">最终发送给 AI 的正文细节片段上限，应不大于 top-K。剧情总结独立固定为初选 10 条、最多召回 3 条；世界书最多保留 5 条。</small></div>
                 <div class="memory-augment-field"><label>Reranker 阈值<input class="text_pole" type="number" min="0" max="1" step="0.05" data-setting="rag.rerankerThreshold"></label><small class="memory-augment-param-help">剧情总结、聊天正文与世界书分别精排后的最低相关度，越高越严格；未配置 Reranker 时不生效。</small></div>
                 <div class="memory-augment-field"><label class="checkbox_label"><input type="checkbox" data-setting="rag.semanticWorldInfo">启用世界书语义触发</label><small class="memory-augment-param-help">让勾选的世界书条目参与语义检索，不改变其原有关键词触发规则。</small></div>
                 <div class="memory-augment-worldinfo-selector">

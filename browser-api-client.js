@@ -194,7 +194,7 @@ export async function rerankCandidates({
     query,
     candidates,
     topN,
-    threshold = 0,
+    threshold = 0.6,
     reranker,
 }, options = {}) {
     const documents = Array.isArray(candidates)
@@ -203,7 +203,7 @@ export async function rerankCandidates({
     if (documents.length === 0) return { results: [] };
     const config = normalizeConfig(reranker, 'Reranker');
     const endpoint = new URL(`${config.baseUrl}/v1/rerank`).toString();
-    const limit = Math.max(1, Math.min(100, Math.trunc(Number(topN) || 5)));
+    const limit = Math.max(1, Math.min(100, Math.trunc(Number(topN) || 7)));
     const payload = await postJson(endpoint, {
         model: config.model,
         query: String(query ?? '').trim(),

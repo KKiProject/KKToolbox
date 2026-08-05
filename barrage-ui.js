@@ -29,8 +29,8 @@ import {
 
 const BARRAGE_METADATA_KEY = 'memory_augment_barrages';
 const SIDE_RESULT_METADATA_KEY = 'memory_augment_side_results';
-const WORLD_INFO_TOP_K = 7;
-const WORLD_INFO_TOP_N = 3;
+const WORLD_INFO_TOP_K = 10;
+const WORLD_INFO_TOP_N = 5;
 const inFlight = new Map();
 let barrageTemplate = '';
 let regenerationBound = false;
@@ -368,8 +368,10 @@ async function getRagFragments(settings, context, recentMessages, clients) {
         return [];
     }
 
-    const topK = clampInteger(settings?.rag?.topK, 20, 1, 100);
-    const topN = clampInteger(settings?.rag?.topN, 5, 1, Math.min(50, topK));
+    const topK = clampInteger(settings?.rag?.topK, 25, 1, 100);
+    const topN = clampInteger(settings?.rag?.topN, 7, 1, Math.min(50, topK));
+    const configuredThreshold = Number(settings?.rag?.rerankerThreshold);
+    const rerankerThreshold = Number.isFinite(configuredThreshold) ? configuredThreshold : 0.6;
     const recentMessageIds = recentMessages.map(message => Number(message.id)).filter(Number.isInteger);
     const chatMessageIdBefore = recentMessageIds.length > 0 ? Math.min(...recentMessageIds) : 0;
     const search = clients.searchMemory ?? searchMemory;
@@ -410,7 +412,7 @@ async function getRagFragments(settings, context, recentMessages, clients) {
                     query,
                     candidates,
                     topN: limit,
-                    threshold: Number(settings?.rag?.rerankerThreshold) || 0,
+                    threshold: rerankerThreshold,
                     reranker,
                 });
                 return Array.isArray(rerankResponse?.results)

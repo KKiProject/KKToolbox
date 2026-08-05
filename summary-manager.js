@@ -1005,7 +1005,7 @@ export async function migrateLegacySummaries(context) {
 
 export async function summarizePendingMessages(settings, context, options = {}) {
     const recentMessages = clampInteger(settings?.context?.recentMessages, 20, 1, 1000);
-    const batchSize = clampInteger(settings?.context?.summaryBatchSize, 10, 1, 50);
+    const batchSize = clampInteger(settings?.context?.summaryBatchSize, 15, 1, 50);
     const chatId = getChatId(context);
     const chat = Array.isArray(context?.chat) ? context.chat : [];
     const metadata = context?.chatMetadata;

@@ -287,8 +287,8 @@ function rankChunks(chunks, queryVector, limit) {
         });
 }
 
-async function searchScopes(vectorsDirectory, scope, queryVector, topK = 20) {
-    const limit = Math.max(1, Math.min(100, Math.trunc(Number(topK) || 20)));
+async function searchScopes(vectorsDirectory, scope, queryVector, topK = 25) {
+    const limit = Math.max(1, Math.min(100, Math.trunc(Number(topK) || 25)));
     const chatId = String(scope?.chat_id ?? '').trim();
     const bookIds = Array.isArray(scope?.book_ids) ? [...new Set(scope.book_ids.map(String).filter(Boolean))] : [];
     const rawMessageIdBefore = Number(scope?.chat_message_id_before);
@@ -305,12 +305,12 @@ async function searchScopes(vectorsDirectory, scope, queryVector, topK = 20) {
     return rankChunks(groups.flat(), queryVector, limit);
 }
 
-async function searchChunks(vectorsDirectory, chatId, queryVector, topK = 20, types = null, worldInfoKeys = null) {
+async function searchChunks(vectorsDirectory, chatId, queryVector, topK = 25, types = null, worldInfoKeys = null) {
     void worldInfoKeys;
     const chunks = await readChunks(vectorsDirectory, chatId);
     const allowed = Array.isArray(types) && types.length ? new Set(types) : null;
     return rankChunks(chunks.filter(chunk => !allowed || allowed.has(getChunkType(chunk))), queryVector,
-        Math.max(1, Math.min(100, Math.trunc(Number(topK) || 20))));
+        Math.max(1, Math.min(100, Math.trunc(Number(topK) || 25))));
 }
 
 async function listChunkFiles(root) {

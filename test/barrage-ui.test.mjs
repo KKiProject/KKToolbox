@@ -147,7 +147,7 @@ test('RAG switch attaches retrieved fragments to the barrage request', async () 
     assert.equal(result.ragCount, 1);
     assert.equal(searchPayload.separate, true);
     assert.equal(searchPayload.chatTopK, 9);
-    assert.equal(searchPayload.worldInfoTopK, 7);
+    assert.equal(searchPayload.worldInfoTopK, 10);
     assert.equal(searchPayload.embedding.baseUrl, 'https://embedding.example');
     assert.deepEqual(searchPayload.scope, {
         chat_id: 'barrage-chat',

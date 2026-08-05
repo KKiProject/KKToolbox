@@ -13,8 +13,8 @@ import { getSummaries, migrateLegacySummaries } from './summary-manager.js';
 
 const EXTENSION_KEY = 'st-memory-augment';
 const MEMORY_MARKER = 'memory_augment_rag';
-const WORLD_INFO_TOP_K = 7;
-const WORLD_INFO_TOP_N = 3;
+const WORLD_INFO_TOP_K = 10;
+const WORLD_INFO_TOP_N = 5;
 const SUMMARY_TOP_K = 10;
 const SUMMARY_TOP_N = 3;
 const RECENT_SUMMARY_COUNT = 5;
@@ -300,9 +300,9 @@ export async function retrieveAndInject(chat, settings, context, clients = {}) {
         return { injected: false, reason: 'missing-input' };
     }
 
-    const topK = clampInteger(settings?.rag?.topK, 20, 1, 100);
-    const topN = clampInteger(settings?.rag?.topN, 5, 1, Math.min(50, topK));
-    const threshold = clampNumber(settings?.rag?.rerankerThreshold, 0.3, 0, 1);
+    const topK = clampInteger(settings?.rag?.topK, 25, 1, 100);
+    const topN = clampInteger(settings?.rag?.topN, 7, 1, Math.min(50, topK));
+    const threshold = clampNumber(settings?.rag?.rerankerThreshold, 0.6, 0, 1);
     const recentMessages = clampInteger(settings?.context?.recentMessages, 20, 1, 1000);
     const persistentChatLength = Array.isArray(context?.chat) ? context.chat.length : chat.length;
     const chatMessageIdBefore = Math.max(0, persistentChatLength - recentMessages);

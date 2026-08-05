@@ -44,13 +44,13 @@ export const defaultSettings = Object.freeze({
     },
     context: {
         recentMessages: 20,
-        summaryBatchSize: 10,
+        summaryBatchSize: 15,
     },
     rag: {
         segmentTargetChars: 400,
-        topK: 20,
-        topN: 5,
-        rerankerThreshold: 0.3,
+        topK: 25,
+        topN: 7,
+        rerankerThreshold: 0.6,
         semanticWorldInfo: false,
         semanticWorldInfoBooks: [],
         semanticWorldInfoEntries: [],

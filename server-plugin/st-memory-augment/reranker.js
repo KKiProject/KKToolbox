@@ -88,7 +88,7 @@ function normalizeResults(payload, documentCount) {
 async function rerankDocuments(query, documents, rawConfig, topN, options = {}) {
     const normalizedQuery = String(query ?? '').trim();
     const normalizedDocuments = Array.isArray(documents) ? documents.map(value => String(value)) : [];
-    const limit = Math.max(1, Math.min(100, Math.trunc(Number(topN) || 5)));
+    const limit = Math.max(1, Math.min(100, Math.trunc(Number(topN) || 7)));
 
     if (!normalizedQuery) {
         throw new RerankerApiError('Reranker query is required.', 400);

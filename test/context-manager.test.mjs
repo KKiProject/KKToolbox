@@ -62,7 +62,7 @@ test('interceptor query, parameters, reranking, threshold, and insertion positio
     assert.equal(searchPayload.query, 'message 3\n\nmessage 4\n\nmessage 5');
     assert.equal(searchPayload.separate, true);
     assert.equal(searchPayload.chatTopK, 12);
-    assert.equal(searchPayload.worldInfoTopK, 7);
+    assert.equal(searchPayload.worldInfoTopK, 10);
     assert.equal(searchPayload.embedding.baseUrl, 'https://embedding.example');
     assert.deepEqual(searchPayload.scope, {
         chat_id: 'chat-1',
@@ -306,12 +306,12 @@ test('chat and world-info candidates are independently reranked with separate li
     );
 
     assert.equal(searchPayload.chatTopK, 6);
-    assert.equal(searchPayload.worldInfoTopK, 7);
+    assert.equal(searchPayload.worldInfoTopK, 10);
     assert.equal(searchPayload.scope.chat_message_id_before, 8);
-    assert.deepEqual(rerankCalls.map(call => call.topN).sort(), [2, 3]);
+    assert.deepEqual(rerankCalls.map(call => call.topN).sort(), [2, 5]);
     assert.deepEqual(rerankCalls.map(call => call.candidates.length).sort(), [6, 7]);
     assert.equal(result.chatResultCount, 2);
-    assert.equal(result.worldInfoResultCount, 3);
+    assert.equal(result.worldInfoResultCount, 5);
     assert.equal(chat[0].extra.memory_augment_recall_type, 'history');
     assert.equal(chat[9].extra.memory_augment_recall_type, 'worldinfo');
     assert.deepEqual(chat.filter(message => /^message /.test(message.mes)).map(message => message.mes), createChat(10).map(message => message.mes));
