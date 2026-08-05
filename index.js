@@ -848,7 +848,7 @@ async function initialize() {
             strong.textContent = `建议：${recommendation}`;
             suggestion.append(strong, '。选择会按当前角色卡保存，以后可在悬浮窗的人物发展页修改。');
             content.append(title, explanation, books, suggestion);
-            const result = await new Popup(content, POPUP_TYPE.TEXT, '', {
+            const sourcePopup = new Popup(content, POPUP_TYPE.TEXT, '', {
                 okButton: '单人角色卡',
                 cancelButton: '暂不选择',
                 customButtons: [{
@@ -857,7 +857,9 @@ async function initialize() {
                     classes: info.recommended === 'worldbook' ? ['menu_button_default'] : [],
                 }],
                 defaultResult: info.recommended === 'worldbook' ? POPUP_RESULT.CUSTOM1 : POPUP_RESULT.AFFIRMATIVE,
-            }).show();
+            });
+            sourcePopup.dlg.classList.add('memory-augment-popup', 'memory-augment-development-source-popup');
+            const result = await sourcePopup.show();
             if (result === POPUP_RESULT.AFFIRMATIVE) return 'character';
             if (result === POPUP_RESULT.CUSTOM1) return 'worldbook';
             return '';

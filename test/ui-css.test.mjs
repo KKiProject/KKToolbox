@@ -55,3 +55,13 @@ test('the per-character card type control lives in character development instead
     assert.match(development, /单人角色卡/);
     assert.match(development, /世界／群像卡/);
 });
+
+test('all KKToolbox menu buttons are globally protected from vertical Chinese text', async () => {
+    const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
+    const rule = css.match(/\.memory-augment-settings \.menu_button,[\s\S]*?\.memory-augment-popup \.menu_button\s*\{([\s\S]*?)\}/)?.[1] ?? '';
+    assert.match(rule, /flex-shrink:\s*0\s*!important/);
+    assert.match(rule, /min-inline-size:\s*max-content\s*!important/);
+    assert.match(rule, /white-space:\s*nowrap\s*!important/);
+    assert.match(rule, /word-break:\s*keep-all\s*!important/);
+    assert.match(rule, /writing-mode:\s*horizontal-tb\s*!important/);
+});

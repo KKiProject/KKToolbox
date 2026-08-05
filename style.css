@@ -7,6 +7,31 @@
     align-items: center;
 }
 
+/* SillyTavern themes may let buttons shrink to one Chinese character wide.
+   Keep every KKToolbox action label horizontal in settings, message panels,
+   the floating window and plugin-owned popups. */
+.memory-augment-settings .menu_button,
+.memory-augment-barrage .menu_button,
+#memory_augment_story_status_root .menu_button,
+.memory-augment-popup .menu_button {
+    flex-shrink: 0 !important;
+    min-inline-size: max-content !important;
+    overflow-wrap: normal !important;
+    text-align: center;
+    text-orientation: mixed !important;
+    white-space: nowrap !important;
+    word-break: keep-all !important;
+    writing-mode: horizontal-tb !important;
+}
+
+.memory-augment-popup .popup-controls {
+    align-items: center;
+    display: flex;
+    flex-flow: row wrap;
+    gap: 0.5rem;
+    justify-content: center;
+}
+
 .memory-augment-title {
     align-items: center;
     display: flex;
