@@ -668,7 +668,10 @@ export function clearStoryStatusRecords(context, firstDeletedMessageId) {
 }
 
 function statusLines(status, timeline = null) {
-    const lines = ['【当前剧情状态（上一轮结束时）】'];
+    const lines = [
+        '【上一轮结束状态（最新用户回复之前的剧情起点）】',
+        '【强制时序与优先级】本状态早于紧随其后的最新用户回复。一切以最新用户回复为本轮最高基准；凡时间、地点、身份、外貌、动作、心理、欲望、目标、关系或剧情事实与本状态冲突，必须无条件采用最新用户回复，不得以本状态为由否定、弱化、改写用户设定，或把剧情拉回上一轮。',
+    ];
     const environment = status.environment ?? {};
     const environmentParts = [
         environment.time && `时间：${environment.time}`,
@@ -704,7 +707,8 @@ function statusLines(status, timeline = null) {
             timeline.relationToCurrent && `锚点关系：${timeline.relationToCurrent}`,
         ].filter(Boolean).join('；'));
     }
-    lines.push('这是上一轮结束时的当前状态。最新用户消息若明确推进或跳跃时间，应据此更新；若没有明确时间变化，必须保持这里的时间，不得按楼层自行推进。');
+    lines.push('先完整应用最新用户回复造成的一切变化，再从更新后的状态继续正文；仅当最新用户回复没有改变某项时，才继承本快照中的对应旧值。');
+    lines.push('最新用户回复若明确推进或跳跃时间，必须采用用户给出的新时间；若没有明确时间变化，才保持这里的时间，不得按楼层自行推进。');
     lines.push('历史召回和回忆中的“昨天、三天前、十年前”属于各自的历史时间锚点，不得把它们当成主线现在。');
     return lines;
 }

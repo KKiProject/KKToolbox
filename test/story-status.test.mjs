@@ -210,5 +210,7 @@ test('status is injected immediately before the latest user message', () => {
     assert.equal(injectLatestStoryStatus(generationChat, context), true);
     assert.equal(generationChat[3].extra.memory_augment_story_status, true);
     assert.match(generationChat[3].mes, /第一天/);
+    assert.match(generationChat[3].mes, /一切以最新用户回复为本轮最高基准/);
+    assert.match(generationChat[3].mes, /不得以本状态为由.*把剧情拉回上一轮/);
     assert.equal(generationChat[4].mes, '玩家二');
 });
