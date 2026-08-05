@@ -5,6 +5,7 @@ const VECTOR_SOURCE = 'webllm';
 const STORE_VERSION = 1;
 const CHAT_KIND = 'chat';
 const WORLDINFO_KIND = 'worldinfo';
+const SUMMARY_KIND = 'summary';
 const locks = new Map();
 
 function getContext() {
@@ -590,6 +591,88 @@ export async function syncWorldInfoScope(payload) {
     });
 }
 
+function normalizeSummaryEntries(entries) {
+    return (Array.isArray(entries) ? entries : []).map((entry, index) => {
+        const uid = String(entry?.uid ?? entry?.id ?? '').trim();
+        const text = String(entry?.text ?? entry?.summary ?? entry?.content ?? '').trim();
+        const start = Number(entry?.start);
+        const end = Number(entry?.end);
+        if (!uid || !text || !Number.isInteger(start) || !Number.isInteger(end)) {
+            throw new Error(`第 ${index + 1} 个自动总结条目无效。`);
+        }
+        return { uid, text, start, end };
+    });
+}
+
+export async function syncSummaryScope(payload) {
+    const chatId = String(payload?.chatId ?? payload?.chat_id ?? '').trim();
+    const scope = getScope(SUMMARY_KIND, chatId);
+    const entries = normalizeSummaryEntries(payload?.entries);
+    return withLock(scope, async () => {
+        const previous = await readScope(scope);
+        const previousById = new Map(previous.chunks.map(chunk => [chunk.id, chunk]));
+        const chunks = entries.map((entry) => {
+            const id = `summary_${entry.uid}`;
+            const old = previousById.get(id);
+            return {
+                id,
+                summary_uid: entry.uid,
+                start: entry.start,
+                end: entry.end,
+                text: entry.text,
+                char_count: getCharacterCount(entry.text),
+                timestamp: old?.text === entry.text ? old.timestamp : Math.floor(Date.now() / 1000),
+                type: SUMMARY_KIND,
+                disabled: false,
+            };
+        });
+        const document = { ...previous, chunks };
+        const indexResult = await ensureIndexed(scope, document, payload?.embedding);
+        const metadataChanged = previous.chunks.length !== chunks.length
+            || chunks.some(chunk => {
+                const old = previousById.get(chunk.id);
+                return !old || old.text !== chunk.text || old.start !== chunk.start || old.end !== chunk.end;
+            });
+        if (!indexResult.written && metadataChanged) await writeScope(scope, document);
+        return {
+            chatId,
+            entries: entries.length,
+            embedded: indexResult.embedded,
+            reused: Math.max(0, entries.length - indexResult.embedded),
+        };
+    });
+}
+
+export async function searchSummaryScope(payload) {
+    const query = String(payload?.query ?? '').trim();
+    const chatId = String(payload?.chatId ?? payload?.chat_id ?? '').trim();
+    if (!query || !chatId) return { results: [] };
+    const scope = getScope(SUMMARY_KIND, chatId);
+    const document = await readScope(scope);
+    const allowed = new Set((Array.isArray(payload?.summaryUids) ? payload.summaryUids : [])
+        .map(String).filter(Boolean));
+    const active = document.chunks.filter(chunk => chunk?.disabled !== true
+        && (allowed.size === 0 || allowed.has(String(chunk.summary_uid))));
+    if (active.length === 0) return { results: [] };
+    const [queryVector] = await createEmbeddings([query], payload?.embedding);
+    const ranked = await queryScope(
+        scope,
+        document,
+        query,
+        queryVector,
+        payload?.embedding,
+        document.chunks.filter(chunk => chunk?.disabled !== true).length,
+        { ensureIndexed: false },
+    );
+    const topK = clampInteger(payload?.topK, 10, 1, 100);
+    return {
+        results: ranked
+            .filter(chunk => allowed.size === 0 || allowed.has(String(chunk.summary_uid)))
+            .slice(0, topK)
+            .map(chunk => ({ ...chunk, type: SUMMARY_KIND })),
+    };
+}
+
 export async function getWorldInfoScopeStatuses(bookIds) {
     const statuses = {};
     for (const id of [...new Set((bookIds ?? []).map(String).filter(Boolean))]) {
@@ -603,8 +686,8 @@ export async function getWorldInfoScopeStatuses(bookIds) {
     return statuses;
 }
 
-async function queryScope(scope, document, query, queryVector, config, topK) {
-    await ensureIndexed(scope, document, config);
+async function queryScope(scope, document, query, queryVector, config, topK, options = {}) {
+    if (options.ensureIndexed !== false) await ensureIndexed(scope, document, config);
     const active = document.chunks.filter(chunk => chunk?.disabled !== true);
     if (active.length === 0) return [];
     const response = await vectorRequest('query', {
@@ -660,6 +743,13 @@ export async function searchScopes(payload) {
             const { scope, document } = chatScopeData;
             const beforeRaw = Number(payload?.scope?.chat_message_id_before);
             const before = Number.isInteger(beforeRaw) && beforeRaw >= 0 ? beforeRaw : null;
+            const ranges = (Array.isArray(payload?.scope?.chat_message_ranges)
+                ? payload.scope.chat_message_ranges
+                : [])
+                .map(range => ({ start: Number(range?.start), end: Number(range?.end) }))
+                .filter(range => Number.isInteger(range.start) && Number.isInteger(range.end));
+            const inSelectedRange = chunk => ranges.some(range => Number(chunk.message_id) >= range.start
+                && Number(chunk.message_id) <= range.end);
             const eligible = document.chunks.filter(chunk => chunk?.disabled !== true
                 && (before === null || Number(chunk.message_id) < before));
             const ranked = await queryScope(
@@ -670,10 +760,21 @@ export async function searchScopes(payload) {
                 config,
                 document.chunks.filter(chunk => chunk?.disabled !== true).length,
             );
-            chatResults = ranked
-                .filter(chunk => before === null || Number(chunk.message_id) < before)
-                .slice(0, clampInteger(payload?.chatTopK ?? payload?.topK, 20, 1, 100))
-                .map(chunk => ({ ...chunk, type: CHAT_KIND }));
+            const eligibleRanked = ranked.filter(chunk => before === null || Number(chunk.message_id) < before);
+            const limit = clampInteger(payload?.chatTopK ?? payload?.topK, 20, 1, 100);
+            if (ranges.length > 0) {
+                const routed = eligibleRanked.filter(inSelectedRange).slice(0, limit);
+                const fallbackLimit = clampInteger(payload?.chatGlobalFallbackK, 3, 0, 20);
+                const fallback = fallbackLimit > 0 ? eligibleRanked.slice(0, fallbackLimit) : [];
+                const combined = [...routed, ...fallback];
+                chatResults = combined
+                    .filter((chunk, index) => combined.findIndex(item => item.id === chunk.id) === index)
+                    .map(chunk => ({ ...chunk, type: CHAT_KIND }));
+            } else {
+                chatResults = eligibleRanked
+                    .slice(0, limit)
+                    .map(chunk => ({ ...chunk, type: CHAT_KIND }));
+            }
             if (eligible.length === 0) chatResults = [];
         } catch (error) {
             errors.chat = String(error?.message ?? error);
@@ -825,4 +926,5 @@ export async function clearScope(kind, id) {
 
 export const clearChatScope = chatId => clearScope(CHAT_KIND, chatId);
 export const clearWorldInfoScope = bookId => clearScope(WORLDINFO_KIND, bookId);
-export { CHAT_KIND, WORLDINFO_KIND, VECTOR_SOURCE, embeddingSignature };
+export const clearSummaryScope = chatId => clearScope(SUMMARY_KIND, chatId);
+export { CHAT_KIND, WORLDINFO_KIND, SUMMARY_KIND, VECTOR_SOURCE, embeddingSignature };

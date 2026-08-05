@@ -5,6 +5,8 @@ import {
     getChatMemory,
     ingestChat,
     searchMemory,
+    searchSummaryMemory,
+    syncSummaryMemory,
     updateChatMemory,
 } from '../rag-client.js';
 import { installNativeFetch } from './native-fetch-fixture.mjs';
@@ -132,6 +134,20 @@ test('native chat memory writes, searches, edits, and disables fragments without
         '第十一楼的另一段记忆',
     ].sort());
 
+    const ranged = await searchMemory({
+        query: '记忆',
+        embedding,
+        chatTopK: 10,
+        chatGlobalFallbackK: 0,
+        scope: {
+            chat_id: 'chat name',
+            chat_message_id_before: 20,
+            chat_message_ranges: [{ start: 10, end: 10 }],
+            book_ids: [],
+        },
+    });
+    assert.deepEqual(ranged.chatResults.map(item => item.message_id), [10]);
+
     await updateChatMemory({
         chatId: 'chat name',
         chunkId: 'msg10_seg0',
@@ -143,6 +159,43 @@ test('native chat memory writes, searches, edits, and disables fragments without
     const vectorRequests = fixture.requests.filter(item => item.url.startsWith('/api/vector/'));
     assert.ok(vectorRequests.some(item => item.url === '/api/vector/insert'));
     assert.ok(vectorRequests.some(item => item.url === '/api/vector/delete'));
+});
+
+test('detailed summaries use an independent vector scope and respect the eligible uid list', async (context) => {
+    const originalSillyTavern = globalThis.SillyTavern;
+    const originalFetch = globalThis.fetch;
+    context.after(() => {
+        globalThis.SillyTavern = originalSillyTavern;
+        globalThis.fetch = originalFetch;
+    });
+    globalThis.SillyTavern = {
+        getContext: () => ({ getRequestHeaders: () => ({ 'Content-Type': 'application/json' }) }),
+    };
+    const fixture = installNativeFetch();
+    globalThis.fetch = fixture.fetch;
+    const embedding = {
+        baseUrl: 'https://embedding.example',
+        apiKey: 'embed-key',
+        model: 'embed-model',
+    };
+    await syncSummaryMemory({
+        chatId: 'summary-chat',
+        embedding,
+        entries: [
+            { uid: 'old', start: 0, end: 9, text: '旧王宫发现了王冠' },
+            { uid: 'recent', start: 10, end: 19, text: '最近在花园喝茶' },
+        ],
+    });
+    const result = await searchSummaryMemory({
+        chatId: 'summary-chat',
+        query: '王冠',
+        topK: 10,
+        summaryUids: ['old'],
+        embedding,
+    });
+    assert.deepEqual(result.results.map(item => item.summary_uid), ['old']);
+    assert.equal(result.results[0].start, 0);
+    assert.equal(result.results[0].end, 9);
 });
 
 test('a partial 80-95 floor store is repaired with all missing historical floors without re-embedding saved floors', async (context) => {

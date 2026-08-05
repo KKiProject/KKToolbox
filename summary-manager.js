@@ -1,4 +1,7 @@
-import { generateSummary as generateSummaryWithSideApi } from './rag-client.js';
+import {
+    clearSummaryMemory,
+    generateSummary as generateSummaryWithSideApi,
+} from './rag-client.js';
 import { getMessageTimelineMetadata } from './story-status.js';
 
 export const SUMMARY_KEY_PREFIX = '[KKT摘要]';
@@ -10,6 +13,9 @@ const SUMMARY_GENERATION_MAX_TOKENS = 1200;
 const SUMMARY_BOOK_SUFFIX = '-自动总结';
 const SUMMARY_ENTRY_DEPTH = 4;
 const SUMMARY_ENTRY_ORDER_BASE = 100;
+const HISTORICAL_OVERVIEW_KEY = '[KKT历史概括]';
+const HISTORICAL_OVERVIEW_GROUP_SIZE = 5;
+const HISTORICAL_OVERVIEW_ORDER = 99;
 const WORLD_INFO_POSITION_AT_DEPTH = 4;
 let summaryQueue = Promise.resolve();
 
@@ -39,6 +45,7 @@ function getSummaryState(metadata, create = false) {
     const lastSummarized = Number(state.lastSummarizedMessageIndex);
     state.lastSummarizedMessageIndex = Number.isFinite(lastSummarized) ? Math.trunc(lastSummarized) : -1;
     state.entries = Array.isArray(state.entries) ? state.entries : [];
+    state.overviewGroups = Array.isArray(state.overviewGroups) ? state.overviewGroups : [];
     delete state.aiRepliesSinceLastSummary;
     delete state.lastCountedReplySignature;
     return state;
@@ -160,6 +167,52 @@ function isManagedSummaryEntry(entry) {
         || String(key ?? '').startsWith(LEGACY_SUMMARY_KEY_PREFIX));
 }
 
+function isHistoricalOverviewEntry(entry) {
+    const keys = Array.isArray(entry?.key) ? entry.key : [entry?.key];
+    return keys.some(key => String(key ?? '') === HISTORICAL_OVERVIEW_KEY);
+}
+
+async function createWorldInfoEntry(context, bookName, data) {
+    if (typeof context?.createWorldInfoEntry === 'function') {
+        return context.createWorldInfoEntry(bookName, data);
+    }
+    const worldModule = await import('../../../world-info.js');
+    return worldModule.createWorldInfoEntry(bookName, data);
+}
+
+async function ensureHistoricalOverviewEntryInData(context, bookName, data) {
+    const match = Object.entries(data?.entries ?? {})
+        .find(([, entry]) => isHistoricalOverviewEntry(entry));
+    let uid = match?.[0];
+    let entry = match?.[1];
+    let created = false;
+    if (!entry) {
+        entry = await createWorldInfoEntry(context, bookName, data);
+        uid = String(entry?.uid ?? '');
+        created = true;
+    }
+    if (!entry || !uid) throw new Error('创建历史概括世界书条目失败。');
+    const expected = {
+        key: [HISTORICAL_OVERVIEW_KEY],
+        comment: '历史概括（每5条自动总结更新）',
+        addMemo: true,
+        constant: true,
+        position: WORLD_INFO_POSITION_AT_DEPTH,
+        depth: SUMMARY_ENTRY_DEPTH,
+        order: HISTORICAL_OVERVIEW_ORDER,
+        disable: false,
+    };
+    let changed = created;
+    for (const [field, value] of Object.entries(expected)) {
+        if (JSON.stringify(entry[field]) !== JSON.stringify(value)) {
+            entry[field] = value;
+            changed = true;
+        }
+    }
+    entry.content = String(entry.content ?? '');
+    return { uid: String(entry.uid ?? uid), entry, changed };
+}
+
 function getManagedSummaryRange(entry) {
     const keys = Array.isArray(entry?.key) ? entry.key : [entry?.key];
     const managedKey = keys.find(key => String(key ?? '').startsWith(SUMMARY_KEY_PREFIX)
@@ -209,11 +262,36 @@ async function setEntryField(context, bookName, uid, field, value) {
 }
 
 async function configureSummaryEntry(context, bookName, uid, order = SUMMARY_ENTRY_ORDER_BASE) {
-    await setEntryField(context, bookName, uid, 'constant', true);
+    await setEntryField(context, bookName, uid, 'constant', false);
     await setEntryField(context, bookName, uid, 'position', WORLD_INFO_POSITION_AT_DEPTH);
     await setEntryField(context, bookName, uid, 'depth', SUMMARY_ENTRY_DEPTH);
     await setEntryField(context, bookName, uid, 'order', order);
     await setEntryField(context, bookName, uid, 'disable', false);
+}
+
+async function ensureHistoricalOverviewEntry(context, bookName) {
+    if (typeof context?.loadWorldInfo === 'function' && typeof context?.saveWorldInfo === 'function') {
+        const data = await context.loadWorldInfo(bookName);
+        if (data) {
+            const result = await ensureHistoricalOverviewEntryInData(context, bookName, data);
+            if (result.changed) await context.saveWorldInfo(bookName, data, true);
+            return result;
+        }
+    }
+    let uid = await findSummaryEntry(context, bookName, HISTORICAL_OVERVIEW_KEY);
+    if (!uid) {
+        uid = getPipe(await runSlash(
+            context,
+            `/createentry file=${quoteSlashValue(bookName)} key=${quoteSlashValue(HISTORICAL_OVERVIEW_KEY)} ""`,
+        ));
+    }
+    if (!uid) throw new Error('创建历史概括世界书条目失败。');
+    await setEntryField(context, bookName, uid, 'constant', true);
+    await setEntryField(context, bookName, uid, 'position', WORLD_INFO_POSITION_AT_DEPTH);
+    await setEntryField(context, bookName, uid, 'depth', SUMMARY_ENTRY_DEPTH);
+    await setEntryField(context, bookName, uid, 'order', HISTORICAL_OVERVIEW_ORDER);
+    await setEntryField(context, bookName, uid, 'disable', false);
+    return { uid: String(uid), entry: null, changed: true };
 }
 
 function hasMatchingRange(key, start, end) {
@@ -244,12 +322,8 @@ async function upsertSummaryEntry(context, events, start, end, createdAt, order 
         let keptEntry;
         if (matches.length > 0) {
             [keptUid, keptEntry] = matches[0];
-        } else if (typeof context?.createWorldInfoEntry === 'function') {
-            keptEntry = await context.createWorldInfoEntry(bookName, data);
-            keptUid = keptEntry?.uid;
         } else {
-            const worldModule = await import('../../../world-info.js');
-            keptEntry = worldModule.createWorldInfoEntry(bookName, data);
+            keptEntry = await createWorldInfoEntry(context, bookName, data);
             keptUid = keptEntry?.uid;
         }
         if (!keptEntry || keptUid === undefined || keptUid === null) {
@@ -259,7 +333,7 @@ async function upsertSummaryEntry(context, events, start, end, createdAt, order 
         keptEntry.comment = key;
         keptEntry.addMemo = true;
         keptEntry.content = content;
-        keptEntry.constant = true;
+        keptEntry.constant = false;
         keptEntry.position = WORLD_INFO_POSITION_AT_DEPTH;
         keptEntry.depth = SUMMARY_ENTRY_DEPTH;
         keptEntry.order = order;
@@ -267,6 +341,7 @@ async function upsertSummaryEntry(context, events, start, end, createdAt, order 
         for (const [duplicateUid] of matches.slice(1)) {
             delete data.entries[duplicateUid];
         }
+        await ensureHistoricalOverviewEntryInData(context, bookName, data);
         normalizeManagedSummaryOrders(data);
         await context.saveWorldInfo(bookName, data, true);
         const verified = await context.loadWorldInfo(bookName);
@@ -290,6 +365,7 @@ async function upsertSummaryEntry(context, events, start, end, createdAt, order 
     }
     await setEntryField(context, bookName, uid, 'content', content);
     await configureSummaryEntry(context, bookName, uid, order);
+    await ensureHistoricalOverviewEntry(context, bookName);
     const verifiedContent = getPipe(await runSlash(
         context,
         `/getentryfield file=${quoteSlashValue(bookName)} field=content ${quoteSlashValue(uid)}`,
@@ -321,6 +397,7 @@ async function upsertLegacySummaryEntry(context, record, order = SUMMARY_ENTRY_O
         }
     }
     await configureSummaryEntry(context, bookName, uid, order);
+    await ensureHistoricalOverviewEntry(context, bookName);
     return { ...record, uid: String(uid), key, bookName };
 }
 
@@ -545,6 +622,129 @@ async function callSummaryModel(settings, _context, prompt, generateSummary) {
     throw new Error('请先填写完整的副 API 地址、Key 和模型；自动总结不会调用正文主 API。');
 }
 
+function hashText(value) {
+    let hash = 2166136261;
+    for (const character of String(value ?? '')) {
+        hash ^= character.codePointAt(0);
+        hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function getOverviewGroupKey(start, end) {
+    return `${start}-${end}`;
+}
+
+function getOverviewBlockHeader(start, end) {
+    return `【历史概括·第${start + 1}-${end + 1}楼】`;
+}
+
+export function buildHistoricalOverviewPrompt(summaries) {
+    const sorted = [...summaries].sort((left, right) => left.start - right.start);
+    const start = sorted[0]?.start ?? 0;
+    const end = sorted.at(-1)?.end ?? start;
+    return [
+        `请把下面第${start + 1}-${end + 1}楼的5份阶段事件总结整理成一段长期历史概括。`,
+        '只概括已经明确发生的主线、重要关系变化、关键决定和仍有后续影响的事实，不要添加推测。',
+        '不同事件不要强行补出因果；不得把角色行为夸张成性格突变、立场转变或权力挑战。',
+        '保留原有时间锚点和先后关系；“昨天、三天前”等相对时间只能沿用原总结含义，不能按现在重新计算。',
+        '输出一段完整中文正文，最多400字，不要标题、序号、字段名、前言或解释。',
+        '',
+        ...sorted.map(item => [
+            `【第${item.start + 1}-${item.end + 1}楼总结】`,
+            item.summary,
+        ].join('\n')),
+    ].join('\n\n');
+}
+
+function normalizeHistoricalOverviewOutput(output) {
+    const text = String(output ?? '')
+        .replace(/^```[^\n]*\n?|```$/g, '')
+        .replace(/^历史概括\s*[：:]?\s*/u, '')
+        .trim();
+    if (isUnusableSummaryOutput(text)) return '';
+    return limitText(text, 400);
+}
+
+function replaceOverviewBlock(content, start, end, overview) {
+    const header = getOverviewBlockHeader(start, end);
+    const block = `${header}\n${overview}`;
+    const escaped = header.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`${escaped}[\\s\\S]*?(?=\\n\\n【历史概括·第\\d+-\\d+楼】|$)`, 'u');
+    const current = String(content ?? '').trim();
+    if (pattern.test(current)) return current.replace(pattern, block).trim();
+    return [current, block].filter(Boolean).join('\n\n');
+}
+
+async function saveHistoricalOverviewBlock(context, bookName, start, end, overview) {
+    if (typeof context?.loadWorldInfo === 'function' && typeof context?.saveWorldInfo === 'function') {
+        const data = await context.loadWorldInfo(bookName);
+        if (data) {
+            const { entry } = await ensureHistoricalOverviewEntryInData(context, bookName, data);
+            entry.content = replaceOverviewBlock(entry.content, start, end, overview);
+            await context.saveWorldInfo(bookName, data, true);
+            return;
+        }
+    }
+    const { uid } = await ensureHistoricalOverviewEntry(context, bookName);
+    const current = getPipe(await runSlash(
+        context,
+        `/getentryfield file=${quoteSlashValue(bookName)} field=content ${quoteSlashValue(uid)}`,
+    ));
+    await setEntryField(context, bookName, uid, 'content', replaceOverviewBlock(current, start, end, overview));
+}
+
+export async function updateHistoricalOverview(settings, context, options = {}) {
+    const state = getSummaryState(context?.chatMetadata, true);
+    const summaries = await getSummaries(context);
+    const completeGroupCount = Math.floor(summaries.length / HISTORICAL_OVERVIEW_GROUP_SIZE);
+    if (!state || completeGroupCount === 0) return { updated: 0 };
+
+    let target = null;
+    for (let index = 0; index < completeGroupCount; index++) {
+        const group = summaries.slice(
+            index * HISTORICAL_OVERVIEW_GROUP_SIZE,
+            (index + 1) * HISTORICAL_OVERVIEW_GROUP_SIZE,
+        );
+        const start = group[0].start;
+        const end = group.at(-1).end;
+        const sourceHash = hashText(group.map(item => `${item.uid}\n${item.start}-${item.end}\n${item.summary}`).join('\n\n'));
+        const saved = state.overviewGroups.find(item => item.key === getOverviewGroupKey(start, end));
+        if (saved?.sourceHash !== sourceHash) {
+            target = { group, start, end, sourceHash };
+            break;
+        }
+    }
+    if (!target) return { updated: 0 };
+
+    const expectedChatId = getChatId(context);
+    const prompt = buildHistoricalOverviewPrompt(target.group);
+    const output = normalizeHistoricalOverviewOutput(await callSummaryModel(
+        settings,
+        context,
+        prompt,
+        options.generateSummary,
+    ));
+    if (!output) throw new Error(`历史概括生成失败：第${target.start + 1}-${target.end + 1}楼。`);
+    const currentContext = options.getCurrentContext?.() ?? context;
+    if (getChatId(currentContext) !== expectedChatId || currentContext.chatMetadata !== context.chatMetadata) {
+        return { updated: 0, discarded: true };
+    }
+    const bookName = await getSummaryBookName(currentContext, true);
+    await saveHistoricalOverviewBlock(currentContext, bookName, target.start, target.end, output);
+    state.overviewGroups = state.overviewGroups
+        .filter(item => item.key !== getOverviewGroupKey(target.start, target.end));
+    state.overviewGroups.push({
+        key: getOverviewGroupKey(target.start, target.end),
+        start: target.start,
+        end: target.end,
+        sourceHash: target.sourceHash,
+    });
+    await currentContext.saveMetadata?.();
+    options.onSaved?.({ type: 'historical-overview', start: target.start, end: target.end });
+    return { updated: 1, start: target.start, end: target.end };
+}
+
 async function hideSummarizedMessages(context, start, end, recentMessages, getCurrentContext) {
     const chat = Array.isArray(context?.chat) ? context.chat : [];
     const recentCount = clampInteger(recentMessages, 20, 1, 1000);
@@ -571,13 +771,19 @@ export async function getSummaries(context) {
         return [];
     }
 
+    const data = typeof context?.loadWorldInfo === 'function'
+        ? await context.loadWorldInfo(bookName)
+        : null;
     const summaries = [];
     for (const entry of state.entries) {
         if (!entry?.uid) {
             continue;
         }
-        const command = `/getentryfield file=${quoteSlashValue(bookName)} field=content ${quoteSlashValue(entry.uid)}`;
-        const summary = getPipe(await runSlash(context, command));
+        const direct = String(data?.entries?.[entry.uid]?.content ?? '').trim();
+        const summary = direct || getPipe(await runSlash(
+            context,
+            `/getentryfield file=${quoteSlashValue(bookName)} field=content ${quoteSlashValue(entry.uid)}`,
+        ));
         if (summary) {
             summaries.push({
                 start: Number(entry.start),
@@ -623,6 +829,8 @@ export async function clearAllSummaries(context) {
             if (isManagedSummaryEntry(entry)) {
                 delete data.entries[uid];
                 removed++;
+            } else if (isHistoricalOverviewEntry(entry)) {
+                delete data.entries[uid];
             }
         }
         if (removed > 0) {
@@ -633,7 +841,16 @@ export async function clearAllSummaries(context) {
     const state = getSummaryState(context?.chatMetadata, true);
     state.lastSummarizedMessageIndex = -1;
     state.entries = [];
+    state.overviewGroups = [];
     await context.saveMetadata?.();
+    const chatId = getChatId(context);
+    if (chatId && typeof globalThis.location !== 'undefined') {
+        try {
+            await clearSummaryMemory(chatId);
+        } catch (error) {
+            console.warn('[Memory Augment] Failed to clear summary vectors.', error);
+        }
+    }
     return removed;
 }
 
@@ -664,7 +881,7 @@ async function migrateLegacyLorebookEntries(context, state) {
         keptEntry.content = sortedGroup
             .map(item => formatLegacyEventEntry(item.entry, item.key))
             .join('\n\n');
-        keptEntry.constant = true;
+        keptEntry.constant = false;
         keptEntry.position = WORLD_INFO_POSITION_AT_DEPTH;
         keptEntry.depth = SUMMARY_ENTRY_DEPTH;
         keptEntry.order = SUMMARY_ENTRY_ORDER_BASE;
@@ -683,6 +900,18 @@ async function migrateLegacyLorebookEntries(context, state) {
     }
     for (const entry of Object.values(data?.entries ?? {})) {
         if (!isManagedSummaryEntry(entry)) continue;
+        const expected = {
+            constant: false,
+            position: WORLD_INFO_POSITION_AT_DEPTH,
+            depth: SUMMARY_ENTRY_DEPTH,
+            disable: false,
+        };
+        for (const [field, value] of Object.entries(expected)) {
+            if (entry[field] !== value) {
+                entry[field] = value;
+                worldInfoChanged = true;
+            }
+        }
         const guardedContent = guardHistoricalSummaryTimes(entry.content);
         if (guardedContent !== String(entry.content ?? '')) {
             entry.content = guardedContent;
@@ -692,6 +921,10 @@ async function migrateLegacyLorebookEntries(context, state) {
     }
     if (normalizeManagedSummaryOrders(data)) {
         worldInfoChanged = true;
+    }
+    if (Object.values(data?.entries ?? {}).some(isManagedSummaryEntry)) {
+        const overview = await ensureHistoricalOverviewEntryInData(context, bookName, data);
+        if (overview.changed) worldInfoChanged = true;
     }
     if (worldInfoChanged && typeof context?.saveWorldInfo === 'function') {
         await context.saveWorldInfo(bookName, data, true);
@@ -782,6 +1015,13 @@ export async function summarizePendingMessages(settings, context, options = {}) 
 
     await migrateLegacySummaries(context);
     const state = getSummaryState(metadata, true);
+    let overviewUpdated = 0;
+    try {
+        const overviewResult = await updateHistoricalOverview(settings, context, options);
+        overviewUpdated = overviewResult?.updated ?? 0;
+    } catch (error) {
+        console.warn('[Memory Augment] Historical overview update failed; detailed summaries remain available.', error);
+    }
     const malformed = options.repairMalformed === true
         ? await findMalformedSummaryRange(context, state)
         : null;
@@ -789,7 +1029,7 @@ export async function summarizePendingMessages(settings, context, options = {}) 
     const firstIndexInsideRecentWindow = Math.max(0, chat.length - recentMessages);
     const pendingFloors = Math.max(0, firstIndexInsideRecentWindow - start);
     if (!malformed && pendingFloors < batchSize) {
-        return { created: 0, pendingFloors };
+        return { created: 0, pendingFloors, ...(overviewUpdated ? { overviewUpdated } : {}) };
     }
 
     const end = malformed?.end ?? start + batchSize - 1;
@@ -827,6 +1067,14 @@ export async function summarizePendingMessages(settings, context, options = {}) 
     state.entries.push(saved);
     state.lastSummarizedMessageIndex = Math.max(state.lastSummarizedMessageIndex, end);
     await currentContext.saveMetadata?.();
+    if (!overviewUpdated) {
+        try {
+            const overviewResult = await updateHistoricalOverview(settings, currentContext, options);
+            overviewUpdated = overviewResult?.updated ?? 0;
+        } catch (error) {
+            console.warn('[Memory Augment] Historical overview update failed; detailed summaries remain available.', error);
+        }
+    }
     await hideSummarizedMessages(
         currentContext,
         start,
@@ -840,6 +1088,7 @@ export async function summarizePendingMessages(settings, context, options = {}) 
         pendingFloors: Math.max(0, pendingFloors - (end - start + 1)),
         start,
         end,
+        ...(overviewUpdated ? { overviewUpdated } : {}),
         ...(malformed ? { repaired: true } : {}),
     };
 }

@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { formatMemoryMessage, memoryAugmentInterceptor, retrieveAndInject } from '../context-manager.js';
+import {
+    findHistoricalInsertionIndex,
+    formatMemoryMessage,
+    memoryAugmentInterceptor,
+    retrieveAndInject,
+} from '../context-manager.js';
 import { installNativeFetch } from './native-fetch-fixture.mjs';
 
 function createSettings({ reranker = true, semanticWorldInfo = false, topK = 12, topN = 2, threshold = 0.4, recentMessages = 2 } = {}) {
@@ -62,18 +67,19 @@ test('interceptor query, parameters, reranking, threshold, and insertion positio
     assert.deepEqual(searchPayload.scope, {
         chat_id: 'chat-1',
         chat_message_id_before: 4,
+        chat_message_ranges: [],
         book_ids: [],
     });
+    assert.equal(searchPayload.chatGlobalFallbackK, 3);
     assert.equal(rerankPayload.topN, 2);
     assert.equal(rerankPayload.threshold, 0.4);
     assert.equal(rerankPayload.reranker.baseUrl, 'https://reranker.example');
     assert.equal(result.usedReranker, true);
-    assert.equal(result.insertionIndex, 4);
-    assert.equal(chat[4].role, 'system');
-    assert.equal(chat[4].extra.type, 'narrator');
-    assert.match(chat[4].mes, /memory B/);
-    assert.equal(chat[5].mes, 'message 4');
-    assert.equal(chat[6].mes, 'message 5');
+    assert.equal(result.insertionIndex, 0);
+    assert.equal(chat[0].role, 'system');
+    assert.equal(chat[0].extra.type, 'narrator');
+    assert.match(chat[0].mes, /memory B/);
+    assert.deepEqual(chat.slice(1).map(message => message.mes), createChat().map(message => message.mes));
 });
 
 test('falls back to vector order when reranker is not configured', async () => {
@@ -91,11 +97,11 @@ test('falls back to vector order when reranker is not configured', async () => {
 
     assert.equal(rerankerCalled, false);
     assert.equal(result.usedReranker, false);
-    assert.equal(result.insertionIndex, 2);
-    assert.equal(chat[2].extra.type, 'narrator');
-    assert.match(chat[2].mes, /vector first/);
-    assert.doesNotMatch(chat[2].mes, /vector second/);
-    assert.deepEqual(chat.slice(3).map(message => message.mes), ['message 2', 'message 3']);
+    assert.equal(result.insertionIndex, 0);
+    assert.equal(chat[0].extra.type, 'narrator');
+    assert.match(chat[0].mes, /vector first/);
+    assert.doesNotMatch(chat[0].mes, /vector second/);
+    assert.deepEqual(chat.slice(1).map(message => message.mes), createChat(4).map(message => message.mes));
 });
 
 test('memory chunks are injected as raw text ordered by floor and segment index', () => {
@@ -183,11 +189,10 @@ test('registered generation interceptor injects memory into a multi-turn generat
     await memoryAugmentInterceptor(chat, 8192, () => undefined, 'normal');
 
     assert.equal(chat.length, 9);
-    assert.equal(chat[6].extra.type, 'narrator');
-    assert.match(chat[6].mes, /^【历史召回附录】/);
-    assert.match(chat[6].mes, /remembered event from earlier turns/);
-    assert.deepEqual(chat.slice(0, 6).map(message => message.mes), createChat(6).map(message => message.mes));
-    assert.deepEqual(chat.slice(7).map(message => message.mes), ['message 6', 'message 7']);
+    assert.equal(chat[0].extra.type, 'narrator');
+    assert.match(chat[0].mes, /^【历史上下文参考】/);
+    assert.match(chat[0].mes, /remembered event from earlier turns/);
+    assert.deepEqual(chat.slice(1).map(message => message.mes), createChat(8).map(message => message.mes));
 });
 
 test('semantic world info is independently retrieved and injected before chat memories', async () => {
@@ -213,13 +218,14 @@ test('semantic world info is independently retrieved and injected before chat me
     assert.deepEqual(searchPayload.scope, {
         chat_id: 'semantic-chat',
         chat_message_id_before: 3,
+        chat_message_ranges: [],
         book_ids: ['Book'],
     });
-    assert.match(chat[2].mes, /^\[设定召回-/);
-    assert.equal(chat[2].extra.memory_augment_recall_type, 'worldinfo');
-    assert.match(chat[3].mes, /^【历史召回附录】/);
-    assert.equal(chat[3].extra.memory_augment_recall_type, 'chat');
-    assert.deepEqual(chat.slice(4).map(message => message.mes), ['message 2', 'message 3']);
+    assert.match(chat[0].mes, /^【历史上下文参考】/);
+    assert.equal(chat[0].extra.memory_augment_recall_type, 'history');
+    assert.match(chat[3].mes, /^\[设定召回-/);
+    assert.equal(chat[3].extra.memory_augment_recall_type, 'worldinfo');
+    assert.deepEqual(chat.filter(message => /^message /.test(message.mes)).map(message => message.mes), createChat(4).map(message => message.mes));
 });
 
 test('an empty or failed source is not padded and does not suppress the other source', async () => {
@@ -263,7 +269,7 @@ test('zero results inject nothing and leave generation messages unchanged', asyn
     );
 
     assert.equal(result.injected, false);
-    assert.equal(result.reason, 'no-results');
+    assert.equal(result.reason, 'filtered');
     assert.deepEqual(chat, snapshot);
 });
 
@@ -306,12 +312,97 @@ test('chat and world-info candidates are independently reranked with separate li
     assert.deepEqual(rerankCalls.map(call => call.candidates.length).sort(), [6, 7]);
     assert.equal(result.chatResultCount, 2);
     assert.equal(result.worldInfoResultCount, 3);
-    assert.equal(chat[8].extra.memory_augment_recall_type, 'worldinfo');
-    assert.equal(chat[9].extra.memory_augment_recall_type, 'chat');
-    assert.deepEqual(chat.slice(10).map(message => message.mes), ['message 8', 'message 9']);
+    assert.equal(chat[0].extra.memory_augment_recall_type, 'history');
+    assert.equal(chat[9].extra.memory_augment_recall_type, 'worldinfo');
+    assert.deepEqual(chat.filter(message => /^message /.test(message.mes)).map(message => message.mes), createChat(10).map(message => message.mes));
 });
 
-test('full interceptor keeps ST-provided messages and injects setting and memory at depth 2', async (testContext) => {
+test('five recent and up to three recalled summaries jointly route the raw-memory search', async () => {
+    const chat = createChat(12);
+    const summaries = Array.from({ length: 10 }, (_, index) => ({
+        uid: String(index),
+        start: index * 10,
+        end: index * 10 + 9,
+        summary: `summary ${index}`,
+    }));
+    let summarySearchPayload;
+    let rawSearchPayload;
+    const result = await retrieveAndInject(
+        chat,
+        createSettings({ reranker: true, topK: 10, topN: 2, recentMessages: 2 }),
+        { chatId: 'hierarchical-chat', chat: createChat(12) },
+        {
+            async getSummaries() { return summaries; },
+            async syncSummaryMemory(payload) {
+                assert.equal(payload.entries.length, 10);
+                return { embedded: 10 };
+            },
+            async searchSummaryMemory(payload) {
+                summarySearchPayload = payload;
+                return {
+                    results: ['0', '2', '4'].map(uid => ({
+                        summary_uid: uid,
+                        text: `summary ${uid}`,
+                        type: 'summary',
+                    })),
+                };
+            },
+            async searchMemory(payload) {
+                rawSearchPayload = payload;
+                return {
+                    chatResults: [{ message_id: 21, segment_index: 0, text: 'linked raw detail' }],
+                    worldInfoResults: [],
+                };
+            },
+            async rerankMemory(payload) {
+                if (payload.candidates[0]?.type === 'summary') {
+                    return { results: payload.candidates.slice(0, payload.topN) };
+                }
+                return { results: payload.candidates.slice(0, payload.topN) };
+            },
+        },
+    );
+
+    assert.equal(summarySearchPayload.topK, 10);
+    assert.deepEqual(summarySearchPayload.summaryUids, ['0', '1', '2', '3', '4']);
+    assert.equal(result.recalledSummaryCount, 3);
+    assert.equal(result.recentSummaryCount, 5);
+    assert.deepEqual(rawSearchPayload.scope.chat_message_ranges, [
+        { start: 0, end: 9 },
+        { start: 20, end: 29 },
+        { start: 40, end: 49 },
+        { start: 50, end: 59 },
+        { start: 60, end: 69 },
+        { start: 70, end: 79 },
+        { start: 80, end: 89 },
+        { start: 90, end: 99 },
+    ]);
+    assert.equal(rawSearchPayload.chatGlobalFallbackK, 3);
+    assert.match(chat[0].mes, /\[相关旧总结\]/);
+    assert.match(chat[0].mes, /\[近期固定总结\]/);
+    assert.match(chat[0].mes, /linked raw detail/);
+});
+
+test('summary and memory counts are maxima and are never padded', async () => {
+    const chat = createChat(4);
+    const result = await retrieveAndInject(
+        chat,
+        createSettings({ reranker: false }),
+        { chatId: 'small-summary-chat', chat: createChat(4) },
+        {
+            async getSummaries() {
+                return [{ uid: 'only', start: 0, end: 2, summary: '唯一存在的总结。' }];
+            },
+            async searchMemory() { return { chatResults: [], worldInfoResults: [] }; },
+        },
+    );
+    assert.equal(result.recentSummaryCount, 1);
+    assert.equal(result.recalledSummaryCount, 0);
+    assert.equal(result.chatResultCount, 0);
+    assert.match(chat[0].mes, /唯一存在的总结/);
+});
+
+test('full interceptor keeps ST-provided messages, puts history at the beginning, and keeps settings separate', async (testContext) => {
     const chat = createChat(12);
     const settings = createSettings({
         reranker: false,
@@ -364,16 +455,12 @@ test('full interceptor keeps ST-provided messages and injects setting and memory
 
     await memoryAugmentInterceptor(chat, 8192, () => undefined, 'normal');
 
-    assert.deepEqual(chat.slice(0, 10).map(message => message.mes), createChat(10).map(message => message.mes));
-    assert.match(chat[10].mes, /^\[设定召回-/);
-    assert.match(chat[11].mes, /^【历史召回附录】/);
-    assert.deepEqual(chat.slice(12).map(message => message.mes), [
-        'message 10',
-        'message 11',
-    ]);
+    assert.match(chat[0].mes, /^【历史上下文参考】/);
+    assert.match(chat[11].mes, /^\[设定召回-/);
+    assert.deepEqual(chat.filter(message => /^message /.test(message.mes)).map(message => message.mes), createChat(12).map(message => message.mes));
 });
 
-test('depth 2 injection falls back to the front when fewer than two messages exist', async () => {
+test('history insertion falls back to the front when no story marker exists', async () => {
     const chat = createChat(1);
     const result = await retrieveAndInject(
         chat,
@@ -385,6 +472,15 @@ test('depth 2 injection falls back to the front when fewer than two messages exi
     assert.equal(result.insertionIndex, 0);
     assert.match(chat[0].mes, /early memory/);
     assert.equal(chat[1].mes, 'message 0');
+});
+
+test('history is inserted immediately after the Start a new Story marker', () => {
+    const chat = [
+        { role: 'system', content: 'character settings' },
+        { role: 'system', content: '[Start a new Story]' },
+        { role: 'user', content: 'first floor', is_user: true },
+    ];
+    assert.equal(findHistoricalInsertionIndex(chat), 2);
 });
 
 test('interceptor never mutates context.chat or shared message objects', async (testContext) => {

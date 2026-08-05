@@ -1,14 +1,24 @@
-import { rerankMemory, searchMemory } from './rag-client.js';
+import {
+    rerankMemory,
+    searchMemory,
+    searchSummaryMemory,
+    syncSummaryMemory,
+} from './rag-client.js';
 import { normalizeBaseUrl } from './api-utils.js';
 import { getActiveWorldInfoBookIds } from './world-info-manager.js';
 import { getMessageTimelineMetadata, injectLatestStoryStatus } from './story-status.js';
 import { injectMapAtlasContext } from './map-atlas.js';
 import { injectCharacterDevelopment } from './character-development.js';
+import { getSummaries, migrateLegacySummaries } from './summary-manager.js';
 
 const EXTENSION_KEY = 'st-memory-augment';
 const MEMORY_MARKER = 'memory_augment_rag';
 const WORLD_INFO_TOP_K = 7;
 const WORLD_INFO_TOP_N = 3;
+const SUMMARY_TOP_K = 10;
+const SUMMARY_TOP_N = 3;
+const RECENT_SUMMARY_COUNT = 5;
+const CHAT_GLOBAL_FALLBACK_K = 3;
 const MEMORY_TIMELINE_GUARD = [
     '【历史召回附录】',
     '以下片段来自较早楼层，是根据当前内容检索出的可能相关历史。它们可能有用，也可能无关，仅供参考，不要求必须采用。',
@@ -148,6 +158,70 @@ export function formatMemoryMessage(results, context = null) {
     };
 }
 
+function getMemoryFragments(results, context = null) {
+    const message = formatMemoryMessage(results, context);
+    if (!message) return '';
+    const separator = '\n\n';
+    const index = message.content.indexOf(separator);
+    return index >= 0 ? message.content.slice(index + separator.length) : message.content;
+}
+
+function normalizeSummaryRecords(records) {
+    const byUid = new Map();
+    for (const record of Array.isArray(records) ? records : []) {
+        const uid = String(record?.uid ?? '').trim();
+        const summary = String(record?.summary ?? record?.text ?? '').trim();
+        const start = Number(record?.start);
+        const end = Number(record?.end);
+        if (!uid || !summary || !Number.isInteger(start) || !Number.isInteger(end)) continue;
+        byUid.set(uid, { ...record, uid, summary, start, end });
+    }
+    return [...byUid.values()].sort((left, right) => left.start - right.start || left.end - right.end);
+}
+
+export function formatHistoricalContextMessage({ recentSummaries = [], recalledSummaries = [], memories = [] } = {}, context = null) {
+    const recentUids = new Set(recentSummaries.map(item => String(item.uid)));
+    const summaryFragments = normalizeSummaryRecords([...recentSummaries, ...recalledSummaries])
+        .map(item => [
+            recentUids.has(item.uid) ? '[近期固定总结]' : '[相关旧总结]',
+            `第${item.start + 1}-${item.end + 1}楼`,
+            item.summary,
+        ].join('\n'));
+    const memoryFragments = getMemoryFragments(memories, context);
+    if (summaryFragments.length === 0 && !memoryFragments) return null;
+    const content = [
+        '【历史上下文参考】',
+        '以下内容均来自当前场景之前的历史，仅用于保持剧情连续性；不是当前正在发生的场景，不得让时间线倒退或重复旧事件。',
+        '召回内容可能相关，也可能无关，不要求必须采用；若确实相关，应据此保持事实、人物认知与因果一致。',
+        '如与玩家最新回复、最近原文或较晚楼层冲突，一律以玩家最新回复和较晚内容为准。',
+        summaryFragments.length > 0 ? `【进入本轮的剧情总结】\n\n${summaryFragments.join('\n\n')}` : '',
+        memoryFragments ? `【总结所关联的正文细节】\n\n${memoryFragments}` : '',
+    ].filter(Boolean).join('\n\n');
+    return {
+        role: 'system',
+        content,
+        name: 'Memory Augment',
+        is_user: false,
+        is_system: false,
+        mes: content,
+        extra: {
+            type: 'narrator',
+            [MEMORY_MARKER]: true,
+            memory_augment_recall_type: 'history',
+        },
+    };
+}
+
+export function findHistoricalInsertionIndex(chat) {
+    const markerIndex = chat.findIndex(message => /\[\s*Start a new Story\s*\]/i.test(getMessageText(message)));
+    if (markerIndex >= 0) return markerIndex + 1;
+    const conversationIndex = chat.findIndex(message => message?.is_user === true
+        || message?.role === 'user'
+        || message?.role === 'assistant'
+        || (message?.is_system === false && message?.role !== 'system'));
+    return conversationIndex >= 0 ? conversationIndex : chat.length;
+}
+
 export function formatWorldInfoMessage(results) {
     const fragments = [...results]
         .sort((left, right) => String(left?.book_id ?? left?.world_info_book ?? '')
@@ -222,7 +296,7 @@ export async function retrieveAndInject(chat, settings, context, clients = {}) {
     const embedding = completeApiConfig(settings?.apis?.embedding);
     const chatId = context?.getCurrentChatId?.() ?? context?.chatId;
     const query = buildRagQuery(chat, 3);
-    if (!embedding || !chatId || !query) {
+    if (!chatId || !query) {
         return { injected: false, reason: 'missing-input' };
     }
 
@@ -234,23 +308,91 @@ export async function retrieveAndInject(chat, settings, context, clients = {}) {
     const chatMessageIdBefore = Math.max(0, persistentChatLength - recentMessages);
     const search = clients.searchMemory ?? searchMemory;
     const rerank = clients.rerankMemory ?? rerankMemory;
+    const readSummaries = clients.getSummaries ?? getSummaries;
+    const migrateSummaries = clients.migrateLegacySummaries ?? migrateLegacySummaries;
+    const syncSummaries = clients.syncSummaryMemory ?? syncSummaryMemory;
+    const searchSummaries = clients.searchSummaryMemory ?? searchSummaryMemory;
+    let allSummaries = [];
+    try {
+        await migrateSummaries(context);
+        allSummaries = normalizeSummaryRecords(await readSummaries(context));
+    } catch (error) {
+        console.warn('[Memory Augment] Failed to read detailed summaries; raw fallback remains available.', error);
+    }
+    const recentSummaryRecords = allSummaries.slice(-RECENT_SUMMARY_COUNT);
+    const recentSummaryUids = new Set(recentSummaryRecords.map(item => item.uid));
+    const olderSummaryRecords = allSummaries.filter(item => !recentSummaryUids.has(item.uid));
+    const reranker = completeApiConfig(settings?.apis?.reranker);
+    let recalledSummaryRecords = [];
+    let summaryUsedReranker = false;
+    if (embedding && olderSummaryRecords.length > 0) {
+        try {
+            await syncSummaries({
+                chatId,
+                entries: allSummaries.map(item => ({
+                    uid: item.uid,
+                    start: item.start,
+                    end: item.end,
+                    text: item.summary,
+                })),
+                embedding,
+            });
+            const summarySearch = await searchSummaries({
+                chatId,
+                query,
+                topK: SUMMARY_TOP_K,
+                summaryUids: olderSummaryRecords.map(item => item.uid),
+                embedding,
+            });
+            const summarySelection = await selectRecallResults({
+                candidates: Array.isArray(summarySearch?.results) ? summarySearch.results : [],
+                query,
+                topN: SUMMARY_TOP_N,
+                threshold,
+                reranker,
+                rerank,
+                source: 'Detailed summary',
+            });
+            summaryUsedReranker = summarySelection.usedReranker;
+            const canonicalByUid = new Map(olderSummaryRecords.map(item => [item.uid, item]));
+            recalledSummaryRecords = summarySelection.results
+                .map(item => canonicalByUid.get(String(item?.summary_uid ?? item?.uid ?? '')))
+                .filter(Boolean);
+        } catch (error) {
+            console.warn('[Memory Augment] Summary retrieval failed; recent summaries and raw fallback remain available.', error);
+        }
+    }
+    const selectedSummaryRecords = normalizeSummaryRecords([
+        ...recentSummaryRecords,
+        ...recalledSummaryRecords,
+    ]);
     const activeBookIds = Array.isArray(settings?.rag?.activeWorldInfoBookIds)
         ? settings.rag.activeWorldInfoBookIds.map(String)
         : getActiveWorldInfoBookIds();
-    const semanticWorldInfo = Boolean(settings?.rag?.semanticWorldInfo && activeBookIds.length > 0);
-    const searchResponse = await search({
-        chatId,
-        query,
-        separate: true,
-        chatTopK: topK,
-        worldInfoTopK: WORLD_INFO_TOP_K,
-        embedding,
-        scope: {
-            chat_id: chatId,
-            chat_message_id_before: chatMessageIdBefore,
-            book_ids: semanticWorldInfo ? activeBookIds : [],
-        },
-    });
+    const ordinaryBookIds = activeBookIds.filter(id => !String(id).endsWith('-自动总结'));
+    const semanticWorldInfo = Boolean(settings?.rag?.semanticWorldInfo && ordinaryBookIds.length > 0);
+    let searchResponse = { chatResults: [], worldInfoResults: [], errors: {} };
+    if (embedding) {
+        try {
+            searchResponse = await search({
+                chatId,
+                query,
+                separate: true,
+                chatTopK: topK,
+                chatGlobalFallbackK: CHAT_GLOBAL_FALLBACK_K,
+                worldInfoTopK: WORLD_INFO_TOP_K,
+                embedding,
+                scope: {
+                    chat_id: chatId,
+                    chat_message_id_before: chatMessageIdBefore,
+                    chat_message_ranges: selectedSummaryRecords.map(item => ({ start: item.start, end: item.end })),
+                    book_ids: semanticWorldInfo ? ordinaryBookIds : [],
+                },
+            });
+        } catch (error) {
+            searchResponse = { chatResults: [], worldInfoResults: [], errors: { chat: String(error?.message ?? error) } };
+        }
+    }
     if (searchResponse?.errors?.chat) {
         console.warn(`[Memory Augment] Chat vector search failed: ${searchResponse.errors.chat}`);
     }
@@ -266,11 +408,6 @@ export async function retrieveAndInject(chat, settings, context, clients = {}) {
             ? searchResponse.worldInfoResults
             : legacyCandidates.filter(result => result.type === 'worldinfo')
         : [];
-    if (chatCandidates.length === 0 && worldInfoCandidates.length === 0) {
-        return { injected: false, reason: 'no-results' };
-    }
-
-    const reranker = completeApiConfig(settings?.apis?.reranker);
     const [chatSelection, worldInfoSelection] = await Promise.all([
         selectRecallResults({
             candidates: chatCandidates,
@@ -291,22 +428,37 @@ export async function retrieveAndInject(chat, settings, context, clients = {}) {
             source: 'World info',
         }),
     ]);
-    const usedReranker = chatSelection.usedReranker || worldInfoSelection.usedReranker;
+    const usedReranker = summaryUsedReranker || chatSelection.usedReranker || worldInfoSelection.usedReranker;
     const worldInfoMessage = semanticWorldInfo
         ? formatWorldInfoMessage(worldInfoSelection.results)
         : null;
-    const memoryMessage = formatMemoryMessage(chatSelection.results, context);
-    const recallMessages = [worldInfoMessage, memoryMessage].filter(Boolean);
-    if (recallMessages.length === 0) {
+    const historicalMessage = formatHistoricalContextMessage({
+        recentSummaries: recentSummaryRecords,
+        recalledSummaries: recalledSummaryRecords,
+        memories: chatSelection.results,
+    }, context);
+    if (!worldInfoMessage && !historicalMessage) {
         return { injected: false, reason: 'filtered', usedReranker };
     }
 
-    const insertionIndex = Math.max(0, chat.length - 2);
-    chat.splice(insertionIndex, 0, ...recallMessages);
+    let insertionIndex = null;
+    if (historicalMessage) {
+        insertionIndex = findHistoricalInsertionIndex(chat);
+        chat.splice(insertionIndex, 0, historicalMessage);
+    }
+    let worldInfoInsertionIndex = null;
+    if (worldInfoMessage) {
+        worldInfoInsertionIndex = Math.max(0, chat.length - 2);
+        chat.splice(worldInfoInsertionIndex, 0, worldInfoMessage);
+    }
     return {
         injected: true,
         insertionIndex,
-        resultCount: chatSelection.results.length + worldInfoSelection.results.length,
+        worldInfoInsertionIndex,
+        resultCount: recentSummaryRecords.length + recalledSummaryRecords.length
+            + chatSelection.results.length + worldInfoSelection.results.length,
+        recentSummaryCount: recentSummaryRecords.length,
+        recalledSummaryCount: recalledSummaryRecords.length,
         chatResultCount: chatSelection.results.length,
         worldInfoResultCount: worldInfoSelection.results.length,
         usedReranker,

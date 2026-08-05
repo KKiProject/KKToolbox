@@ -13,6 +13,7 @@ import {
     SUMMARY_KEY_PREFIX,
     SUMMARY_STATE_KEY,
     summarizePendingMessages,
+    updateHistoricalOverview,
 } from '../summary-manager.js';
 
 test('summary prompt treats floor batches as processing windows and uses saved anchors', () => {
@@ -207,10 +208,11 @@ test('a summary starts only after one full batch has left the recent-message win
 
     const data = context.lorebooks.get('金钰琳-自动总结');
     const entries = Object.values(data.entries);
-    assert.equal(entries.length, 1);
-    assert.equal(entries[0].key[0], `${SUMMARY_KEY_PREFIX}[第1-10楼]`);
-    assert.equal(entries[0].constant, true);
-    assert.equal(entries[0].content, [
+    assert.equal(entries.length, 2);
+    const detail = entries.find(entry => entry.key[0] === `${SUMMARY_KEY_PREFIX}[第1-10楼]`);
+    const overview = entries.find(entry => entry.key[0] === '[KKT历史概括]');
+    assert.equal(detail.constant, false);
+    assert.equal(detail.content, [
         '[★★★★☆]',
         '⏰ 固定历史时间锚点：黄昏时分（不得按当前回合重新解释）',
         ' A、B',
@@ -223,6 +225,8 @@ test('a summary starts only after one full batch has left the recent-message win
         ' 酒馆后巷',
         ' A暗中通知C留意B的行动。',
     ].join('\n'));
+    assert.equal(overview.constant, true);
+    assert.equal(overview.content, '');
     assert.deepEqual(context.additionalBooks, ['金钰琳-自动总结']);
     assert.equal(context.characters[0].data.extensions.world, '角色主世界书');
     assert.equal(context.calls.some(command => command.startsWith('/createentry ')), false);
@@ -359,6 +363,7 @@ test('the next summary starts immediately after the previous summarized range', 
     assert.match(summaries[0], /A发现了新的线索/);
     assert.match(summaries[1], /A与B作出改变主线走向的决定/);
     const entries = Object.values(context.lorebooks.get('金钰琳-自动总结').entries)
+        .filter(entry => entry.key[0].startsWith(SUMMARY_KEY_PREFIX))
         .sort((left, right) => left.order - right.order);
     assert.deepEqual(entries.map(entry => entry.order), [100, 101]);
     assert.deepEqual(entries.map(entry => entry.key[0]), [
@@ -381,9 +386,63 @@ test('existing summary lorebook entries are automatically reordered by floor ran
 
     const entries = context.lorebooks.get(bookName).entries;
     assert.equal(entries[1].order, 100);
+    assert.equal(entries[1].constant, false);
     assert.equal(entries[2].order, 101);
+    assert.equal(entries[2].constant, false);
     assert.equal(entries[3].order, 102);
+    assert.equal(entries[3].constant, false);
     assert.equal(entries[9].order, 77);
+    assert.equal(Object.values(entries).some(entry => entry.key?.[0] === '[KKT历史概括]'), true);
+});
+
+test('every five detailed summaries append one blue historical overview block', async () => {
+    const context = createContext(dialoguePairs(30));
+    const bookName = '金钰琳-自动总结';
+    context.chatMetadata[SUMMARY_STATE_KEY] = {
+        lastSummarizedMessageIndex: 49,
+        entries: Array.from({ length: 5 }, (_, index) => ({
+            uid: String(index),
+            start: index * 10,
+            end: index * 10 + 9,
+            createdAt: `2026-08-0${index + 1}T00:00:00.000Z`,
+        })),
+        overviewGroups: [],
+    };
+    context.lorebooks.set(bookName, { entries: Object.fromEntries(Array.from({ length: 5 }, (_, index) => [
+        index,
+        {
+            uid: index,
+            key: [`${SUMMARY_KEY_PREFIX}[第${index * 10 + 1}-${index * 10 + 10}楼]`],
+            content: `第${index + 1}段发生了明确的重要事件。`,
+            constant: false,
+            order: 100 + index,
+        },
+    ])) });
+
+    const result = await updateHistoricalOverview({}, context, {
+        getCurrentContext: () => context,
+        generateSummary: async (prompt) => {
+            assert.match(prompt, /第1-50楼的5份阶段事件总结/);
+            assert.match(prompt, /第5段发生了明确的重要事件/);
+            return '主角在这段时期依次处理了五件重要事件，并保留了继续推进主线的关键线索。';
+        },
+    });
+
+    assert.deepEqual(result, { updated: 1, start: 0, end: 49 });
+    const overview = Object.values(context.lorebooks.get(bookName).entries)
+        .find(entry => entry.key?.[0] === '[KKT历史概括]');
+    assert.equal(overview.constant, true);
+    assert.match(overview.content, /^【历史概括·第1-50楼】/);
+    assert.match(overview.content, /五件重要事件/);
+
+    let repeatedCalls = 0;
+    const repeated = await updateHistoricalOverview({}, context, {
+        getCurrentContext: () => context,
+        generateSummary: async () => { repeatedCalls++; return '不应重复生成。'; },
+    });
+    assert.deepEqual(repeated, { updated: 0 });
+    assert.equal(repeatedCalls, 0);
+    assert.equal((overview.content.match(/【历史概括·第1-50楼】/g) ?? []).length, 1);
 });
 
 test('legacy per-event entries for the same floor range are merged', async () => {
@@ -398,8 +457,10 @@ test('legacy per-event entries for the same floor range are merged', async () =>
 
     await migrateLegacySummaries(context);
     const entries = Object.values(context.lorebooks.get(bookName).entries);
-    assert.equal(entries.length, 2);
+    assert.equal(entries.length, 3);
     assert.equal(entries.filter(entry => entry.key[0].startsWith(SUMMARY_KEY_PREFIX)).length, 1);
+    assert.equal(entries.find(entry => entry.key[0].startsWith(SUMMARY_KEY_PREFIX)).constant, false);
+    assert.equal(entries.find(entry => entry.key[0] === '[KKT历史概括]').constant, true);
     assert.equal(entries.find(entry => entry.uid === 4).key[0], `${SUMMARY_KEY_PREFIX}[第1-10楼]`);
     assert.match(entries.find(entry => entry.uid === 4).content, /^\[★★★★★\]\nold high\n\n\[★★☆☆☆\]\nold low$/);
     assert.equal(entries.find(entry => entry.uid === 9).content, 'keep me');

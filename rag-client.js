@@ -9,6 +9,7 @@ import {
 import {
     CHAT_KIND,
     clearChatScope,
+    clearSummaryScope,
     clearWorldInfoScope,
     getScopeStatus,
     getWorldInfoScopeStatuses,
@@ -17,6 +18,8 @@ import {
     listChatScope,
     reconcileChatScope,
     searchScopes,
+    searchSummaryScope,
+    syncSummaryScope,
     syncWorldInfoScope,
     updateChatScope,
 } from './native-vector-store.js';
@@ -162,6 +165,14 @@ export async function searchMemory(payload) {
     return searchScopes(payload);
 }
 
+export function syncSummaryMemory(payload) {
+    return syncSummaryScope(payload);
+}
+
+export function searchSummaryMemory(payload) {
+    return searchSummaryScope(payload);
+}
+
 export function rerankMemory(payload) {
     return rerankCandidates(payload);
 }
@@ -180,6 +191,10 @@ export function generateMapAtlas(payload) {
 
 export function clearChat(chatId) {
     return clearChatScope(chatId);
+}
+
+export function clearSummaryMemory(chatId) {
+    return clearSummaryScope(chatId);
 }
 
 export { createEmbeddings, CHAT_KIND };
