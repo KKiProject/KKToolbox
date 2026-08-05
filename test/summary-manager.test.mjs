@@ -358,6 +358,32 @@ test('the next summary starts immediately after the previous summarized range', 
     const summaries = (await getSummaries(context)).map(item => item.summary);
     assert.match(summaries[0], /A发现了新的线索/);
     assert.match(summaries[1], /A与B作出改变主线走向的决定/);
+    const entries = Object.values(context.lorebooks.get('金钰琳-自动总结').entries)
+        .sort((left, right) => left.order - right.order);
+    assert.deepEqual(entries.map(entry => entry.order), [100, 101]);
+    assert.deepEqual(entries.map(entry => entry.key[0]), [
+        `${SUMMARY_KEY_PREFIX}[第1-10楼]`,
+        `${SUMMARY_KEY_PREFIX}[第11-20楼]`,
+    ]);
+});
+
+test('existing summary lorebook entries are automatically reordered by floor range', async () => {
+    const context = createContext(dialoguePairs(2));
+    const bookName = '金钰琳-自动总结';
+    context.lorebooks.set(bookName, { entries: {
+        3: { uid: 3, key: [`${SUMMARY_KEY_PREFIX}[第21-30楼]`], content: '第三段', order: 100 },
+        1: { uid: 1, key: [`${SUMMARY_KEY_PREFIX}[第1-10楼]`], content: '第一段', order: 100 },
+        2: { uid: 2, key: [`${SUMMARY_KEY_PREFIX}[第11-20楼]`], content: '第二段', order: 100 },
+        9: { uid: 9, key: ['ordinary'], content: '普通条目', order: 77 },
+    } });
+
+    await migrateLegacySummaries(context);
+
+    const entries = context.lorebooks.get(bookName).entries;
+    assert.equal(entries[1].order, 100);
+    assert.equal(entries[2].order, 101);
+    assert.equal(entries[3].order, 102);
+    assert.equal(entries[9].order, 77);
 });
 
 test('legacy per-event entries for the same floor range are merged', async () => {

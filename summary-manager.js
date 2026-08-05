@@ -9,6 +9,7 @@ const LEGACY_SUMMARY_KEY_PREFIX = '[KKToolbox摘要]';
 const SUMMARY_GENERATION_MAX_TOKENS = 1200;
 const SUMMARY_BOOK_SUFFIX = '-自动总结';
 const SUMMARY_ENTRY_DEPTH = 4;
+const SUMMARY_ENTRY_ORDER_BASE = 100;
 const WORLD_INFO_POSITION_AT_DEPTH = 4;
 let summaryQueue = Promise.resolve();
 
@@ -159,6 +160,44 @@ function isManagedSummaryEntry(entry) {
         || String(key ?? '').startsWith(LEGACY_SUMMARY_KEY_PREFIX));
 }
 
+function getManagedSummaryRange(entry) {
+    const keys = Array.isArray(entry?.key) ? entry.key : [entry?.key];
+    const managedKey = keys.find(key => String(key ?? '').startsWith(SUMMARY_KEY_PREFIX)
+        || String(key ?? '').startsWith(LEGACY_SUMMARY_KEY_PREFIX));
+    return getRangeFromKey(managedKey);
+}
+
+function compareSummaryRanges(left, right) {
+    return left.start - right.start || left.end - right.end;
+}
+
+function normalizeManagedSummaryOrders(data) {
+    const managedEntries = Object.entries(data?.entries ?? {})
+        .map(([uid, entry]) => ({ uid, entry, range: getManagedSummaryRange(entry) }))
+        .filter(item => item.range)
+        .sort((left, right) => compareSummaryRanges(left.range, right.range)
+            || String(left.uid).localeCompare(String(right.uid), undefined, { numeric: true }));
+    let changed = false;
+    managedEntries.forEach(({ entry }, index) => {
+        const order = SUMMARY_ENTRY_ORDER_BASE + index;
+        if (Number(entry.order) !== order) {
+            entry.order = order;
+            changed = true;
+        }
+    });
+    return changed;
+}
+
+function getSummaryOrder(records, start, end) {
+    const ranges = (Array.isArray(records) ? records : [])
+        .map(record => ({ start: Number(record?.start), end: Number(record?.end) }))
+        .filter(range => Number.isFinite(range.start) && Number.isFinite(range.end)
+            && (range.start !== start || range.end !== end));
+    ranges.push({ start, end });
+    ranges.sort(compareSummaryRanges);
+    return SUMMARY_ENTRY_ORDER_BASE + ranges.findIndex(range => range.start === start && range.end === end);
+}
+
 async function findSummaryEntry(context, bookName, key) {
     const command = `/findentry file=${quoteSlashValue(bookName)} field=key ${quoteSlashValue(key)}`;
     return getPipe(await runSlash(context, command));
@@ -169,11 +208,11 @@ async function setEntryField(context, bookName, uid, field, value) {
     await runSlash(context, command);
 }
 
-async function configureSummaryEntry(context, bookName, uid) {
+async function configureSummaryEntry(context, bookName, uid, order = SUMMARY_ENTRY_ORDER_BASE) {
     await setEntryField(context, bookName, uid, 'constant', true);
     await setEntryField(context, bookName, uid, 'position', WORLD_INFO_POSITION_AT_DEPTH);
     await setEntryField(context, bookName, uid, 'depth', SUMMARY_ENTRY_DEPTH);
-    await setEntryField(context, bookName, uid, 'order', 100);
+    await setEntryField(context, bookName, uid, 'order', order);
     await setEntryField(context, bookName, uid, 'disable', false);
 }
 
@@ -188,7 +227,7 @@ function hasMatchingRange(key, start, end) {
         || (range.start === start && range.end === end);
 }
 
-async function upsertSummaryEntry(context, events, start, end, createdAt) {
+async function upsertSummaryEntry(context, events, start, end, createdAt, order = SUMMARY_ENTRY_ORDER_BASE) {
     const bookName = await getSummaryBookName(context, true);
     const key = getSummaryKey(start, end);
     const content = formatSummaryContent(events);
@@ -223,11 +262,12 @@ async function upsertSummaryEntry(context, events, start, end, createdAt) {
         keptEntry.constant = true;
         keptEntry.position = WORLD_INFO_POSITION_AT_DEPTH;
         keptEntry.depth = SUMMARY_ENTRY_DEPTH;
-        keptEntry.order = 100;
+        keptEntry.order = order;
         keptEntry.disable = false;
         for (const [duplicateUid] of matches.slice(1)) {
             delete data.entries[duplicateUid];
         }
+        normalizeManagedSummaryOrders(data);
         await context.saveWorldInfo(bookName, data, true);
         const verified = await context.loadWorldInfo(bookName);
         if (String(verified?.entries?.[keptUid]?.content ?? '').trim() !== content) {
@@ -249,7 +289,7 @@ async function upsertSummaryEntry(context, events, start, end, createdAt) {
         throw new Error(`创建摘要世界书条目失败：${key}`);
     }
     await setEntryField(context, bookName, uid, 'content', content);
-    await configureSummaryEntry(context, bookName, uid);
+    await configureSummaryEntry(context, bookName, uid, order);
     const verifiedContent = getPipe(await runSlash(
         context,
         `/getentryfield file=${quoteSlashValue(bookName)} field=content ${quoteSlashValue(uid)}`,
@@ -267,7 +307,7 @@ async function upsertSummaryEntry(context, events, start, end, createdAt) {
     };
 }
 
-async function upsertLegacySummaryEntry(context, record) {
+async function upsertLegacySummaryEntry(context, record, order = SUMMARY_ENTRY_ORDER_BASE) {
     const bookName = await getSummaryBookName(context, true);
     const key = getLegacySummaryKey(record.start, record.end);
     let uid = await findSummaryEntry(context, bookName, key);
@@ -280,7 +320,7 @@ async function upsertLegacySummaryEntry(context, record) {
             throw new Error(`迁移旧摘要世界书条目失败：${key}`);
         }
     }
-    await configureSummaryEntry(context, bookName, uid);
+    await configureSummaryEntry(context, bookName, uid, order);
     return { ...record, uid: String(uid), key, bookName };
 }
 
@@ -627,7 +667,7 @@ async function migrateLegacyLorebookEntries(context, state) {
         keptEntry.constant = true;
         keptEntry.position = WORLD_INFO_POSITION_AT_DEPTH;
         keptEntry.depth = SUMMARY_ENTRY_DEPTH;
-        keptEntry.order = 100;
+        keptEntry.order = SUMMARY_ENTRY_ORDER_BASE;
         keptEntry.disable = false;
         for (const item of sortedGroup) {
             consolidatedUids.add(String(item.entry.uid ?? item.uid));
@@ -649,6 +689,9 @@ async function migrateLegacyLorebookEntries(context, state) {
             worldInfoChanged = true;
             migrated++;
         }
+    }
+    if (normalizeManagedSummaryOrders(data)) {
+        worldInfoChanged = true;
     }
     if (worldInfoChanged && typeof context?.saveWorldInfo === 'function') {
         await context.saveWorldInfo(bookName, data, true);
@@ -711,7 +754,8 @@ export async function migrateLegacySummaries(context) {
             }))
             .sort((left, right) => left.start - right.start);
         for (const record of records) {
-            const saved = await upsertLegacySummaryEntry(context, record);
+            const order = getSummaryOrder(state.entries, record.start, record.end);
+            const saved = await upsertLegacySummaryEntry(context, record, order);
             if (!state.entries.some(item => item.start === saved.start && item.end === saved.end)) {
                 state.entries.push(saved);
             }
@@ -777,7 +821,8 @@ export async function summarizePendingMessages(settings, context, options = {}) 
     }
 
     const createdAt = new Date().toISOString();
-    const saved = await upsertSummaryEntry(currentContext, events, start, end, createdAt);
+    const order = getSummaryOrder(state.entries, start, end);
+    const saved = await upsertSummaryEntry(currentContext, events, start, end, createdAt, order);
     state.entries = state.entries.filter(entry => entry.start !== start || entry.end !== end);
     state.entries.push(saved);
     state.lastSummarizedMessageIndex = Math.max(state.lastSummarizedMessageIndex, end);
