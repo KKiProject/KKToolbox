@@ -5,7 +5,9 @@ import {
     getChatMemory,
     ingestChat,
     searchMemory,
+    searchPhoneMemory,
     searchSummaryMemory,
+    syncPhoneMemory,
     syncSummaryMemory,
     updateChatMemory,
 } from '../rag-client.js';
@@ -196,6 +198,95 @@ test('detailed summaries use an independent vector scope and respect the eligibl
     assert.deepEqual(result.results.map(item => item.summary_uid), ['old']);
     assert.equal(result.results[0].start, 0);
     assert.equal(result.results[0].end, 9);
+});
+
+test('online phone memories use a separate vector scope and return their event ids', async (context) => {
+    const originalSillyTavern = globalThis.SillyTavern;
+    const originalFetch = globalThis.fetch;
+    context.after(() => {
+        globalThis.SillyTavern = originalSillyTavern;
+        globalThis.fetch = originalFetch;
+    });
+    globalThis.SillyTavern = {
+        getContext: () => ({ getRequestHeaders: () => ({ 'Content-Type': 'application/json' }) }),
+    };
+    const fixture = installNativeFetch();
+    globalThis.fetch = fixture.fetch;
+    const embedding = {
+        baseUrl: 'https://embedding.example',
+        apiKey: 'embed-key',
+        model: 'embed-model',
+    };
+    await syncPhoneMemory({
+        chatId: 'phone-rag-chat',
+        embedding,
+        entries: [
+            { id: 'event-1', text: '与经纪人约定明天下午三点去公司', type: 'commitment', status: 'active', conversationId: 'direct-1' },
+            { id: 'event-2', text: '超话出现了新的同人图', type: 'platform_fact', status: 'informational', conversationId: 'community' },
+        ],
+    });
+    const result = await searchPhoneMemory({
+        chatId: 'phone-rag-chat',
+        query: '明天去公司',
+        topK: 1,
+        embedding,
+    });
+    assert.equal(result.results.length, 1);
+    assert.equal(result.results[0].memory_event_id, 'event-1');
+    assert.equal(result.results[0].type, 'phone');
+});
+
+test('one unchanged query shares its embedding across summary and chat stores without relisting either index', async (context) => {
+    const originalSillyTavern = globalThis.SillyTavern;
+    const originalFetch = globalThis.fetch;
+    context.after(() => {
+        globalThis.SillyTavern = originalSillyTavern;
+        globalThis.fetch = originalFetch;
+    });
+    globalThis.SillyTavern = {
+        getContext: () => ({ getRequestHeaders: () => ({ 'Content-Type': 'application/json' }) }),
+    };
+    const fixture = installNativeFetch();
+    globalThis.fetch = fixture.fetch;
+    const embedding = {
+        baseUrl: 'https://embedding-cache.example',
+        apiKey: 'embed-key',
+        model: 'embed-cache-model',
+    };
+    await syncSummaryMemory({
+        chatId: 'shared-query-chat',
+        embedding,
+        entries: [{ uid: 'summary-a', start: 0, end: 9, text: '王冠藏在旧王宫' }],
+    });
+    await ingestChat({
+        chatId: 'shared-query-chat',
+        embedding,
+        targetChars: 400,
+        messages: [{ id: 2, role: 'assistant', text: '侍卫把王冠交给了公主' }],
+    });
+    fixture.requests.length = 0;
+
+    const query = '只用于共享向量测试的王冠线索';
+    await searchSummaryMemory({
+        chatId: 'shared-query-chat',
+        query,
+        topK: 1,
+        summaryUids: ['summary-a'],
+        embedding,
+    });
+    await searchMemory({
+        query,
+        embedding,
+        chatTopK: 1,
+        scope: { chat_id: 'shared-query-chat', chat_message_id_before: 30, book_ids: [] },
+    });
+
+    const queryEmbeddings = fixture.requests.filter(request => (
+        request.url === 'https://embedding-cache.example/v1/embeddings'
+        && request.body.input?.[0] === query
+    ));
+    assert.equal(queryEmbeddings.length, 1);
+    assert.equal(fixture.requests.filter(request => request.url === '/api/vector/list').length, 0);
 });
 
 test('a partial 80-95 floor store is repaired with all missing historical floors without re-embedding saved floors', async (context) => {

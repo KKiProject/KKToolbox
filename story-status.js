@@ -876,6 +876,23 @@ function clampStoryLauncherToViewport(root) {
     root.dataset.vertical = y < globalThis.innerHeight / 2 ? 'top' : 'bottom';
 }
 
+function clampStoryPanelToViewport(root) {
+    const panel = root.querySelector('#memory_augment_story_status_panel');
+    if (!panel || panel.hidden) return;
+    panel.style.transform = '';
+    const rectangle = panel.getBoundingClientRect();
+    const viewportWidth = Number(globalThis.innerWidth) || document.documentElement.clientWidth;
+    const viewportHeight = Number(globalThis.innerHeight) || document.documentElement.clientHeight;
+    const inset = 8;
+    let offsetX = 0;
+    let offsetY = 0;
+    if (rectangle.left < inset) offsetX = inset - rectangle.left;
+    else if (rectangle.right > viewportWidth - inset) offsetX = viewportWidth - inset - rectangle.right;
+    if (rectangle.top < inset) offsetY = inset - rectangle.top;
+    else if (rectangle.bottom > viewportHeight - inset) offsetY = viewportHeight - inset - rectangle.bottom;
+    if (offsetX || offsetY) panel.style.transform = `translate(${offsetX}px, ${offsetY}px)`;
+}
+
 function applySavedPosition(root, settings) {
     const xRatio = Number(settings?.status?.position?.x);
     const yRatio = Number(settings?.status?.position?.y);
@@ -936,6 +953,7 @@ function bindStatusDragging(root, settings, context) {
         context.saveSettingsDebounced?.();
         drag = null;
         root.classList.remove('is-dragging');
+        clampStoryPanelToViewport(root);
     };
 
     ball?.addEventListener('pointerdown', startDrag);
@@ -943,7 +961,10 @@ function bindStatusDragging(root, settings, context) {
     globalThis.addEventListener('pointermove', moveDrag);
     globalThis.addEventListener('pointerup', finishDrag);
     globalThis.addEventListener('pointercancel', finishDrag);
-    globalThis.addEventListener('resize', () => applySavedPosition(root, settings));
+    globalThis.addEventListener('resize', () => {
+        applySavedPosition(root, settings);
+        clampStoryPanelToViewport(root);
+    });
     return () => {
         const blocked = suppressClick;
         suppressClick = false;
@@ -1003,6 +1024,7 @@ export function initializeStoryStatusUi(context, settings) {
                     <button type="button" class="menu_button is-active" data-story-view="status">剧情状态</button>
                     <button type="button" class="menu_button" data-story-view="development">人物发展</button>
                     <button type="button" class="menu_button" data-story-view="map">地图册</button>
+                    <button type="button" class="menu_button" data-story-view="phone">手机</button>
                 </nav>
                 <div id="memory_augment_story_status_view" data-story-page="status">
                     <div class="memory-augment-story-status-actions">
@@ -1015,6 +1037,7 @@ export function initializeStoryStatusUi(context, settings) {
                 </div>
                 <div id="memory_augment_character_development_view" data-story-page="development" hidden></div>
                 <div id="memory_augment_story_map_view" data-story-page="map" hidden></div>
+                <div id="memory_augment_story_phone_view" data-story-page="phone" hidden></div>
             </aside>`;
         document.body.append(root);
     }
@@ -1029,7 +1052,7 @@ export function initializeStoryStatusUi(context, settings) {
     const wasDragged = bindStatusDragging(root, settings, context);
     bindPanelWheelScrolling(root);
     const setView = (view) => {
-        const selected = ['map', 'development'].includes(view) ? view : 'status';
+        const selected = ['map', 'development', 'phone'].includes(view) ? view : 'status';
         root.dataset.storyView = selected;
         root.querySelectorAll('[data-story-page]').forEach(page => page.hidden = page.dataset.storyPage !== selected);
         root.querySelectorAll('[data-story-view]').forEach(button => {
@@ -1042,6 +1065,10 @@ export function initializeStoryStatusUi(context, settings) {
     const setOpen = (open) => {
         panel.hidden = !open;
         ball.setAttribute('aria-expanded', String(open));
+        if (open) {
+            applySavedPosition(root, settings);
+            globalThis.requestAnimationFrame?.(() => clampStoryPanelToViewport(root));
+        }
     };
     ball?.addEventListener('click', () => {
         if (!wasDragged()) setOpen(panel.hidden);

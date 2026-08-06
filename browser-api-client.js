@@ -451,6 +451,7 @@ function extractChatContent(payload, label = '副 API') {
     if (reasoning) {
         const acceptedKeys = /地图册/.test(label)
             ? ['title', 'pages']
+            : /手机/.test(label) ? ['messages']
             : /弹幕/.test(label) ? ['barrage', '弹幕', 'status', '状态', 'timeline', '时间线', 'development', '人物发展'] : [];
         const finalJson = acceptedKeys.length > 0 ? findFinalJsonObject(reasoning, acceptedKeys) : '';
         if (finalJson) return finalJson;
@@ -540,6 +541,108 @@ export async function generateSummaryCompletion(payload, options = {}) {
         max_tokens: maxTokens,
     }, config, { timeoutMs: 120_000, ...options });
     return { content: extractChatContent(response, '自动总结副 API') };
+}
+
+export function buildPhoneUserContent(payload = {}) {
+    const snapshot = payload?.snapshot && typeof payload.snapshot === 'object' ? payload.snapshot : {};
+    const conversation = snapshot?.conversation ?? {};
+    const profile = snapshot?.profile ?? {};
+    const participants = conversation.type === 'group'
+        ? (Array.isArray(conversation.members) ? conversation.members : [])
+        : [conversation.name];
+    const recentStory = (Array.isArray(payload?.recentStory) ? payload.recentStory : [])
+        .map(item => String(item ?? '').trim())
+        .filter(Boolean)
+        .slice(-8);
+    const phoneMessages = (Array.isArray(snapshot?.messageRecords) && snapshot.messageRecords.length > 0
+        ? snapshot.messageRecords.map(item => `[${String(item?.id ?? '').trim()}] ${String(item?.text ?? '').trim()}`)
+        : (Array.isArray(snapshot?.messages) ? snapshot.messages : []))
+        .map(item => String(item ?? '').trim())
+        .filter(Boolean)
+        .slice(-30);
+    const activeMemory = (Array.isArray(snapshot?.activeMemory) ? snapshot.activeMemory : [])
+        .map(item => `[${String(item?.id ?? '').trim()}] ${String(item?.summary ?? '').trim()}`)
+        .filter(Boolean)
+        .slice(-20);
+    const stickerNames = (Array.isArray(snapshot?.stickers) ? snapshot.stickers : [])
+        .map(item => String(item ?? '').trim())
+        .filter(Boolean);
+    const formatIdentity = (displayName, identity = {}) => {
+        const mode = String(identity?.mode ?? 'unbound');
+        if (mode === 'unbound') {
+            return `【${displayName}】尚未绑定真实身份。不得把角色卡主角或最近正文中的其他人物人格套给此联系人；只根据手机聊天中已经明确的信息回应，信息不足时保持克制。`;
+        }
+        const persona = String(identity?.persona ?? '').trim().slice(0, 12000);
+        const note = String(identity?.note ?? '').trim().slice(0, 4000);
+        return [
+            `【${displayName}】真实身份：${String(identity?.label ?? '已绑定人物').trim()}`,
+            persona,
+            note ? `【玩家补充】${note}` : '',
+        ].filter(Boolean).join('\n');
+    };
+    const identitySections = conversation.type === 'group'
+        ? participants.map(name => formatIdentity(name, conversation?.memberIdentities?.[name]))
+        : [formatIdentity(conversation.name || '联系人', conversation.identity)];
+    return [
+        '你正在模拟虚构故事中的手机通讯，只扮演对话中的联系人或群成员，不扮演玩家。',
+        `玩家手机昵称：${String(profile.nickname ?? '我').trim() || '我'}`,
+        `会话类型：${conversation.type === 'group' ? '群聊' : '单聊'}`,
+        `会话名称：${String(conversation.name ?? '').trim()}`,
+        `允许发言者：${participants.filter(Boolean).join('、') || '会话中的联系人'}`,
+        '',
+        '【联系人真实身份】（身份设定优先于最近正文；手机备注名不等于人物本名）',
+        identitySections.join('\n\n') || '（无）',
+        '',
+        '【最近正文】（只用于人物、关系与当前事件连续性）',
+        recentStory.join('\n') || '（无）',
+        '',
+        '【手机聊天记录】',
+        phoneMessages.join('\n') || '（这是第一次通讯）',
+        '',
+        '【仍有效的线上约定或冲突】（只有后续消息明确完成、取消或化解时，才能填写 resolvesEventIds）',
+        activeMemory.join('\n') || '（无）',
+        '',
+        `【可用表情包名称】${stickerNames.length > 0 ? stickerNames.join('、') : '（无）'}`,
+        '',
+        '返回1至5条自然的联系人回复。只输出合法 JSON，不要 Markdown，不要解释。',
+        '输出结构：',
+        '{"messages":[{"sender":"发言者姓名","type":"text","content":"正文","duration":1,"amount":0,"count":0,"stickerName":""}],"memory":{"events":[{"type":"commitment","summary":"只写明确成立的线上事实","participants":["人物"],"sourceMessageIds":["msg-id"],"evidenceQuotes":["逐字证据"],"status":"active","resolvesEventIds":[]}]}}',
+        'type 只能是 text、voice、image、redpacket、group_redpacket、location、sticker。',
+        'text：content 是文字。',
+        'voice：content 是语音转成的文字，duration 是1至60秒。',
+        'image：content 只写图片内容描述，不输出图片链接，也不声称读取了真实图片。',
+        'redpacket：amount 是模拟红包金额，content 是祝福语。',
+        'group_redpacket：仅群聊可用；amount 是模拟总金额，count 是红包份数，content 是祝福语。',
+        'location：content 是地点名称及必要备注。',
+        'sticker：stickerName 必须逐字选择上面已有的表情包名称，content 留空；没有可用名称时禁止使用。',
+        'AI 只根据表情包名称选择，不需要也不得读取表情包图片内容。',
+        '人物身份优先级：玩家补充／绑定人物设定 ＞ 手机聊天记录中已成立的信息 ＞ 最近正文。最近正文只提供事件与时间，不得擅自改变联系人是谁。',
+        '单聊只能由联系人发言；群聊可由一个或多个群成员分别发言。不要代替玩家发送消息。',
+        '这些功能都只是剧情中的通讯表现，不进行真实转账、定位、通话或图片识别。',
+        'memory.events 只保存值得长期记住的内容；没有就返回空数组。type 只能是 platform_fact、explicit_action、commitment、conflict、confirmed_reaction、unknown_state。',
+        '每条记忆必须提供至少一段 evidenceQuotes，且必须逐字存在于本次输出消息或上面的手机聊天记录；sourceMessageIds 只能使用记录前方真实存在的 msg-id。',
+        '严格禁止脑补：发送、收到、热搜存在、帖子存在，都不代表任何角色已经看见、读完、理解、赞同、讨厌或产生情绪。只有角色在消息里明确说出的反应才能记为 confirmed_reaction；否则写 unknown_state 或完全不记录。',
+        '不得根据人物性格推测其反应，不得把“可能、应该、看起来”改写成事实。平台内容只记录内容本身；角色是否接触或如何反应，必须等待正文或手机互动明确确认。',
+        'commitment 和尚未化解的 conflict 使用 status=active；普通事实使用 informational。只有新消息逐字明确完成、取消或化解已有事项时，才把其真实 ID 写入 resolvesEventIds。',
+    ].join('\n');
+}
+
+export async function generatePhoneCompletion(payload, options = {}) {
+    const config = normalizeConfig(payload?.barrage, '手机通讯');
+    const endpoint = new URL(`${config.baseUrl}/v1/chat/completions`).toString();
+    const maxTokens = Math.max(256, Math.min(8192, Math.trunc(Number(payload?.maxTokens) || 2048)));
+    const response = await postJson(endpoint, {
+        model: config.model,
+        messages: [
+            {
+                role: 'system',
+                content: '你负责模拟虚构故事人物的手机消息。保持人物设定，只输出指定 JSON，不续写手机之外的正文。',
+            },
+            { role: 'user', content: buildPhoneUserContent(payload) },
+        ],
+        max_tokens: maxTokens,
+    }, config, { timeoutMs: 120_000, ...options });
+    return { content: extractChatContent(response, '手机通讯副 API') };
 }
 
 function buildAtlasUserContent(books) {

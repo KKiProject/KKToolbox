@@ -3,6 +3,7 @@ import {
     generateBarrageCompletion,
     generateSummaryCompletion,
     generateAtlasCompletion,
+    generatePhoneCompletion,
     listModels,
     rerankCandidates,
 } from './browser-api-client.js';
@@ -19,7 +20,9 @@ import {
     reconcileChatScope,
     searchScopes,
     searchSummaryScope,
+    searchPhoneScope,
     syncSummaryScope,
+    syncPhoneScope,
     syncWorldInfoScope,
     updateChatScope,
 } from './native-vector-store.js';
@@ -173,6 +176,14 @@ export function searchSummaryMemory(payload) {
     return searchSummaryScope(payload);
 }
 
+export function syncPhoneMemory(payload) {
+    return syncPhoneScope(payload);
+}
+
+export function searchPhoneMemory(payload) {
+    return searchPhoneScope(payload);
+}
+
 export function rerankMemory(payload) {
     return rerankCandidates(payload);
 }
@@ -196,5 +207,7 @@ export function clearChat(chatId) {
 export function clearSummaryMemory(chatId) {
     return clearSummaryScope(chatId);
 }
+
+export { generatePhoneCompletion };
 
 export { createEmbeddings, CHAT_KIND };

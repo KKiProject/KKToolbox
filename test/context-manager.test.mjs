@@ -383,6 +383,34 @@ test('five recent and up to three recalled summaries jointly route the raw-memor
     assert.match(chat[0].mes, /linked raw detail/);
 });
 
+test('unchanged detailed summaries are synchronized only once while retrieval still runs every turn', async () => {
+    const summaries = Array.from({ length: 6 }, (_, index) => ({
+        uid: `stable-${index}`,
+        start: index * 10,
+        end: index * 10 + 9,
+        summary: `stable summary ${index}`,
+    }));
+    let syncCalls = 0;
+    let searchCalls = 0;
+    const clients = {
+        async getSummaries() { return summaries; },
+        async syncSummaryMemory() { syncCalls++; return { embedded: summaries.length }; },
+        async searchSummaryMemory() {
+            searchCalls++;
+            return { results: [{ summary_uid: 'stable-0', text: 'stable summary 0', type: 'summary' }] };
+        },
+        async searchMemory() { return { chatResults: [], worldInfoResults: [] }; },
+    };
+    const settings = createSettings({ reranker: false, recentMessages: 2 });
+    const context = { chatId: 'stable-summary-sync-chat', chat: createChat(12) };
+
+    await retrieveAndInject(createChat(12), settings, context, clients);
+    await retrieveAndInject(createChat(12), settings, context, clients);
+
+    assert.equal(syncCalls, 1);
+    assert.equal(searchCalls, 2);
+});
+
 test('summary and memory counts are maxima and are never padded', async () => {
     const chat = createChat(4);
     const result = await retrieveAndInject(

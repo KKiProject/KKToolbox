@@ -25,6 +25,9 @@ import { initializeDevelopmentBaselineUi } from './character-baseline.js';
 import { clearAllSummaries, getSummaryStatus, initializeSummaryManager, repairMalformedSummaries } from './summary-manager.js';
 import { initializeWorldInfoManager, vectorizeSelectedWorldInfo } from './world-info-manager.js';
 import { initializeHtmlRenderer, refreshHtmlRenderer } from './html-renderer.js';
+import { initializePhoneShellUi } from './phone-shell.js';
+import { consumePreparedPhoneContext } from './phone-store.js';
+import { initializeSwipeCleanup } from './swipe-cleanup.js';
 
 const EXTENSION_KEY = 'st-memory-augment';
 const EXTENSION_FOLDER = decodeURIComponent(new URL('.', import.meta.url).pathname)
@@ -81,6 +84,11 @@ export const defaultSettings = Object.freeze({
     },
     htmlRenderer: {
         enabled: true,
+    },
+    phone: {
+        maxTokens: 2048,
+        stickers: [],
+        profile: { nickname: '我', avatar: '' },
     },
 });
 
@@ -715,6 +723,25 @@ function bindMessageIngestion(settings, context) {
     }
 }
 
+function bindPhoneMemoryLifecycle(context) {
+    const messageRendered = context.eventTypes?.CHARACTER_MESSAGE_RENDERED
+        ?? context.event_types?.CHARACTER_MESSAGE_RENDERED;
+    if (!messageRendered) {
+        console.warn('[Memory Augment] CHARACTER_MESSAGE_RENDERED is unavailable; pending phone facts will remain pending.');
+        return;
+    }
+    context.eventSource.on(messageRendered, (messageId) => {
+        const current = SillyTavern.getContext();
+        const message = current.chat?.[Number(messageId)];
+        if (!message || message.is_user || message.is_system) return;
+        setTimeout(() => {
+            void consumePreparedPhoneContext(SillyTavern.getContext()).catch(error => {
+                console.warn('[Memory Augment] Phone-to-story memory consumption failed.', error);
+            });
+        }, 0);
+    });
+}
+
 function bindActions(settings) {
     document.querySelector('#memory_augment_refresh_status')?.addEventListener('click', refreshStatus);
     document.querySelector('#memory_augment_rebuild_chat')?.addEventListener('click', async (event) => {
@@ -830,10 +857,12 @@ async function initialize() {
     bindActions(settings);
     addTopNavigationButton();
     bindMessageIngestion(settings, context);
+    bindPhoneMemoryLifecycle(context);
     initializeChatMemoryUi(settings, context);
     initializeSummaryManager(settings, context, { onSaved: refreshStatus });
     // Create the always-available status/map launcher before optional async managers run.
     initializeStoryStatusUi(context, settings);
+    initializePhoneShellUi(settings, context);
     initializeCharacterDevelopmentUi(context);
     initializeDevelopmentBaselineUi(settings, context, {
         chooseSource: async (info) => {
@@ -873,6 +902,7 @@ async function initialize() {
     });
     await initializeWorldInfoManager(settings, context);
     await initializeBarrageUi(settings, { templatePath: TEMPLATE_PATH });
+    initializeSwipeCleanup(context);
     initializeMapAtlasUi(settings, context, {
         confirm: (title, message) => Popup.show.confirm(title, message),
     });

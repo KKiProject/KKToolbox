@@ -38,6 +38,18 @@ test('confirmation popups do not close the floating story panel', () => {
     assert.equal(shouldCloseStoryPanelForPointer(root, panel, root), false);
 });
 
+test('floating story panel includes a phone page without replacing existing views', async () => {
+    const source = await import('node:fs/promises').then(({ readFile }) => readFile(
+        new URL('../story-status.js', import.meta.url),
+        'utf8',
+    ));
+    assert.match(source, /data-story-view="status">剧情状态/);
+    assert.match(source, /data-story-view="development">人物发展/);
+    assert.match(source, /data-story-view="map">地图册/);
+    assert.match(source, /data-story-view="phone">手机/);
+    assert.match(source, /clampStoryPanelToViewport/);
+});
+
 test('combined side response separates barrage text from structured status', () => {
     const parsed = parseSideResponse(`\`\`\`json\n${JSON.stringify({
         barrage: '围观！',

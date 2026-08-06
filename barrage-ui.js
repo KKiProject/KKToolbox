@@ -308,6 +308,81 @@ function clearDeletedSideResultRecords(context, firstDeletedMessageId) {
     return changed;
 }
 
+export function compactSwipeDerivedData(context, messageId, message, selectedSwipeIndex) {
+    const numericId = Number(messageId);
+    const selectedIndex = Math.max(0, Math.trunc(Number(selectedSwipeIndex) || 0));
+    if (!Number.isInteger(numericId) || !message || message.is_user) return false;
+    const selectedKey = `swipe:${selectedIndex}`;
+    let changed = false;
+
+    const barrageStore = getBarrageStore(context?.chatMetadata);
+    const normalized = normalizeBarrageBucket(barrageStore, numericId, message);
+    const selectedBarrage = normalizeStoredBarrage(normalized.bucket?.variants?.[selectedKey]);
+    if (normalized.bucket) {
+        if (selectedBarrage) {
+            barrageStore[String(numericId)] = {
+                version: 3,
+                variants: { 'swipe:0': selectedBarrage },
+            };
+        } else {
+            delete barrageStore[String(numericId)];
+        }
+        changed = true;
+    }
+
+    const sideStore = getSideResultStore(context?.chatMetadata);
+    const sideBucket = getSideResultBucket(sideStore, numericId);
+    if (sideBucket) {
+        const selectedSideResult = sideBucket.variants?.[selectedKey];
+        const sourceHash = hashStorySource(String(message?.mes ?? '').trim());
+        if (selectedSideResult?.sourceHash === sourceHash) {
+            sideStore[String(numericId)] = {
+                version: 1,
+                variants: { 'swipe:0': cloneSideValue(selectedSideResult) },
+            };
+        } else {
+            delete sideStore[String(numericId)];
+        }
+        changed = true;
+    }
+    return changed;
+}
+
+export function pruneOrphanedSwipeDerivedData(context) {
+    const chat = Array.isArray(context?.chat) ? context.chat : [];
+    const barrageStore = getBarrageStore(context?.chatMetadata);
+    const sideStore = getSideResultStore(context?.chatMetadata);
+    let changed = false;
+    for (const [messageId, bucket] of Object.entries(sideStore)) {
+        const message = chat[Number(messageId)];
+        if (!message || message.is_user || !bucket?.variants) {
+            delete sideStore[messageId];
+            changed = true;
+            continue;
+        }
+        const validKeys = getBarrageVariantKeys(message);
+        const texts = Array.isArray(message.swipes) && message.swipes.length > 0 ? message.swipes : [message.mes];
+        for (const storedKey of Object.keys(bucket.variants)) {
+            const index = Number(String(storedKey).split(':')[1]);
+            const record = bucket.variants[storedKey];
+            const validHash = Number.isInteger(index) ? hashStorySource(String(texts[index] ?? '').trim()) : '';
+            if (!validKeys.has(storedKey) || !record || record.sourceHash !== validHash) {
+                delete bucket.variants[storedKey];
+                changed = true;
+            }
+        }
+        if (Object.keys(bucket.variants).length === 0) delete sideStore[messageId];
+    }
+    for (const messageId of Object.keys(barrageStore)) {
+        const message = chat[Number(messageId)];
+        if (!message || message.is_user) {
+            delete barrageStore[messageId];
+            changed = true;
+        }
+    }
+    return changed;
+}
+
 function restoreSideResultVariant(context, messageId, message, record, settings) {
     if (!record) return false;
     const numericId = Number(messageId);

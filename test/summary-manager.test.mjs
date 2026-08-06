@@ -43,6 +43,7 @@ function quotedValues(command) {
 
 function createContext(messages = []) {
     let metadataSaves = 0;
+    let worldInfoLoads = 0;
     const calls = [];
     const lorebooks = new Map();
     const bookName = '金钰琳-自动总结';
@@ -57,6 +58,7 @@ function createContext(messages = []) {
             metadataSaves++;
         },
         async loadWorldInfo(name) {
+            worldInfoLoads++;
             return lorebooks.has(name) ? structuredClone(lorebooks.get(name)) : null;
         },
         async saveWorldInfo(name, data) {
@@ -138,6 +140,9 @@ function createContext(messages = []) {
         },
         get metadataSaves() {
             return metadataSaves;
+        },
+        get worldInfoLoads() {
+            return worldInfoLoads;
         },
         get calls() {
             return calls;
@@ -475,6 +480,20 @@ test('legacy metadata summaries migrate through slash commands and are removed f
     assert.equal('memory_augment_summaries' in context.chatMetadata, false);
     assert.equal((await getSummaries(context))[0].summary, 'legacy summary');
     assert.ok(context.calls.some(command => command.startsWith('/findentry ')));
+});
+
+test('legacy summary migration scans the lorebook once and then stays dormant', async () => {
+    const context = createContext(dialoguePairs(2));
+    context.lorebooks.set('金钰琳-自动总结', { entries: {} });
+
+    assert.equal(await migrateLegacySummaries(context), 0);
+    const loadsAfterFirstMigration = context.worldInfoLoads;
+    const savesAfterFirstMigration = context.metadataSaves;
+    assert.ok(loadsAfterFirstMigration > 0);
+
+    assert.equal(await migrateLegacySummaries(context), 0);
+    assert.equal(context.worldInfoLoads, loadsAfterFirstMigration);
+    assert.equal(context.metadataSaves, savesAfterFirstMigration);
 });
 
 test('existing unstructured KKT lorebook entries remain readable without changing their key', async () => {

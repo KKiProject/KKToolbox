@@ -6,7 +6,11 @@ const STORE_VERSION = 1;
 const CHAT_KIND = 'chat';
 const WORLDINFO_KIND = 'worldinfo';
 const SUMMARY_KIND = 'summary';
+const PHONE_KIND = 'phone';
 const locks = new Map();
+const verifiedIndexes = new Map();
+const queryVectorCache = new Map();
+const QUERY_VECTOR_CACHE_LIMIT = 50;
 
 function getContext() {
     return globalThis.SillyTavern?.getContext?.() ?? {};
@@ -39,6 +43,30 @@ function hashHex(value) {
 
 function embeddingSignature(config) {
     return hashHex(`${normalizeBaseUrl(config?.baseUrl)}\n${String(config?.model ?? '').trim()}`);
+}
+
+function documentContentSignature(document) {
+    return hashHex((document?.chunks ?? [])
+        .map(chunk => `${chunk?.id ?? ''}\u0000${chunk?.disabled === true ? 1 : 0}\u0000${chunk?.text ?? ''}`)
+        .sort()
+        .join('\u0001'));
+}
+
+async function getQueryVector(query, config, suppliedVector = null) {
+    if (Array.isArray(suppliedVector) && suppliedVector.length > 0) return suppliedVector;
+    const key = `${embeddingSignature(config)}:${query}`;
+    if (queryVectorCache.has(key)) return queryVectorCache.get(key);
+    const pending = createEmbeddings([query], config)
+        .then(vectors => vectors[0])
+        .catch(error => {
+            queryVectorCache.delete(key);
+            throw error;
+        });
+    queryVectorCache.set(key, pending);
+    while (queryVectorCache.size > QUERY_VECTOR_CACHE_LIMIT) {
+        queryVectorCache.delete(queryVectorCache.keys().next().value);
+    }
+    return pending;
 }
 
 function getModelScope(config) {
@@ -206,7 +234,15 @@ async function insertChunks(scope, config, chunks) {
 
 function assignVectorHashes(chunks, signature) {
     const used = new Set();
-    for (const chunk of chunks) {
+    // The +1 collision fallback must not depend on how `chunks` happens to be
+    // ordered: ingestChatScope rebuilds that array as
+    // [...unaffected, ...drafts, ...preservedManual], so the same two colliding
+    // chunks could swap hashes between runs and start resolving to each other's
+    // text. Assign over a stable id-sorted view instead; hash values themselves
+    // are unchanged, so no existing vector needs to be regenerated.
+    const ordered = [...chunks].sort((left, right) => String(left?.id ?? '')
+        .localeCompare(String(right?.id ?? ''), undefined, { numeric: true }));
+    for (const chunk of ordered) {
         let value = stableHash(`${chunk.id}\n${chunk.text}\n${signature}`);
         while (used.has(value)) value = (value + 1) >>> 0;
         used.add(value);
@@ -217,6 +253,10 @@ function assignVectorHashes(chunks, signature) {
 async function ensureIndexed(scope, document, config, { force = false } = {}) {
     const signature = embeddingSignature(config);
     const active = document.chunks.filter(chunk => chunk?.disabled !== true && String(chunk?.text ?? '').trim());
+    const verificationKey = `${signature}:${documentContentSignature(document)}`;
+    if (!force && verifiedIndexes.get(scope.key) === verificationKey) {
+        return { embedded: 0, removed: 0, rebuilt: false, written: false, verified: true };
+    }
     const signatureChanged = document.embedding_signature !== signature;
     if (signatureChanged || force) {
         await purgeVectorScope(scope);
@@ -225,6 +265,7 @@ async function ensureIndexed(scope, document, config, { force = false } = {}) {
         document.embedding_signature = signature;
         document.vector_dimension = active[0]?.vector_dimension ?? 0;
         await writeScope(scope, document);
+        verifiedIndexes.set(scope.key, verificationKey);
         return { embedded, removed: 0, rebuilt: true, written: true };
     }
 
@@ -240,6 +281,7 @@ async function ensureIndexed(scope, document, config, { force = false } = {}) {
         ?? 0;
     const written = removed.length > 0 || embedded > 0;
     if (written) await writeScope(scope, document);
+    verifiedIndexes.set(scope.key, verificationKey);
     return { embedded, removed: removed.length, rebuilt: false, written };
 }
 
@@ -654,7 +696,7 @@ export async function searchSummaryScope(payload) {
     const active = document.chunks.filter(chunk => chunk?.disabled !== true
         && (allowed.size === 0 || allowed.has(String(chunk.summary_uid))));
     if (active.length === 0) return { results: [] };
-    const [queryVector] = await createEmbeddings([query], payload?.embedding);
+    const queryVector = await getQueryVector(query, payload?.embedding, payload?.queryVector);
     const ranked = await queryScope(
         scope,
         document,
@@ -662,7 +704,7 @@ export async function searchSummaryScope(payload) {
         queryVector,
         payload?.embedding,
         document.chunks.filter(chunk => chunk?.disabled !== true).length,
-        { ensureIndexed: false },
+        { ensureIndexed: true },
     );
     const topK = clampInteger(payload?.topK, 10, 1, 100);
     return {
@@ -671,6 +713,82 @@ export async function searchSummaryScope(payload) {
             .slice(0, topK)
             .map(chunk => ({ ...chunk, type: SUMMARY_KIND })),
     };
+}
+
+function normalizePhoneMemoryEntries(entries) {
+    return (Array.isArray(entries) ? entries : []).map((entry, index) => {
+        const id = String(entry?.id ?? '').trim();
+        const text = String(entry?.text ?? entry?.summary ?? '').trim();
+        if (!id || !text) throw new Error(`第 ${index + 1} 个线上记忆条目无效。`);
+        return {
+            id,
+            text,
+            type: String(entry?.type ?? 'explicit_action').trim(),
+            status: String(entry?.status ?? 'informational').trim(),
+            conversationId: String(entry?.conversationId ?? '').trim(),
+        };
+    });
+}
+
+export async function syncPhoneScope(payload) {
+    const chatId = String(payload?.chatId ?? payload?.chat_id ?? '').trim();
+    const scope = getScope(PHONE_KIND, chatId);
+    const entries = normalizePhoneMemoryEntries(payload?.entries);
+    return withLock(scope, async () => {
+        const previous = await readScope(scope);
+        const previousById = new Map(previous.chunks.map(chunk => [chunk.id, chunk]));
+        const chunks = entries.map(entry => {
+            const old = previousById.get(entry.id);
+            return {
+                id: entry.id,
+                memory_event_id: entry.id,
+                conversation_id: entry.conversationId,
+                event_type: entry.type,
+                status: entry.status,
+                text: entry.text,
+                char_count: getCharacterCount(entry.text),
+                timestamp: old?.text === entry.text ? old.timestamp : Math.floor(Date.now() / 1000),
+                type: PHONE_KIND,
+                disabled: false,
+            };
+        });
+        const document = { ...previous, chunks };
+        const indexResult = await ensureIndexed(scope, document, payload?.embedding);
+        const metadataChanged = previous.chunks.length !== chunks.length
+            || chunks.some(chunk => {
+                const old = previousById.get(chunk.id);
+                return !old || old.text !== chunk.text || old.status !== chunk.status;
+            });
+        if (!indexResult.written && metadataChanged) await writeScope(scope, document);
+        return {
+            chatId,
+            entries: entries.length,
+            embedded: indexResult.embedded,
+            reused: Math.max(0, entries.length - indexResult.embedded),
+        };
+    });
+}
+
+export async function searchPhoneScope(payload) {
+    const query = String(payload?.query ?? '').trim();
+    const chatId = String(payload?.chatId ?? payload?.chat_id ?? '').trim();
+    if (!query || !chatId) return { results: [] };
+    const scope = getScope(PHONE_KIND, chatId);
+    const document = await readScope(scope);
+    const active = document.chunks.filter(chunk => chunk?.disabled !== true);
+    if (active.length === 0) return { results: [] };
+    const queryVector = await getQueryVector(query, payload?.embedding, payload?.queryVector);
+    const ranked = await queryScope(
+        scope,
+        document,
+        query,
+        queryVector,
+        payload?.embedding,
+        active.length,
+        { ensureIndexed: true },
+    );
+    const topK = clampInteger(payload?.topK, 3, 1, 20);
+    return { results: ranked.slice(0, topK).map(chunk => ({ ...chunk, type: PHONE_KIND })) };
 }
 
 export async function getWorldInfoScopeStatuses(bookIds) {
@@ -690,12 +808,20 @@ async function queryScope(scope, document, query, queryVector, config, topK, opt
     if (options.ensureIndexed !== false) await ensureIndexed(scope, document, config);
     const active = document.chunks.filter(chunk => chunk?.disabled !== true);
     if (active.length === 0) return [];
-    const response = await vectorRequest('query', {
+    const request = () => vectorRequest('query', {
         ...baseVectorPayload(scope, config, { [query]: queryVector }),
         searchText: query,
         topK: Math.min(active.length, Math.max(topK, 1)),
         threshold: 0,
     });
+    let response = await request();
+    if (options.ensureIndexed !== false && (response?.metadata?.length ?? 0) === 0) {
+        // A clean scope should never return no candidates at threshold zero.
+        // Repair once in case another tool removed the underlying collection.
+        verifiedIndexes.delete(scope.key);
+        await ensureIndexed(scope, document, config, { force: true });
+        response = await request();
+    }
     const chunksByHash = new Map(document.chunks.map(chunk => [Number(chunk.vector_hash), chunk]));
     return (Array.isArray(response?.metadata) ? response.metadata : [])
         .map(metadata => chunksByHash.get(Number(metadata?.hash)))
@@ -737,7 +863,7 @@ export async function searchScopes(payload) {
         return { results: [], chatResults: [], worldInfoResults: [], errors };
     }
 
-    const [queryVector] = await createEmbeddings([query], config);
+    const queryVector = await getQueryVector(query, config, payload?.queryVector);
     if (hasChatChunks) {
         try {
             const { scope, document } = chatScopeData;
@@ -918,6 +1044,7 @@ export async function clearScope(kind, id) {
     const scope = getScope(kind, id);
     return withLock(scope, async () => {
         const document = await readScope(scope);
+        verifiedIndexes.delete(scope.key);
         await purgeVectorScope(scope);
         await deleteScopeFile(scope);
         return { removed: document.chunks.length };

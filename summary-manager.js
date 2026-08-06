@@ -17,6 +17,7 @@ const HISTORICAL_OVERVIEW_KEY = '[KKT历史概括]';
 const HISTORICAL_OVERVIEW_GROUP_SIZE = 5;
 const HISTORICAL_OVERVIEW_ORDER = 99;
 const WORLD_INFO_POSITION_AT_DEPTH = 4;
+const SUMMARY_MIGRATION_VERSION = 1;
 let summaryQueue = Promise.resolve();
 
 function clampInteger(value, fallback, minimum, maximum) {
@@ -46,6 +47,7 @@ function getSummaryState(metadata, create = false) {
     state.lastSummarizedMessageIndex = Number.isFinite(lastSummarized) ? Math.trunc(lastSummarized) : -1;
     state.entries = Array.isArray(state.entries) ? state.entries : [];
     state.overviewGroups = Array.isArray(state.overviewGroups) ? state.overviewGroups : [];
+    state.migrationVersion = Math.max(0, Math.trunc(Number(state.migrationVersion) || 0));
     delete state.aiRepliesSinceLastSummary;
     delete state.lastCountedReplySignature;
     return state;
@@ -971,8 +973,14 @@ export async function migrateLegacySummaries(context) {
         && (Object.hasOwn(metadata[SUMMARY_STATE_KEY], 'aiRepliesSinceLastSummary')
             || Object.hasOwn(metadata[SUMMARY_STATE_KEY], 'lastCountedReplySignature')));
     const state = getSummaryState(metadata, true);
-    let migrated = await migrateLegacyLorebookEntries(context, state);
     const legacyStore = metadata[LEGACY_SUMMARY_METADATA_KEY];
+    if (state.migrationVersion >= SUMMARY_MIGRATION_VERSION
+        && !hadLegacyCounters
+        && !(legacyStore && typeof legacyStore === 'object' && !Array.isArray(legacyStore))) {
+        return 0;
+    }
+    const needsVersionSave = state.migrationVersion !== SUMMARY_MIGRATION_VERSION;
+    let migrated = await migrateLegacyLorebookEntries(context, state);
 
     if (legacyStore && typeof legacyStore === 'object' && !Array.isArray(legacyStore)) {
         const records = Object.values(legacyStore)
@@ -997,7 +1005,8 @@ export async function migrateLegacySummaries(context) {
         }
         delete metadata[LEGACY_SUMMARY_METADATA_KEY];
     }
-    if (migrated > 0 || hadLegacyCounters) {
+    state.migrationVersion = SUMMARY_MIGRATION_VERSION;
+    if (migrated > 0 || hadLegacyCounters || needsVersionSave) {
         await context.saveMetadata?.();
     }
     return migrated;

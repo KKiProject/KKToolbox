@@ -1,7 +1,9 @@
 import {
     rerankMemory,
     searchMemory,
+    searchPhoneMemory,
     searchSummaryMemory,
+    syncPhoneMemory,
     syncSummaryMemory,
 } from './rag-client.js';
 import { normalizeBaseUrl } from './api-utils.js';
@@ -9,7 +11,8 @@ import { getActiveWorldInfoBookIds } from './world-info-manager.js';
 import { getMessageTimelineMetadata, injectLatestStoryStatus } from './story-status.js';
 import { injectMapAtlasContext } from './map-atlas.js';
 import { injectCharacterDevelopment } from './character-development.js';
-import { getSummaries, migrateLegacySummaries } from './summary-manager.js';
+import { getSummaries } from './summary-manager.js';
+import { injectPhoneContext, loadPhoneStore, normalizePhoneProfile } from './phone-store.js';
 
 const EXTENSION_KEY = 'st-memory-augment';
 const MEMORY_MARKER = 'memory_augment_rag';
@@ -19,6 +22,7 @@ const SUMMARY_TOP_K = 10;
 const SUMMARY_TOP_N = 3;
 const RECENT_SUMMARY_COUNT = 5;
 const CHAT_GLOBAL_FALLBACK_K = 3;
+const summarySyncSignatures = new Map();
 const MEMORY_TIMELINE_GUARD = [
     '【历史召回附录】',
     '以下片段来自较早楼层，是根据当前内容检索出的可能相关历史。它们可能有用，也可能无关，仅供参考，不要求必须采用。',
@@ -49,6 +53,14 @@ function completeApiConfig(config) {
     };
 
     return normalized.baseUrl && normalized.apiKey && normalized.model ? normalized : null;
+}
+
+function getSummarySyncSignature(records, embedding) {
+    return [
+        embedding?.baseUrl,
+        embedding?.model,
+        ...records.map(item => `${item.uid}\u0000${item.start}\u0000${item.end}\u0000${item.summary}`),
+    ].join('\u0001');
 }
 
 export function buildRagQuery(chat, messageCount = 3) {
@@ -309,12 +321,10 @@ export async function retrieveAndInject(chat, settings, context, clients = {}) {
     const search = clients.searchMemory ?? searchMemory;
     const rerank = clients.rerankMemory ?? rerankMemory;
     const readSummaries = clients.getSummaries ?? getSummaries;
-    const migrateSummaries = clients.migrateLegacySummaries ?? migrateLegacySummaries;
     const syncSummaries = clients.syncSummaryMemory ?? syncSummaryMemory;
     const searchSummaries = clients.searchSummaryMemory ?? searchSummaryMemory;
     let allSummaries = [];
     try {
-        await migrateSummaries(context);
         allSummaries = normalizeSummaryRecords(await readSummaries(context));
     } catch (error) {
         console.warn('[Memory Augment] Failed to read detailed summaries; raw fallback remains available.', error);
@@ -327,16 +337,20 @@ export async function retrieveAndInject(chat, settings, context, clients = {}) {
     let summaryUsedReranker = false;
     if (embedding && olderSummaryRecords.length > 0) {
         try {
-            await syncSummaries({
-                chatId,
-                entries: allSummaries.map(item => ({
-                    uid: item.uid,
-                    start: item.start,
-                    end: item.end,
-                    text: item.summary,
-                })),
-                embedding,
-            });
+            const summarySignature = getSummarySyncSignature(allSummaries, embedding);
+            if (summarySyncSignatures.get(String(chatId)) !== summarySignature) {
+                await syncSummaries({
+                    chatId,
+                    entries: allSummaries.map(item => ({
+                        uid: item.uid,
+                        start: item.start,
+                        end: item.end,
+                        text: item.summary,
+                    })),
+                    embedding,
+                });
+                summarySyncSignatures.set(String(chatId), summarySignature);
+            }
             const summarySearch = await searchSummaries({
                 chatId,
                 query,
@@ -518,6 +532,44 @@ export async function memoryAugmentInterceptor(chat, contextSize, abort, type) {
         injectLatestStoryStatus(generationChat, context);
     } catch (error) {
         console.error('[Memory Augment] Story status injection failed; generation will continue without it.', error);
+    }
+
+    try {
+        const phoneStore = await loadPhoneStore(context);
+        phoneStore.profile = normalizePhoneProfile(settings.phone?.profile ?? phoneStore.profile);
+        let recalledPhoneEvents = [];
+        const embedding = completeApiConfig(settings?.apis?.embedding);
+        const phoneEvents = phoneStore.onlineMemory?.events ?? [];
+        if (embedding && phoneEvents.length > 0) {
+            try {
+                await syncPhoneMemory({
+                    chatId: phoneStore.chatId,
+                    entries: phoneEvents.map(event => ({
+                        id: event.id,
+                        text: event.summary,
+                        type: event.type,
+                        status: event.status,
+                        conversationId: event.conversationId,
+                    })),
+                    embedding,
+                });
+                const phoneSearch = await searchPhoneMemory({
+                    chatId: phoneStore.chatId,
+                    query: buildRagQuery(Array.isArray(context?.chat) ? context.chat : generationChat, 3),
+                    topK: 3,
+                    embedding,
+                });
+                const eventById = new Map(phoneEvents.map(event => [event.id, event]));
+                recalledPhoneEvents = (phoneSearch?.results ?? [])
+                    .map(result => eventById.get(String(result?.memory_event_id ?? result?.id ?? '')))
+                    .filter(Boolean);
+            } catch (error) {
+                console.warn('[Memory Augment] Online phone memory retrieval failed; pending and active phone facts remain available.', error);
+            }
+        }
+        injectPhoneContext(generationChat, phoneStore, 12, recalledPhoneEvents);
+    } catch (error) {
+        console.error('[Memory Augment] Phone context injection failed; generation will continue without it.', error);
     }
 
     chat.splice(0, chat.length, ...generationChat);
