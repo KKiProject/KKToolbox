@@ -307,6 +307,16 @@ test('ingest persists vectors, reuses unchanged chunks, and search recalls relev
     assert.equal(unchangedSync.payload.reused, 2);
     assert.deepEqual(unchangedSync.payload.unchangedEntryUids, ['1', '2']);
     assert.equal(embeddingCalls.length, syncCallsBefore + 1);
+    const mergedSync = await invoke('POST /sync-worldinfo', {
+        book_id: 'Sync Book', sync_mode: 'merge', targetChars: 400, embedding,
+        entries: [
+            { entry_uid: 1, entry_key: 'Apple lore', text: 'An apple is now blessed.', content_hash: 'hash-a1' },
+        ],
+    });
+    assert.equal(mergedSync.payload.embedded, 1);
+    assert.equal(mergedSync.payload.totalChunks, 2);
+    const mergedStatus = await invoke('POST /worldinfo-status', { book_ids: ['Sync Book'] });
+    assert.equal(mergedStatus.payload.statuses['Sync Book'].entryCount, 2, 'merge preserves unselected entries');
     const changedSync = await invoke('POST /sync-worldinfo', {
         book_id: 'Sync Book', targetChars: 400, embedding,
         entries: [

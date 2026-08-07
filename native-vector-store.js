@@ -589,12 +589,13 @@ function normalizeWorldInfoEntries(entries) {
 
 export async function syncWorldInfoScope(payload) {
     const bookId = String(payload?.book_id ?? payload?.bookId ?? '').trim();
+    const syncMode = payload?.sync_mode === 'merge' ? 'merge' : 'replace';
     const scope = getScope(WORLDINFO_KIND, bookId);
     const entries = normalizeWorldInfoEntries(payload?.entries);
     return withLock(scope, async () => {
         const previous = await readScope(scope);
         const previousById = new Map(previous.chunks.map(chunk => [chunk.id, chunk]));
-        const chunks = entries.flatMap(entry => splitMessageText(entry.text, payload?.targetChars)
+        const incomingChunks = entries.flatMap(entry => splitMessageText(entry.text, payload?.targetChars)
             .map((text, segmentIndex) => {
                 const id = `book_${bookId}_entry_${entry.uid}${segmentIndex ? `_seg${segmentIndex}` : ''}`;
                 const old = previousById.get(id);
@@ -614,6 +615,11 @@ export async function syncWorldInfoScope(payload) {
                     disabled: false,
                 };
             }));
+        const incomingEntryUids = new Set(entries.map(entry => entry.uid));
+        const preservedChunks = syncMode === 'merge'
+            ? previous.chunks.filter(chunk => !incomingEntryUids.has(String(chunk.entry_uid ?? chunk.world_info_id ?? '')))
+            : [];
+        const chunks = [...preservedChunks, ...incomingChunks];
         const previousIds = new Set(previous.chunks.map(chunk => chunk.id));
         const currentIds = new Set(chunks.map(chunk => chunk.id));
         const document = { ...previous, chunks };
@@ -621,9 +627,10 @@ export async function syncWorldInfoScope(payload) {
         return {
             bookId,
             entries: entries.length,
-            chunks: chunks.length,
+            chunks: incomingChunks.length,
+            totalChunks: chunks.length,
             embedded: indexResult.embedded,
-            reused: Math.max(0, chunks.length - indexResult.embedded),
+            reused: Math.max(0, incomingChunks.length - indexResult.embedded),
             removed: [...previousIds].filter(id => !currentIds.has(id)).length,
             updatedEntryUids: [...new Set(chunks
                 .filter(chunk => previousById.get(chunk.id)?.text !== chunk.text

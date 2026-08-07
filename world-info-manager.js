@@ -167,8 +167,12 @@ function contentHash(text) {
     return (value >>> 0).toString(16).padStart(8, '0');
 }
 
-async function syncBook(settings, book, client = syncWorldInfo) {
+async function syncBook(settings, book, client = syncWorldInfo, { replace = false } = {}) {
     const selectedEntries = getSelectedEntriesForBook(settings, book);
+    const syncMode = replace || isManagedSummaryWorldInfoBook(book) ? 'replace' : 'merge';
+    if (selectedEntries.length === 0 && syncMode === 'merge') {
+        return { bookId: book.id, entries: 0, chunks: 0, embedded: 0, skipped: true };
+    }
     const embedding = getEmbeddingConfig(settings);
     if (selectedEntries.length > 0 && !embedding) {
         throw new Error('请先填写完整的 Embedding Base URL、API Key 和模型名。');
@@ -176,6 +180,7 @@ async function syncBook(settings, book, client = syncWorldInfo) {
     return client({
         type: 'worldinfo',
         book_id: book.id,
+        sync_mode: syncMode,
         targetChars: settings?.rag?.segmentTargetChars ?? 400,
         embedding: embedding ?? {},
         entries: selectedEntries.map(entry => ({
@@ -190,6 +195,18 @@ async function syncBook(settings, book, client = syncWorldInfo) {
 export async function vectorizeSelectedWorldInfo(settings, _context, books = currentBooks, client = syncWorldInfo) {
     const results = [];
     for (const book of books) results.push(await syncBook(settings, book, client));
+    return {
+        books: results.filter(result => !result?.skipped).length,
+        entries: results.reduce((sum, result) => sum + Number(result.entries ?? 0), 0),
+        chunks: results.reduce((sum, result) => sum + Number(result.chunks ?? 0), 0),
+        embedded: results.reduce((sum, result) => sum + Number(result.embedded ?? 0), 0),
+        results,
+    };
+}
+
+export async function rebuildSelectedWorldInfo(settings, _context, books = currentBooks, client = syncWorldInfo) {
+    const results = [];
+    for (const book of books) results.push(await syncBook(settings, book, client, { replace: true }));
     return {
         books: results.length,
         entries: results.reduce((sum, result) => sum + Number(result.entries ?? 0), 0),
@@ -388,7 +405,7 @@ export async function initializeWorldInfoManager(settings, context) {
         try {
             const result = await vectorizeSelectedWorldInfo(settings, SillyTavern.getContext());
             await refreshSelector(settings, SillyTavern.getContext());
-            showNotice(`世界书向量已更新：${result.entries} 个条目，${result.chunks} 个片段。`, 'success');
+            showNotice(`已增量更新：${result.entries} 个条目，${result.chunks} 个片段；未勾选的已有向量保持不变。`, 'success');
         } catch (error) {
             showNotice(`世界书向量化失败：${error.message}`, 'error');
             console.error('[Memory Augment] World info vectorization failed.', error);

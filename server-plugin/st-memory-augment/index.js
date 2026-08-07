@@ -260,6 +260,7 @@ async function syncWorldInfo(req) {
     const vectorsDirectory = requireVectorsDirectory(req);
     const bookId = requireString(req.body?.book_id ?? req.body?.bookId, 'book_id');
     const entries = normalizeWorldInfoEntries(req.body?.entries ?? []);
+    const syncMode = req.body?.sync_mode === 'merge' ? 'merge' : 'replace';
     const targetChars = clampInteger(req.body?.targetChars, 400, 100, 2000);
     const embeddingConfig = req.body?.embedding;
     const embeddingSignature = getEmbeddingSignature(embeddingConfig);
@@ -285,12 +286,17 @@ async function syncWorldInfo(req) {
         const vectors = await createEmbeddings(pending.map(chunk => chunk.text), embeddingConfig);
         pending.forEach((chunk, index) => chunk.vector = vectors[index]);
     }
-    await vectorStore.replaceWorldInfoChunks(vectorsDirectory, bookId, drafts);
+    const incomingEntryUids = new Set(entries.map(entry => String(entry.uid)));
+    const preserved = syncMode === 'merge'
+        ? existing.filter(chunk => !incomingEntryUids.has(String(chunk.entry_uid ?? chunk.world_info_id ?? '')))
+        : [];
+    const finalChunks = [...preserved, ...drafts];
+    await vectorStore.replaceWorldInfoChunks(vectorsDirectory, bookId, finalChunks);
     const previousIds = new Set(existing.map(chunk => chunk.id));
-    const currentIds = new Set(drafts.map(chunk => chunk.id));
+    const currentIds = new Set(finalChunks.map(chunk => chunk.id));
     const removed = [...previousIds].filter(id => !currentIds.has(id)).length;
     const updatedEntryUids = [...new Set(pending.map(chunk => String(chunk.entry_uid)))];
-    const currentEntryUids = new Set(drafts.map(chunk => String(chunk.entry_uid)));
+    const currentEntryUids = new Set(finalChunks.map(chunk => String(chunk.entry_uid ?? chunk.world_info_id ?? '')));
     const previousEntryUids = new Set(existing.map(chunk => String(chunk.entry_uid ?? chunk.world_info_id ?? '')));
     const unchangedEntryUids = [...currentEntryUids].filter(uid => !updatedEntryUids.includes(uid));
     const removedEntryUids = [...previousEntryUids].filter(uid => uid && !currentEntryUids.has(uid));
@@ -298,6 +304,7 @@ async function syncWorldInfo(req) {
         bookId,
         entries: entries.length,
         chunks: drafts.length,
+        totalChunks: finalChunks.length,
         embedded: pending.length,
         reused: drafts.length - pending.length,
         removed,

@@ -5,6 +5,7 @@ import {
     applyWorldInfoVectorStatuses,
     isManagedSummaryWorldInfoBook,
     normalizeWorldInfoEntries,
+    rebuildSelectedWorldInfo,
     vectorizeSelectedWorldInfo,
 } from '../world-info-manager.js';
 
@@ -67,5 +68,38 @@ test('automatic summary lorebooks cannot be duplicated into ordinary world-info 
 
     assert.equal(calls[0].book_id, '角色A-自动总结');
     assert.equal(calls[0].entries.length, 0);
+    assert.equal(calls[0].sync_mode, 'replace');
     assert.equal(calls[1].entries.length, 1);
+    assert.equal(calls[1].sync_mode, 'merge');
+});
+
+test('ordinary world info updates merge selected entries while an explicit rebuild replaces the scope', async () => {
+    const calls = [];
+    const settings = {
+        apis: { embedding: { url: 'https://example.com/v1', apiKey: 'test', model: 'embedding' } },
+        rag: {
+            segmentTargetChars: 400,
+            semanticWorldInfoBooks: [],
+            semanticWorldInfoEntries: ['主世界书::2'],
+        },
+    };
+    const books = [{
+        id: '主世界书',
+        entries: [
+            { uid: '1', key: '主世界书::1', entryKey: '旧条目', content: '没有修改' },
+            { uid: '2', key: '主世界书::2', entryKey: '新条目', content: '刚刚修改' },
+        ],
+    }];
+    const client = async payload => {
+        calls.push(payload);
+        return { entries: payload.entries.length, chunks: payload.entries.length };
+    };
+
+    await vectorizeSelectedWorldInfo(settings, {}, books, client);
+    await rebuildSelectedWorldInfo(settings, {}, books, client);
+
+    assert.equal(calls[0].sync_mode, 'merge');
+    assert.deepEqual(calls[0].entries.map(entry => entry.entry_uid), ['2']);
+    assert.equal(calls[1].sync_mode, 'replace');
+    assert.deepEqual(calls[1].entries.map(entry => entry.entry_uid), ['2']);
 });

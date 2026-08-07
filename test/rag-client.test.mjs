@@ -7,6 +7,8 @@ import {
     searchMemory,
     searchPhoneMemory,
     searchSummaryMemory,
+    getWorldInfoStatuses,
+    syncWorldInfo,
     syncPhoneMemory,
     syncSummaryMemory,
     updateChatMemory,
@@ -161,6 +163,51 @@ test('native chat memory writes, searches, edits, and disables fragments without
     const vectorRequests = fixture.requests.filter(item => item.url.startsWith('/api/vector/'));
     assert.ok(vectorRequests.some(item => item.url === '/api/vector/insert'));
     assert.ok(vectorRequests.some(item => item.url === '/api/vector/delete'));
+});
+
+test('native world info merge updates selected entries without deleting earlier vectors', async (context) => {
+    const originalSillyTavern = globalThis.SillyTavern;
+    const originalFetch = globalThis.fetch;
+    context.after(() => {
+        globalThis.SillyTavern = originalSillyTavern;
+        globalThis.fetch = originalFetch;
+    });
+    globalThis.SillyTavern = {
+        getContext: () => ({ getRequestHeaders: () => ({ 'Content-Type': 'application/json' }) }),
+    };
+    const fixture = installNativeFetch();
+    globalThis.fetch = fixture.fetch;
+    const embedding = {
+        baseUrl: 'https://embedding.example',
+        apiKey: 'embed-key',
+        model: 'embed-model',
+    };
+    const bookId = 'incremental-world-info-test';
+
+    await syncWorldInfo({
+        book_id: bookId,
+        sync_mode: 'replace',
+        embedding,
+        entries: [
+            { entry_uid: '1', entry_key: 'NPC', text: '旧的 NPC 设定' },
+            { entry_uid: '2', entry_key: '地图', text: '旧的地图设定' },
+            { entry_uid: '3', entry_key: '王国', text: '不需要修改的王国设定' },
+        ],
+    });
+    const update = await syncWorldInfo({
+        book_id: bookId,
+        sync_mode: 'merge',
+        embedding,
+        entries: [
+            { entry_uid: '1', entry_key: 'NPC', text: '更新后的 NPC 设定' },
+            { entry_uid: '2', entry_key: '地图', text: '更新后的地图设定' },
+        ],
+    });
+    const statuses = await getWorldInfoStatuses([bookId]);
+
+    assert.equal(update.entries, 2);
+    assert.equal(update.totalChunks, 3);
+    assert.equal(statuses[bookId].entryCount, 3);
 });
 
 test('detailed summaries use an independent vector scope and respect the eligible uid list', async (context) => {
