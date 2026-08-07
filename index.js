@@ -40,6 +40,22 @@ const LEGACY_DEFAULT_BARRAGE_PROMPT = '你是一群正在观看小说直播的�
 let ingestionQueue = Promise.resolve();
 let quickPanelPromise = null;
 
+export async function refreshDisplayedVersion(documentRef = globalThis.document, fetchImpl = globalThis.fetch) {
+    const badge = documentRef?.querySelector?.('#memory_augment_settings .memory-augment-version');
+    if (!badge || typeof fetchImpl !== 'function') return false;
+    try {
+        const response = await fetchImpl(new URL('./manifest.json', import.meta.url), { cache: 'no-store' });
+        if (!response?.ok) return false;
+        const version = String((await response.json())?.version ?? '').trim();
+        if (!version) return false;
+        badge.textContent = `v${version}`;
+        return true;
+    } catch (error) {
+        console.warn('[Memory Augment] Failed to read the displayed extension version.', error);
+        return false;
+    }
+}
+
 export const defaultSettings = Object.freeze({
     apis: {
         embedding: { url: '', apiKey: '', model: '', availableModels: [], modelsBaseUrl: '' },
@@ -849,6 +865,7 @@ async function initialize() {
         const html = await renderExtensionTemplateAsync(TEMPLATE_PATH, 'settings');
         document.querySelector('#extensions_settings2')?.insertAdjacentHTML('beforeend', html);
     }
+    await refreshDisplayedVersion();
 
     bindSettings(settings, context);
     initializeHtmlRenderer(settings);
