@@ -167,9 +167,10 @@ function contentHash(text) {
     return (value >>> 0).toString(16).padStart(8, '0');
 }
 
-async function syncBook(settings, book, client = syncWorldInfo, { replace = false } = {}) {
-    const selectedEntries = getSelectedEntriesForBook(settings, book);
-    const syncMode = replace || isManagedSummaryWorldInfoBook(book) ? 'replace' : 'merge';
+async function syncBook(settings, book, client = syncWorldInfo, { replace = false, allEntries = false } = {}) {
+    const managedBySummaryRag = isManagedSummaryWorldInfoBook(book);
+    const selectedEntries = allEntries && !managedBySummaryRag ? book.entries : getSelectedEntriesForBook(settings, book);
+    const syncMode = replace || managedBySummaryRag ? 'replace' : 'merge';
     if (selectedEntries.length === 0 && syncMode === 'merge') {
         return { bookId: book.id, entries: 0, chunks: 0, embedded: 0, skipped: true };
     }
@@ -204,9 +205,11 @@ export async function vectorizeSelectedWorldInfo(settings, _context, books = cur
     };
 }
 
-export async function rebuildSelectedWorldInfo(settings, _context, books = currentBooks, client = syncWorldInfo) {
+export async function rebuildAllCurrentWorldInfo(settings, _context, books = currentBooks, client = syncWorldInfo) {
     const results = [];
-    for (const book of books) results.push(await syncBook(settings, book, client, { replace: true }));
+    for (const book of books) {
+        results.push(await syncBook(settings, book, client, { replace: true, allEntries: true }));
+    }
     return {
         books: results.length,
         entries: results.reduce((sum, result) => sum + Number(result.entries ?? 0), 0),
@@ -405,10 +408,26 @@ export async function initializeWorldInfoManager(settings, context) {
         try {
             const result = await vectorizeSelectedWorldInfo(settings, SillyTavern.getContext());
             await refreshSelector(settings, SillyTavern.getContext());
-            showNotice(`已增量更新：${result.entries} 个条目，${result.chunks} 个片段；未勾选的已有向量保持不变。`, 'success');
+            showNotice(`已构建/更新：${result.entries} 个勾选条目，${result.chunks} 个片段；其他已有向量保持不变。`, 'success');
         } catch (error) {
             showNotice(`世界书向量化失败：${error.message}`, 'error');
             console.error('[Memory Augment] World info vectorization failed.', error);
+        } finally {
+            button.disabled = false;
+            button.classList.remove('disabled');
+        }
+    });
+    document.querySelector('#memory_augment_rebuild_worldinfo')?.addEventListener('click', async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        button.classList.add('disabled');
+        try {
+            const result = await rebuildAllCurrentWorldInfo(settings, SillyTavern.getContext());
+            await refreshSelector(settings, SillyTavern.getContext());
+            showNotice(`当前所有世界书已重建：${result.entries} 个条目，${result.chunks} 个片段；聊天向量未改动。`, 'success');
+        } catch (error) {
+            showNotice(`重建当前所有世界书失败：${error.message}`, 'error');
+            console.error('[Memory Augment] World info rebuild failed.', error);
         } finally {
             button.disabled = false;
             button.classList.remove('disabled');

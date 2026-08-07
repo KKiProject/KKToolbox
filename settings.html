@@ -68,12 +68,13 @@
                     <div id="memory_augment_worldinfo_entries" class="memory-augment-worldinfo-entries">正在读取当前所有激活世界书…</div>
                 </div>
                 <div class="memory-augment-actions">
-                    <button id="memory_augment_vectorize_worldinfo" type="button" class="menu_button">增量更新勾选条目</button>
+                    <button id="memory_augment_vectorize_worldinfo" type="button" class="menu_button">构建/更新勾选条目</button>
+                    <button id="memory_augment_rebuild_worldinfo" type="button" class="menu_button">重建当前所有世界书向量</button>
                     <button id="memory_augment_refresh_worldinfo" type="button" class="menu_button">刷新世界书列表</button>
                     <button id="memory_augment_rebuild_chat" type="button" class="menu_button">重建当前聊天向量</button>
-                    <button id="memory_augment_rebuild_all_vectors" type="button" class="menu_button">重建所有向量</button>
+                    <button id="memory_augment_rebuild_all_vectors" type="button" class="menu_button">重建全部（聊天+世界书）</button>
                 </div>
-                <small class="memory-augment-param-help">世界书内容有修改时，只勾选改过的条目再点“增量更新”即可；未勾选的已有向量不会删除。首次建立、需要移除旧条目或彻底重做时，才需要按实际范围重新勾选并使用重建功能。</small>
+                <small class="memory-augment-param-help">首次构建、追加或修改少数内容：勾选需要的条目后点“构建/更新”，其他已有向量不会删除。“重建当前所有世界书向量”会忽略勾选，一键重做上方列表中的全部普通世界书，但不会改动聊天向量；自动总结仍由剧情 RAG 管理。</small>
             </div>
         </details>
 

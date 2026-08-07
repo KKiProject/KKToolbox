@@ -23,7 +23,7 @@ import {
 } from './character-development.js';
 import { initializeDevelopmentBaselineUi } from './character-baseline.js';
 import { clearAllSummaries, getSummaryStatus, initializeSummaryManager, repairMalformedSummaries } from './summary-manager.js';
-import { initializeWorldInfoManager, rebuildSelectedWorldInfo } from './world-info-manager.js';
+import { initializeWorldInfoManager, rebuildAllCurrentWorldInfo } from './world-info-manager.js';
 import { initializeHtmlRenderer, refreshHtmlRenderer } from './html-renderer.js';
 import { initializePhoneShellUi } from './phone-shell.js';
 import { consumePreparedPhoneContext } from './phone-store.js';
@@ -808,7 +808,7 @@ function bindActions(settings) {
         button.classList.add('disabled');
         try {
             const chatResult = await queueChatRebuild(settings);
-            const worldResult = await rebuildSelectedWorldInfo(settings, SillyTavern.getContext());
+            const worldResult = await rebuildAllCurrentWorldInfo(settings, SillyTavern.getContext());
             document.querySelector('#memory_augment_refresh_worldinfo')?.click();
             showNotice(`全部向量已重建：聊天 ${chatResult?.chunks ?? 0} 个片段，世界书 ${worldResult.chunks} 个片段。`, 'success');
         } catch (error) {

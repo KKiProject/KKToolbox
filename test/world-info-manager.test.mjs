@@ -5,7 +5,7 @@ import {
     applyWorldInfoVectorStatuses,
     isManagedSummaryWorldInfoBook,
     normalizeWorldInfoEntries,
-    rebuildSelectedWorldInfo,
+    rebuildAllCurrentWorldInfo,
     vectorizeSelectedWorldInfo,
 } from '../world-info-manager.js';
 
@@ -73,7 +73,7 @@ test('automatic summary lorebooks cannot be duplicated into ordinary world-info 
     assert.equal(calls[1].sync_mode, 'merge');
 });
 
-test('ordinary world info updates merge selected entries while an explicit rebuild replaces the scope', async () => {
+test('ordinary world info updates merge selected entries while rebuilding all current books ignores selection', async () => {
     const calls = [];
     const settings = {
         apis: { embedding: { url: 'https://example.com/v1', apiKey: 'test', model: 'embedding' } },
@@ -96,10 +96,10 @@ test('ordinary world info updates merge selected entries while an explicit rebui
     };
 
     await vectorizeSelectedWorldInfo(settings, {}, books, client);
-    await rebuildSelectedWorldInfo(settings, {}, books, client);
+    await rebuildAllCurrentWorldInfo(settings, {}, books, client);
 
     assert.equal(calls[0].sync_mode, 'merge');
     assert.deepEqual(calls[0].entries.map(entry => entry.entry_uid), ['2']);
     assert.equal(calls[1].sync_mode, 'replace');
-    assert.deepEqual(calls[1].entries.map(entry => entry.entry_uid), ['2']);
+    assert.deepEqual(calls[1].entries.map(entry => entry.entry_uid), ['1', '2']);
 });
