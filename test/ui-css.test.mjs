@@ -46,6 +46,17 @@ test('the floating story launcher cannot be hidden behind mobile themes', async 
     assert.match(ballRule, /display:\s*flex\s*!important/);
 });
 
+test('every simulated phone page supports direct vertical touch scrolling', async () => {
+    const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
+    const homeRule = css.match(/\.memory-augment-phone-home\s*\{([\s\S]*?)\}/)?.[1] ?? '';
+    const touchSection = css.slice(css.indexOf('/* Every scrollable layer inside the simulated phone'));
+    const touchRule = touchSection.match(/\.memory-augment-phone-home,\s*[\s\S]*?\.memory-augment-phone-memory-list\s*\{([\s\S]*?)\}/)?.[1] ?? '';
+    assert.match(homeRule, /overflow-y:\s*auto/);
+    assert.match(homeRule, /min-height:\s*0/);
+    assert.match(touchRule, /-webkit-overflow-scrolling:\s*touch/);
+    assert.match(touchRule, /touch-action:\s*pan-y/);
+});
+
 test('the per-character card type control lives in character development instead of global settings', async () => {
     const settings = await readFile(new URL('../settings.html', import.meta.url), 'utf8');
     const development = await readFile(new URL('../character-development.js', import.meta.url), 'utf8');

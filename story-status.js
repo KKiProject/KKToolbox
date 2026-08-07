@@ -1061,6 +1061,7 @@ export function initializeStoryStatusUi(context, settings) {
             button.setAttribute('aria-current', active ? 'page' : 'false');
         });
         if (selected === 'map') document.dispatchEvent(new CustomEvent('memory-augment-map-opened'));
+        globalThis.requestAnimationFrame?.(() => clampStoryPanelToViewport(root));
     };
     const setOpen = (open) => {
         panel.hidden = !open;

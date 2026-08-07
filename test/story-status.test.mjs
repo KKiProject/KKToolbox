@@ -15,6 +15,14 @@ import {
     saveStoryStatus,
     shouldCloseStoryPanelForPointer,
 } from '../story-status.js';
+import { readFile } from 'node:fs/promises';
+
+test('switching floating pages reclamps the resized panel into the viewport', async () => {
+    const source = await readFile(new URL('../story-status.js', import.meta.url), 'utf8');
+    const setViewBody = source.match(/const setView = \(view\) => \{([\s\S]*?)\n    \};/)?.[1] ?? '';
+    assert.match(setViewBody, /requestAnimationFrame/);
+    assert.match(setViewBody, /clampStoryPanelToViewport\(root\)/);
+});
 
 function status(label) {
     return {
