@@ -1,4 +1,4 @@
-export const PHONE_STORE_VERSION = 2;
+export const PHONE_STORE_VERSION = 3;
 export const PHONE_MESSAGE_TYPES = Object.freeze([
     'text',
     'voice',
@@ -23,6 +23,8 @@ const storeCache = new Map();
 const writeLocks = new Map();
 const preparedStoryInjections = new Map();
 const PHONE_CONTEXT_MARKER = 'memory_augment_phone_context';
+const PHONE_MAIN_CONTEXT_CHAR_LIMIT = 50_000;
+const PHONE_PENDING_RAW_CHAR_TARGET = 46_000;
 
 function cleanText(value, maximum = 4000) {
     return String(value ?? '').trim().slice(0, maximum);
@@ -45,6 +47,10 @@ function makeId(prefix = 'item') {
     const random = globalThis.crypto?.randomUUID?.()
         ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
     return `${prefix}-${random}`;
+}
+
+export function createPhoneRoundId() {
+    return makeId('round');
 }
 
 export function getPhoneChatId(context = globalThis.SillyTavern?.getContext?.()) {
@@ -102,6 +108,7 @@ export function normalizePhoneMessage(value) {
     const type = PHONE_MESSAGE_TYPES.includes(value?.type) ? value.type : 'text';
     return {
         id: cleanText(value?.id, 120) || makeId('msg'),
+        roundId: cleanText(value?.roundId, 120),
         sender: cleanText(value?.sender, 80) || '未知联系人',
         fromUser: value?.fromUser === true,
         type,
@@ -115,6 +122,29 @@ export function normalizePhoneMessage(value) {
         timestamp: Number.isFinite(Number(value?.timestamp)) ? Number(value.timestamp) : Date.now(),
         storyPending: value?.storyPending === true,
     };
+}
+
+function normalizeRoundSummary(value = {}) {
+    return {
+        id: cleanText(value?.id ?? value?.roundId, 120),
+        summary: cleanText(value?.summary, 1200),
+        createdAt: Number.isFinite(Number(value?.createdAt)) ? Number(value.createdAt) : Date.now(),
+        updatedAt: Number.isFinite(Number(value?.updatedAt)) ? Number(value.updatedAt) : Date.now(),
+    };
+}
+
+function normalizeConversationMessages(values) {
+    const messages = (Array.isArray(values) ? values : []).map(normalizePhoneMessage);
+    let activeLegacyRound = '';
+    for (const message of messages) {
+        if (message.roundId) {
+            activeLegacyRound = message.roundId;
+            continue;
+        }
+        if (message.fromUser || !activeLegacyRound) activeLegacyRound = createPhoneRoundId();
+        message.roundId = activeLegacyRound;
+    }
+    return messages;
 }
 
 export function normalizePhoneMemoryEvent(value = {}) {
@@ -155,6 +185,24 @@ function normalizeConversation(value) {
     const rawMemberIdentities = value?.memberIdentities && typeof value.memberIdentities === 'object'
         ? value.memberIdentities
         : {};
+    const messages = normalizeConversationMessages(value?.messages);
+    const existingSummaries = new Map((Array.isArray(value?.rounds) ? value.rounds : [])
+        .map(normalizeRoundSummary)
+        .filter(item => item.id)
+        .map(item => [item.id, item]));
+    const rounds = [];
+    const seenRounds = new Set();
+    for (const message of messages) {
+        if (seenRounds.has(message.roundId)) continue;
+        seenRounds.add(message.roundId);
+        const saved = existingSummaries.get(message.roundId);
+        rounds.push(saved ?? {
+            id: message.roundId,
+            summary: '',
+            createdAt: message.timestamp,
+            updatedAt: message.timestamp,
+        });
+    }
     return {
         id: cleanText(value?.id, 120) || makeId(type),
         type,
@@ -166,7 +214,8 @@ function normalizeConversation(value) {
             member,
             normalizePhoneIdentity(rawMemberIdentities[member]),
         ])),
-        messages: (Array.isArray(value?.messages) ? value.messages : []).map(normalizePhoneMessage),
+        messages,
+        rounds,
         createdAt: Number.isFinite(Number(value?.createdAt)) ? Number(value.createdAt) : Date.now(),
     };
 }
@@ -270,11 +319,52 @@ export function appendPhoneMessage(store, conversationId, input = {}) {
     const message = normalizePhoneMessage({
         ...input,
         id: makeId('msg'),
+        roundId: cleanText(input?.roundId, 120) || createPhoneRoundId(),
         timestamp: Date.now(),
         storyPending: input?.storyPending !== false,
     });
     conversation.messages.push(message);
+    conversation.rounds ??= [];
+    if (!conversation.rounds.some(round => round.id === message.roundId)) {
+        conversation.rounds.push({
+            id: message.roundId,
+            summary: '',
+            createdAt: message.timestamp,
+            updatedAt: message.timestamp,
+        });
+    }
     return message;
+}
+
+export function setPhoneRoundSummary(store, conversationId, roundId, summary) {
+    const conversation = store?.conversations?.find(item => item.id === conversationId);
+    const id = cleanText(roundId, 120);
+    const content = cleanText(summary, 1200);
+    if (!conversation || !id || !content) return null;
+    conversation.rounds ??= [];
+    let round = conversation.rounds.find(item => item.id === id);
+    if (!round) {
+        round = { id, summary: '', createdAt: Date.now(), updatedAt: Date.now() };
+        conversation.rounds.push(round);
+    }
+    round.summary = content;
+    round.updatedAt = Date.now();
+    return round;
+}
+
+export function getRecentRoundMessages(conversation, roundLimit = 30) {
+    const messages = Array.isArray(conversation?.messages) ? conversation.messages : [];
+    const maximum = Math.max(1, Math.trunc(Number(roundLimit) || 30));
+    const recentRoundIds = [];
+    const seen = new Set();
+    for (let index = messages.length - 1; index >= 0 && recentRoundIds.length < maximum; index--) {
+        const id = cleanText(messages[index]?.roundId, 120);
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        recentRoundIds.push(id);
+    }
+    const allowed = new Set(recentRoundIds);
+    return messages.filter(message => allowed.has(message.roundId));
 }
 
 function normalizeComparableText(value) {
@@ -525,13 +615,19 @@ export function formatPhoneMessageForAi(message) {
     return `${message.sender} [${typeLabels[message.type] ?? '文字'}]: ${details}`;
 }
 
-export function buildPhoneAiSnapshot(store, conversationId, stickers = [], limit = 30) {
+export function buildPhoneAiSnapshot(store, conversationId, stickers = [], limit = null) {
     const conversation = store.conversations.find(item => item.id === conversationId);
     if (!conversation) return null;
-    const recentMessages = conversation.messages.slice(-Math.max(1, limit));
+    const hasRoundLimit = Number.isFinite(Number(limit)) && Number(limit) > 0;
+    const recentMessages = hasRoundLimit
+        ? getRecentRoundMessages(conversation, limit)
+        : [...conversation.messages];
+    const recentRoundIds = new Set(recentMessages.map(message => message.roundId));
+    const olderRoundSummaries = (conversation.rounds ?? [])
+        .filter(round => !recentRoundIds.has(round.id) && cleanText(round.summary, 1200))
+        .map(round => ({ id: round.id, summary: cleanText(round.summary, 1200) }));
     const activeMemory = (store?.onlineMemory?.events ?? [])
-        .filter(event => event.conversationId === conversationId && event.status === 'active')
-        .slice(-20);
+        .filter(event => event.conversationId === conversationId && event.status === 'active');
     return {
         profile: { ...store.profile },
         conversation: {
@@ -548,8 +644,13 @@ export function buildPhoneAiSnapshot(store, conversationId, stickers = [], limit
         messages: recentMessages.map(formatPhoneMessageForAi),
         messageRecords: recentMessages.map(message => ({
             id: message.id,
+            roundId: message.roundId,
             text: formatPhoneMessageForAi(message),
         })),
+        olderRoundSummaries,
+        roundSummaries: (conversation.rounds ?? [])
+            .filter(round => cleanText(round.summary, 1200))
+            .map(round => ({ id: round.id, summary: cleanText(round.summary, 1200) })),
         activeMemory: activeMemory.map(event => ({
             id: event.id,
             type: event.type,
@@ -564,22 +665,38 @@ function getPhoneContextSelection(store, limit = 12, recalledEvents = []) {
     const allMessages = store.conversations
         .flatMap(conversation => conversation.messages.map(message => ({ conversation, message })))
         .sort((left, right) => left.message.timestamp - right.message.timestamp);
-    const pendingMessages = allMessages.filter(item => item.message.storyPending === true).slice(-30);
+    const pendingMessages = allMessages.filter(item => item.message.storyPending === true);
     const pendingIds = new Set(pendingMessages.map(item => item.message.id));
-    const recent = allMessages.slice(-Math.max(1, limit))
-        .filter(item => !pendingIds.has(item.message.id));
+    const recentRoundKeys = [];
+    const seenRounds = new Set();
+    for (let index = allMessages.length - 1; index >= 0 && recentRoundKeys.length < Math.max(1, limit); index--) {
+        const item = allMessages[index];
+        const key = `${item.conversation.id}:${item.message.roundId}`;
+        if (seenRounds.has(key)) continue;
+        seenRounds.add(key);
+        recentRoundKeys.push(key);
+    }
+    const recentRoundSet = new Set(recentRoundKeys);
+    const recent = allMessages.filter(item => (
+        recentRoundSet.has(`${item.conversation.id}:${item.message.roundId}`)
+        && !pendingIds.has(item.message.id)
+    ));
     const messages = [...pendingMessages, ...recent]
         .sort((left, right) => left.message.timestamp - right.message.timestamp);
     const automaticEvents = (store?.onlineMemory?.events ?? [])
         .filter(event => event.pending === true || event.status === 'active')
-        .sort((left, right) => left.updatedAt - right.updatedAt)
-        .slice(-30);
+        .sort((left, right) => left.updatedAt - right.updatedAt);
     const eventIds = new Set(automaticEvents.map(event => event.id));
     const events = [
         ...(Array.isArray(recalledEvents) ? recalledEvents : []).filter(event => !eventIds.has(event.id)),
         ...automaticEvents,
     ];
-    return { messages, events };
+    return {
+        messages,
+        events,
+        pendingMessageIds: pendingMessages.map(item => item.message.id),
+        pendingEventIds: automaticEvents.filter(event => event.pending).map(event => event.id),
+    };
 }
 
 function formatPhoneMemoryEvent(event, store) {
@@ -597,24 +714,84 @@ function formatPhoneMemoryEvent(event, store) {
 }
 
 export function buildPhonePromptContext(store, limit = 12, recalledEvents = []) {
-    const { messages, events } = getPhoneContextSelection(store, limit, recalledEvents);
+    const selection = getPhoneContextSelection(store, limit, recalledEvents);
+    const { messages, events } = selection;
     if (messages.length === 0 && events.length === 0) return '';
-    return [
+    const pendingItems = messages.filter(item => item.message.storyPending === true);
+    const recentItems = messages.filter(item => item.message.storyPending !== true);
+    const groupedPending = [];
+    const pendingByRound = new Map();
+    for (const item of pendingItems) {
+        const key = `${item.conversation.id}:${item.message.roundId}`;
+        let group = pendingByRound.get(key);
+        if (!group) {
+            group = { conversation: item.conversation, roundId: item.message.roundId, items: [] };
+            pendingByRound.set(key, group);
+            groupedPending.push(group);
+        }
+        group.items.push(item);
+    }
+    const rawBlocks = groupedPending.map(group => [
+        `[线上轮次 · ${group.conversation.type === 'group' ? '群聊' : '单聊'}·${group.conversation.name}]`,
+        ...group.items.map(({ message }) => formatPhoneMessageForAi(message)),
+    ].join('\n'));
+    let pendingText = rawBlocks.join('\n\n');
+    if (pendingText.length > PHONE_PENDING_RAW_CHAR_TARGET) {
+        const recentRaw = [];
+        let recentLength = 0;
+        let firstRawIndex = rawBlocks.length;
+        for (let index = rawBlocks.length - 1; index >= 0; index--) {
+            const blockLength = rawBlocks[index].length + 2;
+            if (recentLength + blockLength > PHONE_PENDING_RAW_CHAR_TARGET * 0.68 && recentRaw.length > 0) break;
+            recentRaw.unshift(rawBlocks[index]);
+            recentLength += blockLength;
+            firstRawIndex = index;
+        }
+        const olderSummaries = groupedPending.slice(0, firstRawIndex).map(group => {
+            const stored = group.conversation.rounds?.find(round => round.id === group.roundId)?.summary;
+            const fallback = group.items.map(({ message }) => formatPhoneMessageForAi(message)).join('；');
+            return `[${group.conversation.name}] ${cleanText(stored || fallback, 1200)}`;
+        });
+        const recentSection = recentRaw.length > 0
+            ? `【最近线上轮次原文】\n${recentRaw.join('\n\n')}`
+            : '';
+        const summaryBudget = Math.max(0, PHONE_PENDING_RAW_CHAR_TARGET - recentSection.length - 2);
+        let summarySection = '';
+        if (olderSummaries.length > 0 && summaryBudget > 0) {
+            const heading = '【较早线上轮次概括】\n';
+            const lineBudget = Math.max(12, Math.floor((summaryBudget - heading.length) / olderSummaries.length) - 1);
+            const lines = olderSummaries.map(summary => cleanText(summary, lineBudget));
+            summarySection = `${heading}${lines.join('\n')}`.slice(0, summaryBudget);
+        }
+        pendingText = [summarySection, recentSection].filter(Boolean).join('\n\n');
+    }
+    const eventText = events.map(event => formatPhoneMemoryEvent(event, store)).join('\n');
+    const recentText = recentItems.map(({ conversation, message }) => (
+        `[近期${conversation.type === 'group' ? '群聊' : '单聊'}·${conversation.name}] ${formatPhoneMessageForAi(message)}`
+    )).join('\n');
+    const header = [
         '【线上通讯与手机内容】',
         '以下只记录手机中确实出现的内容、明确操作与有逐字证据的约定或反应。',
         '“已发送／已收到／平台上存在”不等于某人已经看见、理解、赞同或产生情绪；未明确发生的状态必须保持未知。',
-        ...events.map(event => formatPhoneMemoryEvent(event, store)),
-        ...messages.map(({ conversation, message }) => (
-            `[${conversation.type === 'group' ? '群聊' : '单聊'}·${conversation.name}] ${formatPhoneMessageForAi(message)}`
-        )),
     ].join('\n');
+    let remaining = Math.max(0, PHONE_MAIN_CONTEXT_CHAR_LIMIT - header.length - 8);
+    const sections = [];
+    for (const value of [pendingText, eventText, recentText]) {
+        if (!value || remaining <= 0) continue;
+        const part = value.slice(0, remaining);
+        sections.push(part);
+        remaining -= part.length + 2;
+    }
+    return [header, ...sections].join('\n\n');
 }
 
 export function formatPhoneContextMessage(store, limit = 12, recalledEvents = []) {
     const content = buildPhonePromptContext(store, limit, recalledEvents);
     if (!content) return null;
     const selection = getPhoneContextSelection(store, limit, recalledEvents);
-    const fullContent = `${content}\n这些内容属于正文世界已经发生的线上部分；涉及约定、承诺与冲突时应保持连续性。如与最新用户回复冲突，以最新用户回复为最高准则。不得推测任何未明确的查看状态或人物反应，也不得把模拟媒体形式误认为真实转账、定位或图片识别。`;
+    const guard = '这些内容属于正文世界已经发生的线上部分；涉及约定、承诺与冲突时应保持连续性。如与最新用户回复冲突，以最新用户回复为最高准则。不得推测任何未明确的查看状态或人物反应，也不得把模拟媒体形式误认为真实转账、定位或图片识别。';
+    const boundedContent = content.slice(0, Math.max(0, PHONE_MAIN_CONTEXT_CHAR_LIMIT - guard.length - 1));
+    const fullContent = `${boundedContent}\n${guard}`;
     return {
         role: 'system',
         content: fullContent,
@@ -625,8 +802,8 @@ export function formatPhoneContextMessage(store, limit = 12, recalledEvents = []
         extra: {
             type: 'narrator',
             [PHONE_CONTEXT_MARKER]: true,
-            phone_message_ids: selection.messages.filter(item => item.message.storyPending).map(item => item.message.id),
-            phone_event_ids: selection.events.filter(event => event.pending).map(event => event.id),
+            phone_message_ids: selection.pendingMessageIds,
+            phone_event_ids: selection.pendingEventIds,
         },
     };
 }

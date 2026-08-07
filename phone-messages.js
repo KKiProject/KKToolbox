@@ -3,7 +3,9 @@ import {
     addPhoneSticker,
     appendPhoneMessage,
     buildPhoneAiSnapshot,
+    createPhoneRoundId,
     createPhoneConversation,
+    getRecentRoundMessages,
     loadPhoneStore,
     normalizePhoneIdentity,
     normalizePhoneProfile,
@@ -12,11 +14,13 @@ import {
     removePhoneSticker,
     removePhoneMemoryEvent,
     savePhoneStore,
+    setPhoneRoundSummary,
     splitGroupRedPacket,
     updatePhoneMemoryEvent,
     uploadPhoneImage,
 } from './phone-store.js';
 import { loadAssociatedWorldInfoBooks } from './world-info-manager.js';
+import { preparePhoneStoryContext } from './phone-context.js';
 
 function text(value, maximum = 4000) {
     return String(value ?? '').trim().slice(0, maximum);
@@ -90,7 +94,11 @@ export function parsePhoneAiBundle(raw) {
                 ? item.resolvesEventIds.map(value => text(value, 120)).filter(Boolean)
                 : [],
         }));
-    return { messages, memoryEvents };
+    return {
+        messages,
+        memoryEvents,
+        roundSummary: text(parsed?.roundSummary, 1200),
+    };
 }
 
 export function parsePhoneAiResponse(raw) {
@@ -415,6 +423,7 @@ export function createPhoneMessagesController(options = {}) {
     const contextGetter = options.contextGetter ?? (() => globalThis.SillyTavern?.getContext?.());
     const saveSettings = options.saveSettings ?? (() => contextGetter()?.saveSettingsDebounced?.());
     const generatePhone = options.generatePhone ?? generatePhoneCompletion;
+    const prepareStoryContext = options.prepareStoryContext ?? preparePhoneStoryContext;
     let root = null;
     let store = null;
     let currentConversationId = '';
@@ -676,8 +685,10 @@ export function createPhoneMessagesController(options = {}) {
     async function sendPlayerMessage(message) {
         const conversation = getConversation();
         if (!conversation || busy) return;
+        const roundId = createPhoneRoundId();
         const normalized = {
             ...message,
+            roundId,
             sender: store.profile.nickname || '我',
             fromUser: true,
         };
@@ -697,12 +708,13 @@ export function createPhoneMessagesController(options = {}) {
             setStatus(`消息暂时没保存成功：${error.message}`, true);
             return;
         }
-        await requestAiReplies();
+        await requestAiReplies({ roundId });
     }
 
-    async function requestAiReplies() {
+    async function requestAiReplies(options = {}) {
         const conversation = getConversation();
         if (!conversation || busy) return;
+        const roundId = text(options?.roundId, 120) || createPhoneRoundId();
         const api = settings?.apis?.barrage;
         if (!text(api?.url) || !text(api?.apiKey) || !text(api?.model)) {
             setStatus('未配置副 API；你的消息已保存，但联系人暂时不会自动回复。', true);
@@ -712,6 +724,15 @@ export function createPhoneMessagesController(options = {}) {
         setStatus('正在收取新消息…');
         try {
             const context = contextGetter();
+            const recentStory = collectRecentStory(context);
+            const snapshot = buildPhoneAiSnapshot(store, conversation.id, stickers());
+            const storyContext = await prepareStoryContext({
+                settings,
+                context,
+                store,
+                snapshot,
+                recentStory,
+            });
             const response = await generatePhone({
                 barrage: {
                     baseUrl: api.url,
@@ -719,8 +740,9 @@ export function createPhoneMessagesController(options = {}) {
                     model: api.model,
                 },
                 maxTokens: settings?.phone?.maxTokens ?? 2048,
-                recentStory: collectRecentStory(context),
-                snapshot: buildPhoneAiSnapshot(store, conversation.id, stickers()),
+                recentStory,
+                snapshot,
+                storyContext,
             });
             const bundle = parsePhoneAiBundle(response?.content);
             for (const reply of bundle.messages) {
@@ -744,12 +766,27 @@ export function createPhoneMessagesController(options = {}) {
                         `${activeConversation.id}-${Date.now()}-${reply.sender}`,
                     );
                 }
-                appendPhoneMessage(store, activeConversation.id, { ...reply, fromUser: false });
+                appendPhoneMessage(store, activeConversation.id, {
+                    ...reply,
+                    roundId,
+                    fromUser: false,
+                });
             }
             const activeConversation = getConversation();
             if (activeConversation) {
+                const roundMessages = activeConversation.messages.filter(message => message.roundId === roundId);
+                const fallbackSummary = roundMessages
+                    .map(message => `${message.sender}：${message.type === 'sticker' ? `[表情包：${message.stickerName}]` : message.content}`)
+                    .filter(Boolean)
+                    .join('；');
+                setPhoneRoundSummary(
+                    store,
+                    activeConversation.id,
+                    roundId,
+                    bundle.roundSummary || fallbackSummary,
+                );
                 recordPhoneMemoryEvents(store, activeConversation.id, bundle.memoryEvents, {
-                    messages: activeConversation.messages.slice(-30),
+                    messages: getRecentRoundMessages(activeConversation, 30),
                 });
             }
             await persist();

@@ -1,0 +1,55 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>KKToolbox HTML renderer harness</title>
+    <style>
+        body { margin: 0; }
+        .mes_text { border: 1px solid #999; margin: 8px; }
+        iframe { height: 220px !important; width: 320px; }
+    </style>
+</head>
+<body>
+    <div id="chat">
+        <section class="mes_text" id="already-rendered">
+            <div id="friend-status" class="friend-status status-panel">别人已经生成的状态栏</div>
+            <pre><code>&lt;div id="friend-status" class="friend-status status-panel"&gt;别人已经生成的状态栏&lt;/div&gt;</code></pre>
+        </section>
+        <section class="mes_text" id="fallback-only">
+            <pre><code>&lt;!doctype html&gt;&lt;html&gt;&lt;head&gt;&lt;/head&gt;&lt;body&gt;&lt;div id="fallback-status" class="fallback-status status-panel" style="height:1600px"&gt;可滚动状态栏&lt;/div&gt;&lt;/body&gt;&lt;/html&gt;</code></pre>
+        </section>
+        <section class="mes_text" id="hidden-source">
+            <pre hidden><code>&lt;div id="hidden-status" class="hidden-status status-panel"&gt;隐藏源码&lt;/div&gt;</code></pre>
+        </section>
+        <section class="mes_text" id="late-renderer">
+            <pre><code>&lt;div id="late-status" class="late-status status-panel"&gt;稍后由别人生成&lt;/div&gt;</code></pre>
+        </section>
+    </div>
+    <output id="result">等待测试</output>
+    <script type="module">
+        import { renderHtmlCodeBlocks } from '../html-renderer.js';
+        const root = document.querySelector('#chat');
+        const settings = { htmlRenderer: { enabled: true } };
+        renderHtmlCodeBlocks(root, settings);
+        const external = document.createElement('div');
+        external.id = 'late-status';
+        external.className = 'late-status status-panel';
+        external.textContent = '稍后由别人生成';
+        document.querySelector('#late-renderer').append(external);
+        renderHtmlCodeBlocks(root, settings);
+        const result = {
+            existingFrames: document.querySelectorAll('#already-rendered iframe').length,
+            existingOutputs: document.querySelectorAll('#already-rendered #friend-status').length,
+            existingSourceHidden: document.querySelector('#already-rendered pre')?.hidden === true,
+            fallbackFrames: document.querySelectorAll('#fallback-only iframe').length,
+            fallbackHasScrollSupport: document.querySelector('#fallback-only iframe')?.srcdoc.includes('data-memory-augment-scroll-support') === true,
+            hiddenFrames: document.querySelectorAll('#hidden-source iframe').length,
+            lateFrames: document.querySelectorAll('#late-renderer iframe').length,
+            lateOutputs: document.querySelectorAll('#late-renderer #late-status').length,
+            lateSourceHidden: document.querySelector('#late-renderer pre')?.hidden === true,
+        };
+        document.querySelector('#result').textContent = JSON.stringify(result);
+        globalThis.__KK_HTML_RENDERER_RESULT__ = result;
+    </script>
+</body>
+</html>

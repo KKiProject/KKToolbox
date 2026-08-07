@@ -544,7 +544,11 @@ export async function generateSummaryCompletion(payload, options = {}) {
 }
 
 export function buildPhoneUserContent(payload = {}) {
+    const PHONE_PROMPT_CHAR_LIMIT = 50_000;
     const snapshot = payload?.snapshot && typeof payload.snapshot === 'object' ? payload.snapshot : {};
+    const storyContext = payload?.storyContext && typeof payload.storyContext === 'object'
+        ? payload.storyContext
+        : {};
     const conversation = snapshot?.conversation ?? {};
     const profile = snapshot?.profile ?? {};
     const participants = conversation.type === 'group'
@@ -554,16 +558,27 @@ export function buildPhoneUserContent(payload = {}) {
         .map(item => String(item ?? '').trim())
         .filter(Boolean)
         .slice(-8);
-    const phoneMessages = (Array.isArray(snapshot?.messageRecords) && snapshot.messageRecords.length > 0
-        ? snapshot.messageRecords.map(item => `[${String(item?.id ?? '').trim()}] ${String(item?.text ?? '').trim()}`)
+    const messageRecords = Array.isArray(snapshot?.messageRecords) ? snapshot.messageRecords : [];
+    const phoneMessages = (messageRecords.length > 0
+        ? messageRecords.map(item => {
+            const roundId = String(item?.roundId ?? '').trim();
+            const messageId = String(item?.id ?? '').trim();
+            return `${roundId ? `[轮次 ${roundId}]` : ''}[${messageId}] ${String(item?.text ?? '').trim()}`;
+        })
         : (Array.isArray(snapshot?.messages) ? snapshot.messages : []))
         .map(item => String(item ?? '').trim())
-        .filter(Boolean)
-        .slice(-30);
+        .filter(Boolean);
     const activeMemory = (Array.isArray(snapshot?.activeMemory) ? snapshot.activeMemory : [])
         .map(item => `[${String(item?.id ?? '').trim()}] ${String(item?.summary ?? '').trim()}`)
-        .filter(Boolean)
-        .slice(-20);
+        .filter(Boolean);
+    const olderRoundSummaries = (Array.isArray(snapshot?.olderRoundSummaries)
+        ? snapshot.olderRoundSummaries
+        : [])
+        .map(item => `[轮次 ${String(item?.id ?? '').trim()}] ${String(item?.summary ?? '').trim()}`)
+        .filter(item => item.trim())
+        .join('\n');
+    const roundSummaryMap = new Map((Array.isArray(snapshot?.roundSummaries) ? snapshot.roundSummaries : [])
+        .map(item => [String(item?.id ?? '').trim(), String(item?.summary ?? '').trim()]));
     const stickerNames = (Array.isArray(snapshot?.stickers) ? snapshot.stickers : [])
         .map(item => String(item ?? '').trim())
         .filter(Boolean);
@@ -583,7 +598,11 @@ export function buildPhoneUserContent(payload = {}) {
     const identitySections = conversation.type === 'group'
         ? participants.map(name => formatIdentity(name, conversation?.memberIdentities?.[name]))
         : [formatIdentity(conversation.name || '联系人', conversation.identity)];
-    return [
+    const contextSection = (label, value, maximum) => {
+        const content = String(value ?? '').trim().slice(0, maximum);
+        return content ? `【${label}】\n${content}` : '';
+    };
+    const fixedHeader = [
         '你正在模拟虚构故事中的手机通讯，只扮演对话中的联系人或群成员，不扮演玩家。',
         `玩家手机昵称：${String(profile.nickname ?? '我').trim() || '我'}`,
         `会话类型：${conversation.type === 'group' ? '群聊' : '单聊'}`,
@@ -591,22 +610,12 @@ export function buildPhoneUserContent(payload = {}) {
         `允许发言者：${participants.filter(Boolean).join('、') || '会话中的联系人'}`,
         '',
         '【联系人真实身份】（身份设定优先于最近正文；手机备注名不等于人物本名）',
-        identitySections.join('\n\n') || '（无）',
-        '',
-        '【最近正文】（只用于人物、关系与当前事件连续性）',
-        recentStory.join('\n') || '（无）',
-        '',
-        '【手机聊天记录】',
-        phoneMessages.join('\n') || '（这是第一次通讯）',
-        '',
-        '【仍有效的线上约定或冲突】（只有后续消息明确完成、取消或化解时，才能填写 resolvesEventIds）',
-        activeMemory.join('\n') || '（无）',
-        '',
-        `【可用表情包名称】${stickerNames.length > 0 ? stickerNames.join('、') : '（无）'}`,
-        '',
+        (identitySections.join('\n\n') || '（无）').slice(0, 16_000),
+    ];
+    const rules = [
         '返回1至5条自然的联系人回复。只输出合法 JSON，不要 Markdown，不要解释。',
         '输出结构：',
-        '{"messages":[{"sender":"发言者姓名","type":"text","content":"正文","duration":1,"amount":0,"count":0,"stickerName":""}],"memory":{"events":[{"type":"commitment","summary":"只写明确成立的线上事实","participants":["人物"],"sourceMessageIds":["msg-id"],"evidenceQuotes":["逐字证据"],"status":"active","resolvesEventIds":[]}]}}',
+        '{"messages":[{"sender":"发言者姓名","type":"text","content":"正文","duration":1,"amount":0,"count":0,"stickerName":""}],"roundSummary":"用一两句话概括本轮线上对话中明确发生的内容，不推测未表达的反应","memory":{"events":[{"type":"commitment","summary":"只写明确成立的线上事实","participants":["人物"],"sourceMessageIds":["msg-id"],"evidenceQuotes":["逐字证据"],"status":"active","resolvesEventIds":[]}]}}',
         'type 只能是 text、voice、image、redpacket、group_redpacket、location、sticker。',
         'text：content 是文字。',
         'voice：content 是语音转成的文字，duration 是1至60秒。',
@@ -617,6 +626,8 @@ export function buildPhoneUserContent(payload = {}) {
         'sticker：stickerName 必须逐字选择上面已有的表情包名称，content 留空；没有可用名称时禁止使用。',
         'AI 只根据表情包名称选择，不需要也不得读取表情包图片内容。',
         '人物身份优先级：玩家补充／绑定人物设定 ＞ 手机聊天记录中已成立的信息 ＞ 最近正文。最近正文只提供事件与时间，不得擅自改变联系人是谁。',
+        '事实与时间优先级：玩家刚刚发送的手机消息及最新用户正文 ＞ 当前剧情状态与较晚内容 ＞ 相关历史召回和较早总结。历史只供保持连续性，绝不能让时间线倒退或覆盖玩家的新设定。',
+        '世界书、人物发展和地图属于背景约束；只在与本次通讯相关时自然体现，不要为了证明读过设定而强行提及。',
         '单聊只能由联系人发言；群聊可由一个或多个群成员分别发言。不要代替玩家发送消息。',
         '这些功能都只是剧情中的通讯表现，不进行真实转账、定位、通话或图片识别。',
         'memory.events 只保存值得长期记住的内容；没有就返回空数组。type 只能是 platform_fact、explicit_action、commitment、conflict、confirmed_reaction、unknown_state。',
@@ -624,7 +635,86 @@ export function buildPhoneUserContent(payload = {}) {
         '严格禁止脑补：发送、收到、热搜存在、帖子存在，都不代表任何角色已经看见、读完、理解、赞同、讨厌或产生情绪。只有角色在消息里明确说出的反应才能记为 confirmed_reaction；否则写 unknown_state 或完全不记录。',
         '不得根据人物性格推测其反应，不得把“可能、应该、看起来”改写成事实。平台内容只记录内容本身；角色是否接触或如何反应，必须等待正文或手机互动明确确认。',
         'commitment 和尚未化解的 conflict 使用 status=active；普通事实使用 informational。只有新消息逐字明确完成、取消或化解已有事项时，才把其真实 ID 写入 resolvesEventIds。',
-    ].join('\n');
+        'roundSummary 只概括本轮真实出现的对话事实；视觉上拆成多个气泡仍然是一轮，不得因此虚构多个事件。',
+    ];
+    const fullPhoneHistory = `【手机聊天记录】\n${phoneMessages.join('\n') || '（这是第一次通讯）'}`;
+    const compressPhoneHistory = maximum => {
+        if (fullPhoneHistory.length <= maximum || messageRecords.length === 0) return fullPhoneHistory.slice(0, maximum);
+        const groups = [];
+        const byRound = new Map();
+        for (const record of messageRecords) {
+            const roundId = String(record?.roundId ?? record?.id ?? '').trim();
+            let group = byRound.get(roundId);
+            if (!group) {
+                group = { roundId, records: [] };
+                byRound.set(roundId, group);
+                groups.push(group);
+            }
+            group.records.push(record);
+        }
+        const rawTarget = Math.max(4000, Math.floor(maximum * 0.68));
+        const recentGroups = [];
+        let rawLength = 0;
+        let firstRecent = groups.length;
+        for (let index = groups.length - 1; index >= 0; index -= 1) {
+            const lines = groups[index].records.map(record => {
+                const messageId = String(record?.id ?? '').trim();
+                return `[轮次 ${groups[index].roundId}][${messageId}] ${String(record?.text ?? '').trim()}`;
+            });
+            const block = lines.join('\n');
+            if (rawLength + block.length + 1 > rawTarget && recentGroups.length > 0) break;
+            recentGroups.unshift(block);
+            rawLength += block.length + 1;
+            firstRecent = index;
+        }
+        const recentSection = `【最近手机轮次原文】\n${recentGroups.join('\n')}`;
+        const olderGroups = groups.slice(0, firstRecent);
+        const summaryBudget = Math.max(0, maximum - recentSection.length - 2);
+        let summarySection = '';
+        if (olderGroups.length > 0 && summaryBudget > 0) {
+            const heading = '【较早手机轮次概括】\n';
+            const lineBudget = Math.max(12, Math.floor((summaryBudget - heading.length) / olderGroups.length) - 1);
+            const lines = olderGroups.map(group => {
+                const fallback = group.records.map(record => String(record?.text ?? '').trim()).join('；');
+                return `[${group.roundId}] ${String(roundSummaryMap.get(group.roundId) || fallback).slice(0, lineBudget)}`;
+            });
+            summarySection = `${heading}${lines.join('\n')}`.slice(0, summaryBudget);
+        }
+        return [summarySection, recentSection].filter(Boolean).join('\n\n').slice(0, maximum);
+    };
+    const otherContextSections = [
+        olderRoundSummaries ? `【更早手机轮次概括】\n${olderRoundSummaries}` : '',
+        `【最近正文】（只用于人物、关系与当前事件连续性）\n${recentStory.join('\n') || '（无）'}`,
+        `【仍有效的线上约定或冲突】（只有后续消息明确完成、取消或化解时，才能填写 resolvesEventIds）\n${activeMemory.join('\n') || '（无）'}`,
+        contextSection('当前剧情状态与时间线', storyContext.storyStatus, 12000),
+        contextSection('故事基础设定', storyContext.storyFoundation, 24000),
+        contextSection('酒馆关键词触发的世界书设定', storyContext.activatedWorldInfo, 24000),
+        contextSection('相关历史总结、正文细节与语义设定召回', storyContext.retrievedContext, 32000),
+        contextSection('与本次通讯相关的旧手机记忆', storyContext.phoneMemoryContext, 8000),
+        contextSection('人物在长期剧情中已经形成的变化', storyContext.characterDevelopment, 12000),
+        contextSection('当前地点关系', storyContext.mapContext, 8000),
+        `【可用表情包名称】${stickerNames.length > 0 ? stickerNames.join('、') : '（无）'}`,
+    ].filter(Boolean);
+    const fullContextSections = [fullPhoneHistory, ...otherContextSections];
+    const fixedText = fixedHeader.join('\n');
+    const ruleText = rules.join('\n');
+    let remaining = Math.max(0, PHONE_PROMPT_CHAR_LIMIT - fixedText.length - ruleText.length - 4);
+    const fullContextLength = fullContextSections.reduce((total, section) => total + section.length + 2, 0);
+    const phoneHistoryBudget = fullContextLength <= remaining
+        ? fullPhoneHistory.length
+        : Math.min(fullPhoneHistory.length, Math.max(8000, Math.floor(remaining * 0.65)));
+    const contextSections = [
+        compressPhoneHistory(phoneHistoryBudget),
+        ...otherContextSections,
+    ].filter(Boolean);
+    const fittedContext = [];
+    for (const section of contextSections) {
+        if (remaining <= 0) break;
+        const part = section.slice(0, remaining);
+        fittedContext.push(part);
+        remaining -= part.length + 2;
+    }
+    return [fixedText, ...fittedContext, ruleText].filter(Boolean).join('\n\n');
 }
 
 export async function generatePhoneCompletion(payload, options = {}) {

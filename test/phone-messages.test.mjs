@@ -91,6 +91,7 @@ test('an unbound phone nickname cannot inherit the card protagonist persona', ()
 test('phone response can carry evidence-backed online memory separately from messages', () => {
     const bundle = parsePhoneAiBundle(JSON.stringify({
         messages: [{ sender: '经纪人', type: 'text', content: '明天下午三点见。' }],
+        roundSummary: '经纪人明确约好明天下午三点见面。',
         memory: {
             events: [{
                 type: 'commitment',
@@ -102,8 +103,57 @@ test('phone response can carry evidence-backed online memory separately from mes
         },
     }));
     assert.equal(bundle.messages.length, 1);
+    assert.equal(bundle.roundSummary, '经纪人明确约好明天下午三点见面。');
     assert.equal(bundle.memoryEvents[0].type, 'commitment');
     assert.deepEqual(bundle.memoryEvents[0].evidenceQuotes, ['明天下午三点见。']);
+});
+
+test('phone prompt keeps round markers and never drops its hard rules when trimmed', () => {
+    const prompt = buildPhoneUserContent({
+        recentStory: ['最新正文'],
+        storyContext: {
+            storyStatus: '状态'.repeat(20_000),
+            storyFoundation: '设定'.repeat(20_000),
+            retrievedContext: '召回'.repeat(20_000),
+        },
+        snapshot: {
+            profile: { nickname: '我' },
+            conversation: { type: 'direct', name: '朋友', identity: { mode: 'unbound' } },
+            messageRecords: Array.from({ length: 80 }, (_, index) => ({
+                id: `msg-${index}`,
+                roundId: `round-${Math.floor(index / 4)}`,
+                text: `朋友 [文字]: ${'消息'.repeat(200)}`,
+            })),
+            olderRoundSummaries: [{ id: 'old-round', summary: '较早轮次概括' }],
+            activeMemory: [],
+            stickers: [],
+        },
+    });
+    assert.ok(prompt.length <= 50_000);
+    assert.match(prompt, /【较早手机轮次概括】/);
+    assert.match(prompt, /【最近手机轮次原文】/);
+    assert.match(prompt, /\[轮次 round-19\]\[msg-79\]/);
+    assert.match(prompt, /视觉上拆成多个气泡仍然是一轮/);
+    assert.match(prompt, /roundSummary 只概括本轮真实出现的对话事实/);
+});
+
+test('short phone conversations keep every round raw even when they run for a long time', () => {
+    const prompt = buildPhoneUserContent({
+        snapshot: {
+            profile: { nickname: '我' },
+            conversation: { type: 'direct', name: '朋友', identity: { mode: 'unbound' } },
+            messageRecords: Array.from({ length: 200 }, (_, index) => ({
+                id: `short-${index}`,
+                roundId: `short-round-${Math.floor(index / 2)}`,
+                text: index % 2 === 0 ? `我 [文字]: 第${index / 2 + 1}轮` : '朋友 [文字]: 收到',
+            })),
+            activeMemory: [],
+            stickers: [],
+        },
+    });
+    assert.match(prompt, /\[轮次 short-round-0\]\[short-0\]/);
+    assert.match(prompt, /\[轮次 short-round-99\]\[short-199\]/);
+    assert.doesNotMatch(prompt, /【较早手机轮次概括】/);
 });
 
 test('phone prompt forbids inferring views or reactions from platform presence', () => {

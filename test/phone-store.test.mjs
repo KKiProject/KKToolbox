@@ -8,11 +8,16 @@ import {
     consumePreparedPhoneContext,
     createEmptyPhoneStore,
     createPhoneConversation,
+    createPhoneRoundId,
+    formatPhoneContextMessage,
+    getRecentRoundMessages,
     loadPhoneStore,
+    normalizePhoneStore,
     normalizePhoneIdentity,
     normalizePhoneProfile,
     recordPhoneMemoryEvents,
     savePhoneStore,
+    setPhoneRoundSummary,
     splitGroupRedPacket,
     injectPhoneContext,
 } from '../phone-store.js';
@@ -156,4 +161,109 @@ test('pending phone facts are consumed only after a prepared story generation su
     assert.equal(message.storyPending, true);
     assert.equal(await consumePreparedPhoneContext(chatContext), true);
     assert.equal(store.conversations[0].messages[0].storyPending, false);
+});
+
+test('legacy phone bubbles migrate into logical player-and-reply rounds', () => {
+    const store = normalizePhoneStore({
+        version: 2,
+        chatId: 'legacy-rounds',
+        conversations: [{
+            id: 'conversation-1',
+            type: 'direct',
+            name: '朋友',
+            messages: [
+                { id: 'm1', sender: '我', fromUser: true, content: '第一轮' },
+                { id: 'm2', sender: '朋友', content: '回复气泡一' },
+                { id: 'm3', sender: '朋友', content: '回复气泡二' },
+                { id: 'm4', sender: '我', fromUser: true, content: '第二轮' },
+                { id: 'm5', sender: '朋友', content: '第二轮回复' },
+            ],
+        }],
+    });
+    const conversation = store.conversations[0];
+    assert.equal(conversation.messages[0].roundId, conversation.messages[1].roundId);
+    assert.equal(conversation.messages[1].roundId, conversation.messages[2].roundId);
+    assert.equal(conversation.messages[3].roundId, conversation.messages[4].roundId);
+    assert.notEqual(conversation.messages[0].roundId, conversation.messages[3].roundId);
+    assert.equal(conversation.rounds.length, 2);
+});
+
+test('phone history limit counts logical rounds instead of visual bubbles', () => {
+    const store = createEmptyPhoneStore('many-rounds');
+    const conversation = createPhoneConversation(store, { type: 'direct', name: '朋友' });
+    for (let roundIndex = 0; roundIndex < 35; roundIndex += 1) {
+        const roundId = createPhoneRoundId();
+        appendPhoneMessage(store, conversation.id, {
+            sender: '我', fromUser: true, content: `第${roundIndex + 1}轮提问`, roundId,
+        });
+        for (let bubbleIndex = 0; bubbleIndex < 5; bubbleIndex += 1) {
+            appendPhoneMessage(store, conversation.id, {
+                sender: '朋友', content: `第${roundIndex + 1}轮回复${bubbleIndex + 1}`, roundId,
+            });
+        }
+        setPhoneRoundSummary(store, conversation.id, roundId, `第${roundIndex + 1}轮概括`);
+    }
+
+    const recent = getRecentRoundMessages(conversation, 30);
+    const snapshot = buildPhoneAiSnapshot(store, conversation.id, [], 30);
+    assert.equal(recent.length, 30 * 6);
+    assert.equal(new Set(recent.map(message => message.roundId)).size, 30);
+    assert.equal(snapshot.messageRecords.length, 30 * 6);
+    assert.equal(snapshot.olderRoundSummaries.length, 5);
+});
+
+test('returning to the story carries and consumes every pending phone round', async (context) => {
+    const originalFetch = globalThis.fetch;
+    const originalSillyTavern = globalThis.SillyTavern;
+    context.after(() => {
+        globalThis.fetch = originalFetch;
+        globalThis.SillyTavern = originalSillyTavern;
+    });
+    const fixture = installNativeFetch();
+    globalThis.fetch = fixture.fetch;
+    globalThis.SillyTavern = { getContext: () => ({ getRequestHeaders: () => ({}) }) };
+    const chatContext = { getCurrentChatId: () => 'all-pending-rounds' };
+    const store = createEmptyPhoneStore('all-pending-rounds');
+    const conversation = createPhoneConversation(store, { type: 'direct', name: '朋友' });
+    for (let roundIndex = 0; roundIndex < 40; roundIndex += 1) {
+        const roundId = createPhoneRoundId();
+        appendPhoneMessage(store, conversation.id, {
+            sender: '我', fromUser: true, content: `待回流第${roundIndex + 1}轮`, roundId,
+        });
+        appendPhoneMessage(store, conversation.id, {
+            sender: '朋友', content: `收到第${roundIndex + 1}轮`, roundId,
+        });
+    }
+    await savePhoneStore(store, chatContext);
+
+    const generation = [{ role: 'user', content: '回到线下剧情' }];
+    assert.equal(injectPhoneContext(generation, store), true);
+    assert.match(generation[0].content, /待回流第1轮/);
+    assert.match(generation[0].content, /收到第40轮/);
+    assert.equal(generation[0].extra.phone_message_ids.length, 80);
+    assert.equal(await consumePreparedPhoneContext(chatContext), true);
+    assert.equal(store.conversations[0].messages.filter(message => message.storyPending).length, 0);
+});
+
+test('an oversized pending phone session summarizes old rounds and keeps recent raw rounds', () => {
+    const store = createEmptyPhoneStore('oversized-pending');
+    const conversation = createPhoneConversation(store, { type: 'direct', name: '朋友' });
+    for (let roundIndex = 0; roundIndex < 45; roundIndex += 1) {
+        const roundId = createPhoneRoundId();
+        appendPhoneMessage(store, conversation.id, {
+            sender: '我', fromUser: true, content: `第${roundIndex + 1}轮-${'甲'.repeat(900)}`, roundId,
+        });
+        appendPhoneMessage(store, conversation.id, {
+            sender: '朋友', content: `第${roundIndex + 1}轮回复-${'乙'.repeat(900)}`, roundId,
+        });
+        setPhoneRoundSummary(store, conversation.id, roundId, `第${roundIndex + 1}轮双方明确聊过计划。`);
+    }
+
+    const message = formatPhoneContextMessage(store);
+    assert.ok(message);
+    assert.ok(message.content.length <= 50_000);
+    assert.match(message.content, /较早线上轮次概括/);
+    assert.match(message.content, /最近线上轮次原文/);
+    assert.match(message.content, /第45轮回复/);
+    assert.equal(message.extra.phone_message_ids.length, 90);
 });
