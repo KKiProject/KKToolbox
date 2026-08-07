@@ -369,10 +369,26 @@
     margin: 0;
 }
 
+.memory-augment-worldinfo-header-actions {
+    align-items: flex-end;
+    display: flex;
+    flex-direction: column;
+    gap: 0.08rem;
+    margin-left: auto;
+    min-width: 0;
+}
+
 .memory-augment-worldinfo-vector-status {
     color: var(--SmartThemeQuoteColor);
     font-size: 0.78em;
-    margin-left: auto;
+    text-align: right;
+}
+
+.memory-augment-worldinfo-expand-hint {
+    color: var(--SmartThemeQuoteColor);
+    font-size: 0.74em;
+    text-decoration: underline;
+    text-underline-offset: 0.12em;
 }
 
 .memory-augment-worldinfo-entry-list {
@@ -416,6 +432,27 @@
 .memory-augment-worldinfo-badge.is-keyword {
     border-color: color-mix(in srgb, #49a66f 70%, var(--SmartThemeBorderColor));
     color: color-mix(in srgb, #65c98b 80%, var(--SmartThemeBodyColor));
+}
+
+.memory-augment-worldinfo-badge.is-summary-managed {
+    border-color: color-mix(in srgb, #d59a39 70%, var(--SmartThemeBorderColor));
+    color: color-mix(in srgb, #f0ba56 82%, var(--SmartThemeBodyColor));
+}
+
+.memory-augment-worldinfo-book.is-summary-managed {
+    background: color-mix(in srgb, #d59a39 7%, transparent);
+}
+
+@media (max-width: 600px) {
+    .memory-augment-worldinfo-header-actions {
+        align-items: flex-start;
+        flex-basis: 100%;
+        margin-left: 1.65rem;
+    }
+
+    .memory-augment-worldinfo-vector-status {
+        text-align: left;
+    }
 }
 
 .memory-augment-memory-manager {
@@ -2416,6 +2453,28 @@
     min-height: 0;
     overflow: auto;
     overscroll-behavior: contain;
+    position: relative;
+}
+
+.memory-augment-map-canvas.is-editing {
+    box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--SmartThemeQuoteColor) 52%, transparent);
+}
+
+.memory-augment-map-canvas.is-editing::after {
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 88%, transparent);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 999px;
+    bottom: 0.4rem;
+    color: var(--SmartThemeQuoteColor);
+    content: '拖动地点调整位置';
+    font-size: 0.75em;
+    left: 50%;
+    padding: 0.15rem 0.5rem;
+    pointer-events: none;
+    position: absolute;
+    transform: translateX(-50%);
+    width: max-content;
+    z-index: 2;
 }
 
 #memory_augment_map_svg {
@@ -2606,10 +2665,13 @@
 
     .memory-augment-map-canvas {
         border-inline-end: 0;
+        overflow: hidden;
     }
 
     #memory_augment_map_svg {
-        min-width: 40rem;
+        max-width: 100%;
+        min-width: 0;
+        width: 100%;
     }
 
     .memory-augment-map-editor-grid,

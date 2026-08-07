@@ -481,18 +481,21 @@ function renderNodeDetails(state) {
     detail.append(separator, editor, connectionTitle, connectionEditor, edgeList);
 }
 
-function bindNodeDrag(group, node, state) {
+export function bindNodeDrag(group, node, state) {
     let suppressClick = false;
     group.addEventListener('pointerdown', (event) => {
-        if (!state.editing || event.button !== 0) return;
+        if (!state.editing || (event.pointerType !== 'touch' && event.button !== 0)) return;
         const svg = group.ownerSVGElement;
         const rectangle = svg.getBoundingClientRect();
+        if (rectangle.width <= 0 || rectangle.height <= 0) return;
+        const pointerId = event.pointerId;
         const startX = event.clientX;
         const startY = event.clientY;
         const originalX = node.x;
         const originalY = node.y;
         let moved = false;
         const move = (moveEvent) => {
+            if (moveEvent.pointerId !== pointerId) return;
             const deltaX = moveEvent.clientX - startX;
             const deltaY = moveEvent.clientY - startY;
             if (!moved && Math.abs(deltaX) + Math.abs(deltaY) <= 5) return;
@@ -504,16 +507,21 @@ function bindNodeDrag(group, node, state) {
             renderEdgesOnly(state);
             moveEvent.preventDefault();
         };
-        const finish = () => {
-            globalThis.removeEventListener('pointermove', move);
-            globalThis.removeEventListener('pointerup', finish);
+        const finish = (finishEvent) => {
+            if (finishEvent.pointerId !== pointerId) return;
+            group.removeEventListener('pointermove', move);
+            group.removeEventListener('pointerup', finish);
+            group.removeEventListener('pointercancel', finish);
+            if (group.hasPointerCapture?.(pointerId)) group.releasePointerCapture(pointerId);
             if (moved) {
                 markManualEdit(state);
                 renderMap(state);
             }
         };
-        globalThis.addEventListener('pointermove', move);
-        globalThis.addEventListener('pointerup', finish, { once: true });
+        group.setPointerCapture?.(pointerId);
+        group.addEventListener('pointermove', move);
+        group.addEventListener('pointerup', finish);
+        group.addEventListener('pointercancel', finish);
     });
     return () => {
         const blocked = suppressClick;
@@ -632,6 +640,11 @@ function renderMap(state) {
     }
     editorActions.hidden = !state.editing;
     editButton.textContent = state.editing ? '完成编辑' : '编辑地图';
+    const canvas = document.querySelector('.memory-augment-map-canvas');
+    if (canvas) {
+        canvas.classList.toggle('is-editing', state.editing);
+        canvas.title = state.editing ? '拖动地点可调整位置' : '点击地点查看说明';
+    }
     renderGraph(state);
     renderNodeDetails(state);
 }

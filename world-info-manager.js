@@ -2,6 +2,8 @@ import { getWorldInfoStatuses, syncWorldInfo } from './rag-client.js';
 import { normalizeBaseUrl } from './api-utils.js';
 
 const ENTRY_SEPARATOR = '::';
+const MANAGED_SUMMARY_BOOK_SUFFIX = '-自动总结';
+const MANAGED_SUMMARY_KEY_PREFIXES = ['[KKT摘要]', '[KKToolbox摘要]', '[KKT历史概括]'];
 let currentBooks = [];
 let syncQueue = Promise.resolve();
 
@@ -30,16 +32,23 @@ export function normalizeWorldInfoEntries(entries) {
         const uid = String(entry?.uid ?? '').trim();
         const content = String(entry?.content ?? '').trim();
         if (!world || !uid || !content || entry?.disable === true) continue;
-        const keys = Array.isArray(entry?.key) ? entry.key.filter(Boolean).join(', ') : '';
+        const rawKeys = Array.isArray(entry?.key) ? entry.key.filter(Boolean).map(String) : [];
+        const keys = rawKeys.join(', ');
         const name = String(entry?.comment ?? '').trim() || keys || `Entry ${uid}`;
         const key = getWorldInfoEntryKey(world, uid);
         unique.set(key, {
             key, world, bookId: world, uid, name, content,
             entryKey: keys || name,
             constant: entry?.constant === true,
+            managedBySummaryRag: rawKeys.some(key => MANAGED_SUMMARY_KEY_PREFIXES.some(prefix => key.startsWith(prefix))),
         });
     }
     return [...unique.values()];
+}
+
+export function isManagedSummaryWorldInfoBook(book) {
+    return String(book?.id ?? book?.name ?? '').endsWith(MANAGED_SUMMARY_BOOK_SUFFIX)
+        || (Array.isArray(book?.entries) && book.entries.some(entry => entry?.managedBySummaryRag === true));
 }
 
 function getBindingTypes(world, context, globals, personaBook, characterBooks) {
@@ -120,14 +129,33 @@ function saveSelections(settings, context, books, entries) {
 }
 
 function getSelectedEntriesForBook(settings, book) {
+    if (isManagedSummaryWorldInfoBook(book)) return [];
     const books = getSelectedBookIds(settings);
     const entries = getSelectedEntryKeys(settings);
     return books.has(book.id) ? book.entries : book.entries.filter(entry => entries.has(entry.key));
 }
 
 function hasConfiguredSelection(settings, bookId) {
+    const book = currentBooks.find(item => item.id === String(bookId));
+    if (book && isManagedSummaryWorldInfoBook(book)) return false;
     return getSelectedBookIds(settings).has(bookId)
         || [...getSelectedEntryKeys(settings)].some(key => key.startsWith(`${bookId}${ENTRY_SEPARATOR}`));
+}
+
+function removeManagedSummarySelections(settings, context) {
+    const managedBooks = currentBooks.filter(isManagedSummaryWorldInfoBook);
+    if (managedBooks.length === 0) return false;
+    const books = getSelectedBookIds(settings);
+    const entries = getSelectedEntryKeys(settings);
+    let changed = false;
+    for (const book of managedBooks) {
+        if (books.delete(book.id)) changed = true;
+        for (const entry of book.entries) {
+            if (entries.delete(entry.key)) changed = true;
+        }
+    }
+    if (changed) saveSelections(settings, context, books, entries);
+    return changed;
 }
 
 function contentHash(text) {
@@ -196,7 +224,8 @@ function updateSelectorStatus(settings) {
     if (!status) return;
     const selected = currentBooks.reduce((sum, book) => sum + getSelectedEntriesForBook(settings, book).length, 0);
     const total = currentBooks.reduce((sum, book) => sum + book.entries.length, 0);
-    status.textContent = `${currentBooks.length} 本 / ${total} 条，已选择 ${selected} 条`;
+    const managed = currentBooks.filter(isManagedSummaryWorldInfoBook).length;
+    status.textContent = `${currentBooks.length} 本 / ${total} 条，手动选择 ${selected} 条${managed > 0 ? `，${managed} 本由剧情 RAG 自动管理` : ''}`;
 }
 
 function makeBadge(text, className) {
@@ -222,15 +251,20 @@ export function renderWorldInfoSelector(settings, context) {
     }
 
     for (const book of currentBooks) {
+        const managedBySummaryRag = isManagedSummaryWorldInfoBook(book);
         const details = document.createElement('details');
-        details.className = 'memory-augment-worldinfo-book';
+        details.className = `memory-augment-worldinfo-book${managedBySummaryRag ? ' is-summary-managed' : ''}`;
         const summary = document.createElement('summary');
         summary.className = 'memory-augment-worldinfo-book-header';
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         const selectedCount = getSelectedEntriesForBook(settings, book).length;
-        checkbox.checked = selectedBooks.has(book.id);
-        checkbox.indeterminate = !checkbox.checked && selectedCount > 0;
+        checkbox.checked = managedBySummaryRag || selectedBooks.has(book.id);
+        checkbox.disabled = managedBySummaryRag;
+        checkbox.title = managedBySummaryRag
+            ? '自动总结已由剧情 RAG 管理，无需重复向量化'
+            : '勾选这里会选择整本；点击书名可以只选部分条目';
+        checkbox.indeterminate = !managedBySummaryRag && !checkbox.checked && selectedCount > 0;
         checkbox.addEventListener('click', event => event.stopPropagation());
         checkbox.addEventListener('change', () => {
             const books = getSelectedBookIds(settings);
@@ -248,12 +282,30 @@ export function renderWorldInfoSelector(settings, context) {
         const title = document.createElement('strong');
         title.textContent = book.name;
         const binding = makeBadge(book.bindingTypes.join('/'), 'is-binding');
+        const constantCount = book.entries.filter(entry => entry.constant).length;
+        const keywordCount = Math.max(0, book.entries.length - constantCount);
+        const recommendation = managedBySummaryRag
+            ? makeBadge('自动总结', 'is-summary-managed')
+            : constantCount > 0 && constantCount >= keywordCount
+                ? makeBadge(`常驻 ${constantCount} · 通常无需向量化`, 'is-constant')
+                : makeBadge(`关键词 ${keywordCount} · 适合语义检索`, 'is-keyword');
         const vectorStatus = document.createElement('span');
         vectorStatus.className = 'memory-augment-worldinfo-vector-status';
-        vectorStatus.textContent = book.vectorizedEntries > 0
+        vectorStatus.textContent = managedBySummaryRag
+            ? '已自动纳入剧情 RAG，无需再次向量化'
+            : book.vectorizedEntries > 0
             ? `已向量化 ${book.vectorizedEntries}/${book.entries.length} 条目`
             : '未向量化';
-        summary.append(checkbox, title, binding, vectorStatus);
+        const expandHint = document.createElement('span');
+        expandHint.className = 'memory-augment-worldinfo-expand-hint';
+        expandHint.textContent = '展开选择条目';
+        details.addEventListener('toggle', () => {
+            expandHint.textContent = details.open ? '收起条目' : '展开选择条目';
+        });
+        const headerActions = document.createElement('span');
+        headerActions.className = 'memory-augment-worldinfo-header-actions';
+        headerActions.append(vectorStatus, expandHint);
+        summary.append(checkbox, title, binding, recommendation, headerActions);
         details.append(summary);
 
         const entryList = document.createElement('div');
@@ -263,7 +315,8 @@ export function renderWorldInfoSelector(settings, context) {
             label.className = `checkbox_label memory-augment-worldinfo-entry ${entry.constant ? 'is-constant' : 'is-keyword'}`;
             const entryCheckbox = document.createElement('input');
             entryCheckbox.type = 'checkbox';
-            entryCheckbox.checked = selectedBooks.has(book.id) || selectedEntries.has(entry.key);
+            entryCheckbox.checked = managedBySummaryRag || selectedBooks.has(book.id) || selectedEntries.has(entry.key);
+            entryCheckbox.disabled = managedBySummaryRag;
             entryCheckbox.addEventListener('change', () => {
                 const books = getSelectedBookIds(settings);
                 const entries = getSelectedEntryKeys(settings);
@@ -277,8 +330,11 @@ export function renderWorldInfoSelector(settings, context) {
             const name = document.createElement('span');
             name.textContent = entry.name;
             name.title = entry.content.slice(0, 500);
-            label.append(entryCheckbox, name,
-                entry.constant ? makeBadge('常驻 · 语义触发意义不大', 'is-constant') : makeBadge('关键词', 'is-keyword'));
+            label.append(entryCheckbox, name, managedBySummaryRag
+                ? makeBadge('剧情 RAG 已接管', 'is-summary-managed')
+                : entry.constant
+                    ? makeBadge('常驻 · 语义触发意义不大', 'is-constant')
+                    : makeBadge('关键词', 'is-keyword'));
             entryList.append(label);
         }
         details.append(entryList);
@@ -292,6 +348,7 @@ async function refreshSelector(settings, context) {
     if (container) container.textContent = '正在读取当前所有激活世界书…';
     try {
         currentBooks = await loadAssociatedWorldInfoBooks(null, context);
+        removeManagedSummarySelections(settings, context);
         Object.defineProperty(settings.rag, 'activeWorldInfoBookIds', {
             value: currentBooks.map(book => book.id),
             writable: true,

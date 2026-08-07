@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="../style.css">
+    <style>
+        :root { --SmartThemeQuoteColor: #d8c9a6; --SmartThemeBlurTintColor: #1a1d22; --SmartThemeBorderColor: #777; --SmartThemeBodyColor: #eee; }
+        body { margin: 0; background: #111; }
+        #memory_augment_map_body { display: grid; height: 420px; width: 100%; }
+        .memory-augment-map-canvas { border: 1px solid #777; }
+    </style>
+</head>
+<body>
+    <div id="memory_augment_map_body">
+        <div class="memory-augment-map-canvas is-editing">
+            <svg id="memory_augment_map_svg" viewBox="0 0 1000 650" aria-label="地点关系图">
+                <g id="memory_augment_map_edges"></g>
+                <g id="memory_augment_map_nodes"></g>
+            </svg>
+        </div>
+        <div id="memory_augment_map_detail"></div>
+    </div>
+    <script type="module">
+        import { bindNodeDrag } from '../map-atlas.js';
+        const svg = document.querySelector('#memory_augment_map_svg');
+        const layer = document.querySelector('#memory_augment_map_nodes');
+        const nodes = [
+            { id: 'left', name: '左侧地点', x: 70, y: 120 },
+            { id: 'middle', name: '中央地点', x: 500, y: 325 },
+            { id: 'right', name: '右侧地点', x: 930, y: 530 },
+        ];
+        const page = { id: 'page', name: '测试地图', note: '', nodes, edges: [] };
+        const atlas = { rootPageId: 'page', pages: [page], manuallyEdited: false };
+        const state = {
+            atlas,
+            pageId: 'page',
+            selectedNodeId: '',
+            editing: true,
+            settings: { map: { atlases: {}, sourceEntryKeysByOwner: {} } },
+            context: { characterId: 0, characters: [{ avatar: 'test.png' }], saveSettingsDebounced() {} },
+        };
+        for (const node of nodes) {
+            const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+            group.setAttribute('class', 'memory-augment-map-node');
+            group.setAttribute('aria-label', node.name);
+            group.setAttribute('transform', `translate(${node.x} ${node.y})`);
+            const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+            rect.setAttribute('x', '-70'); rect.setAttribute('y', '-25'); rect.setAttribute('width', '140'); rect.setAttribute('height', '50'); rect.setAttribute('rx', '14');
+            const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+            text.setAttribute('x', '0'); text.setAttribute('y', '5'); text.setAttribute('text-anchor', 'middle'); text.textContent = node.name;
+            group.append(rect, text);
+            bindNodeDrag(group, node, state);
+            layer.append(group);
+        }
+        globalThis.mapHarness = { nodes, state };
+    </script>
+</body>
+</html>
