@@ -76,3 +76,23 @@ test('all KKToolbox menu buttons are globally protected from vertical Chinese te
     assert.match(rule, /word-break:\s*keep-all\s*!important/);
     assert.match(rule, /writing-mode:\s*horizontal-tb\s*!important/);
 });
+
+test('world-info quick selection controls stay in a horizontal row', async () => {
+    const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
+    const actions = css.match(/\.memory-augment-worldinfo-book-actions\s*\{([\s\S]*?)\}/)?.[1] ?? '';
+    const button = css.match(/\.memory-augment-worldinfo-book-actions \.menu_button\s*\{([\s\S]*?)\}/)?.[1] ?? '';
+    assert.match(actions, /display:\s*flex/);
+    assert.match(actions, /flex-direction:\s*row/);
+    assert.match(button, /white-space:\s*nowrap\s*!important/);
+    assert.match(button, /writing-mode:\s*horizontal-tb\s*!important/);
+});
+
+test('KKToolbox never falls back to native browser dialogs', async () => {
+    const sources = await Promise.all([
+        readFile(new URL('../phone-messages.js', import.meta.url), 'utf8'),
+        readFile(new URL('../map-atlas.js', import.meta.url), 'utf8'),
+    ]);
+    const combined = sources.join('\n');
+    assert.doesNotMatch(combined, /globalThis\.(?:confirm|alert|prompt)/);
+    assert.doesNotMatch(combined, /window\.(?:confirm|alert|prompt)/);
+});

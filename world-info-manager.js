@@ -258,6 +258,9 @@ function makeBadge(text, className) {
 export function renderWorldInfoSelector(settings, context) {
     const container = document.querySelector('#memory_augment_worldinfo_entries');
     if (!container) return;
+    const openBookIds = new Set([...container.querySelectorAll('details[open][data-book-id]')]
+        .map(details => String(details.dataset.bookId ?? ''))
+        .filter(Boolean));
     container.replaceChildren();
     const selectedBooks = getSelectedBookIds(settings);
     const selectedEntries = getSelectedEntryKeys(settings);
@@ -274,6 +277,8 @@ export function renderWorldInfoSelector(settings, context) {
         const managedBySummaryRag = isManagedSummaryWorldInfoBook(book);
         const details = document.createElement('details');
         details.className = `memory-augment-worldinfo-book${managedBySummaryRag ? ' is-summary-managed' : ''}`;
+        details.dataset.bookId = book.id;
+        details.open = openBookIds.has(book.id);
         const summary = document.createElement('summary');
         summary.className = 'memory-augment-worldinfo-book-header';
         const checkbox = document.createElement('input');
@@ -318,7 +323,7 @@ export function renderWorldInfoSelector(settings, context) {
             : '未向量化';
         const expandHint = document.createElement('span');
         expandHint.className = 'memory-augment-worldinfo-expand-hint';
-        expandHint.textContent = '展开选择条目';
+        expandHint.textContent = details.open ? '收起条目' : '展开选择条目';
         details.addEventListener('toggle', () => {
             expandHint.textContent = details.open ? '收起条目' : '展开选择条目';
         });
@@ -327,6 +332,47 @@ export function renderWorldInfoSelector(settings, context) {
         headerActions.append(vectorStatus, expandHint);
         summary.append(checkbox, title, binding, recommendation, headerActions);
         details.append(summary);
+
+        if (!managedBySummaryRag) {
+            const bookActions = document.createElement('div');
+            bookActions.className = 'memory-augment-worldinfo-book-actions';
+
+            const selectKeywords = document.createElement('button');
+            selectKeywords.type = 'button';
+            selectKeywords.className = 'menu_button';
+            selectKeywords.textContent = '只选绿灯';
+            selectKeywords.title = '只选择本书的关键词条目；其他世界书的选择保持不变';
+            selectKeywords.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                const books = getSelectedBookIds(settings);
+                const entries = getSelectedEntryKeys(settings);
+                books.delete(book.id);
+                book.entries.forEach(entry => entries.delete(entry.key));
+                book.entries.filter(entry => !entry.constant).forEach(entry => entries.add(entry.key));
+                saveSelections(settings, context, books, entries);
+                renderWorldInfoSelector(settings, context);
+            });
+
+            const clearBook = document.createElement('button');
+            clearBook.type = 'button';
+            clearBook.className = 'menu_button';
+            clearBook.textContent = '清空本书选择';
+            clearBook.title = '只清空本书，其他世界书的选择保持不变';
+            clearBook.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                const books = getSelectedBookIds(settings);
+                const entries = getSelectedEntryKeys(settings);
+                books.delete(book.id);
+                book.entries.forEach(entry => entries.delete(entry.key));
+                saveSelections(settings, context, books, entries);
+                renderWorldInfoSelector(settings, context);
+            });
+
+            bookActions.append(selectKeywords, clearBook);
+            details.append(bookActions);
+        }
 
         const entryList = document.createElement('div');
         entryList.className = 'memory-augment-worldinfo-entry-list';

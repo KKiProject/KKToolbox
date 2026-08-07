@@ -5,20 +5,29 @@ import {
     appendPhoneMessage,
     buildPhoneAiSnapshot,
     buildPhonePromptContext,
+    commitQueuedPhoneMessages,
     consumePreparedPhoneContext,
     createEmptyPhoneStore,
     createPhoneConversation,
     createPhoneRoundId,
     formatPhoneContextMessage,
+    formatPhoneMessageForAi,
+    forwardPhoneMessages,
+    getQueuedPhoneMessages,
     getRecentRoundMessages,
     loadPhoneStore,
     normalizePhoneStore,
     normalizePhoneIdentity,
     normalizePhoneProfile,
     recordPhoneMemoryEvents,
+    removePhoneConversation,
+    removeLatestPhoneReply,
+    removePhoneMessage,
+    renamePhoneConversation,
     savePhoneStore,
     setPhoneRoundSummary,
     splitGroupRedPacket,
+    updatePhoneMessage,
     injectPhoneContext,
 } from '../phone-store.js';
 import { installNativeFetch } from './native-fetch-fixture.mjs';
@@ -80,6 +89,163 @@ test('phone store keeps direct and group chats in one lightweight list', () => {
     assert.equal(store.conversations.length, 2);
     assert.equal(direct.messages[0].type, 'voice');
     assert.deepEqual(group.members, ['导演', '主演']);
+});
+
+test('phone conversations can be renamed and deleted with their online memories', () => {
+    const store = createEmptyPhoneStore('manage-conversations');
+    const direct = createPhoneConversation(store, { type: 'direct', name: '旧备注' });
+    const message = appendPhoneMessage(store, direct.id, { sender: '好友', content: '以后见。' });
+    recordPhoneMemoryEvents(store, direct.id, [{
+        type: 'commitment',
+        summary: '好友说以后见。',
+        sourceMessageIds: [message.id],
+        evidenceQuotes: ['以后见。'],
+        status: 'active',
+    }]);
+
+    assert.equal(renamePhoneConversation(store, direct.id, '新昵称备注').name, '新昵称备注');
+    assert.equal(removePhoneConversation(store, direct.id).id, direct.id);
+    assert.equal(store.conversations.length, 0);
+    assert.equal(store.onlineMemory.events.length, 0);
+});
+
+test('deleting one phone message clears stale round summaries and linked online memories only', () => {
+    const store = createEmptyPhoneStore('delete-message');
+    const direct = createPhoneConversation(store, { type: 'direct', name: '好友' });
+    const roundId = createPhoneRoundId();
+    const first = appendPhoneMessage(store, direct.id, { sender: '我', fromUser: true, content: '明天见。', roundId });
+    const second = appendPhoneMessage(store, direct.id, { sender: '好友', content: '明天下午三点。', roundId });
+    setPhoneRoundSummary(store, direct.id, roundId, '双方约定明天下午三点见面。');
+    recordPhoneMemoryEvents(store, direct.id, [{
+        type: 'commitment',
+        summary: '约定明天下午三点见面。',
+        sourceMessageIds: [second.id],
+        evidenceQuotes: ['明天下午三点。'],
+        status: 'active',
+    }]);
+
+    const result = removePhoneMessage(store, direct.id, second.id);
+    assert.equal(result.message.id, second.id);
+    assert.equal(result.removedMemoryEvents, 1);
+    assert.deepEqual(direct.messages.map(message => message.id), [first.id]);
+    assert.equal(direct.rounds[0].summary, '');
+    assert.equal(store.onlineMemory.events.length, 0);
+    removePhoneMessage(store, direct.id, first.id);
+    assert.equal(direct.rounds.length, 0);
+});
+
+test('editing a phone message reopens it for the story and invalidates old derived facts', () => {
+    const store = createEmptyPhoneStore('edit-message');
+    const direct = createPhoneConversation(store, { type: 'direct', name: '好友' });
+    const message = appendPhoneMessage(store, direct.id, { sender: '好友', content: '明天见。', storyPending: false });
+    setPhoneRoundSummary(store, direct.id, message.roundId, '约定明天见面。');
+    recordPhoneMemoryEvents(store, direct.id, [{
+        type: 'commitment', summary: '约定明天见面。', sourceMessageIds: [message.id],
+        evidenceQuotes: ['明天见。'], status: 'active',
+    }]);
+
+    const result = updatePhoneMessage(store, direct.id, message.id, { content: '后天见。' });
+    assert.equal(result.message.content, '后天见。');
+    assert.equal(result.message.storyPending, true);
+    assert.ok(result.message.editedAt > 0);
+    assert.equal(result.removedMemoryEvents, 1);
+    assert.equal(direct.rounds[0].summary, '');
+});
+
+test('multiple phone messages can be forwarded together with their source labels', () => {
+    const store = createEmptyPhoneStore('forward-messages');
+    store.profile.nickname = '玩家';
+    const source = createPhoneConversation(store, { type: 'direct', name: '经纪人' });
+    const target = createPhoneConversation(store, { type: 'group', name: '剧组群', members: ['导演'] });
+    const first = appendPhoneMessage(store, source.id, { sender: '经纪人', content: '通告改到下午。' });
+    const second = appendPhoneMessage(store, source.id, { sender: '玩家', fromUser: true, content: '收到。' });
+
+    const forwarded = forwardPhoneMessages(store, source.id, target.id, [first.id, second.id], '玩家');
+    assert.equal(forwarded.length, 2);
+    assert.equal(forwarded[0].roundId, forwarded[1].roundId);
+    assert.equal(forwarded[0].forwardedFrom.conversationName, '经纪人');
+    assert.equal(forwarded[0].fromUser, true);
+    assert.equal(forwarded[0].queued, true);
+    assert.equal(forwarded[0].storyPending, false);
+    assert.match(formatPhoneMessageForAi(forwarded[0]), /转发自经纪人/);
+});
+
+test('fragmented player bubbles stay queued until the whole batch is sent', () => {
+    const store = createEmptyPhoneStore('fragmented-phone-chat');
+    const direct = createPhoneConversation(store, { type: 'direct', name: '好友' });
+    const roundId = createPhoneRoundId();
+    const first = appendPhoneMessage(store, direct.id, {
+        sender: '我', fromUser: true, content: '在吗？', roundId, queued: true,
+    });
+    const second = appendPhoneMessage(store, direct.id, {
+        sender: '我', fromUser: true, content: '我有件事想跟你说。', roundId, queued: true,
+    });
+
+    assert.equal(first.storyPending, false);
+    assert.equal(second.storyPending, false);
+    assert.equal(getQueuedPhoneMessages(store, direct.id).length, 2);
+    assert.deepEqual(buildPhoneAiSnapshot(store, direct.id).messages, []);
+    assert.doesNotMatch(buildPhonePromptContext(store), /在吗/);
+
+    const committed = commitQueuedPhoneMessages(store, direct.id);
+    assert.equal(committed.roundId, roundId);
+    assert.equal(committed.messages.length, 2);
+    assert.equal(first.queued, false);
+    assert.equal(second.queued, false);
+    assert.equal(first.storyPending, true);
+    assert.equal(second.storyPending, true);
+    assert.equal(buildPhoneAiSnapshot(store, direct.id).messages.length, 2);
+    assert.match(buildPhonePromptContext(store), /我有件事想跟你说/);
+});
+
+test('editing an unsent phone bubble keeps it out of story context', () => {
+    const store = createEmptyPhoneStore('edit-queued-message');
+    const direct = createPhoneConversation(store, { type: 'direct', name: '好友' });
+    const message = appendPhoneMessage(store, direct.id, {
+        sender: '我', fromUser: true, content: '错字', queued: true,
+    });
+    updatePhoneMessage(store, direct.id, message.id, { content: '改好的句子' });
+    assert.equal(message.queued, true);
+    assert.equal(message.storyPending, false);
+    assert.doesNotMatch(buildPhonePromptContext(store), /改好的句子/);
+});
+
+test('regenerating the latest phone reply removes it instead of keeping swipe alternatives', () => {
+    const store = createEmptyPhoneStore('regenerate-phone-reply');
+    const direct = createPhoneConversation(store, { type: 'direct', name: '好友' });
+    const roundId = createPhoneRoundId();
+    const player = appendPhoneMessage(store, direct.id, {
+        sender: '我', fromUser: true, content: '今天见吗？', roundId,
+    });
+    const firstReply = appendPhoneMessage(store, direct.id, {
+        sender: '好友', content: '不见。', roundId,
+    });
+    const secondReply = appendPhoneMessage(store, direct.id, {
+        sender: '好友', content: '我还有事。', roundId,
+    });
+    setPhoneRoundSummary(store, direct.id, roundId, '好友拒绝了见面。');
+    recordPhoneMemoryEvents(store, direct.id, [{
+        type: 'explicit_action', summary: '好友说今天不见。',
+        sourceMessageIds: [firstReply.id], evidenceQuotes: ['不见。'],
+    }]);
+
+    const removed = removeLatestPhoneReply(store, direct.id);
+    assert.equal(removed.roundId, roundId);
+    assert.deepEqual(removed.messages.map(message => message.id), [firstReply.id, secondReply.id]);
+    assert.deepEqual(direct.messages.map(message => message.id), [player.id]);
+    assert.equal(direct.rounds[0].summary, '');
+    assert.equal(store.onlineMemory.events.length, 0);
+});
+
+test('quoted phone messages survive normalization and are visible to the AI', () => {
+    const store = createEmptyPhoneStore('quote-message');
+    const direct = createPhoneConversation(store, { type: 'direct', name: '好友' });
+    const quoted = appendPhoneMessage(store, direct.id, {
+        sender: '玩家', fromUser: true, content: '那就这么定。',
+        quote: { messageId: 'old', sender: '好友', content: '下午三点见。' },
+    });
+    assert.equal(quoted.quote.sender, '好友');
+    assert.match(formatPhoneMessageForAi(quoted), /引用好友：下午三点见/);
 });
 
 test('group red packet allocation is stable, random-looking, and exact', () => {

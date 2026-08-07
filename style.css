@@ -398,6 +398,24 @@
     padding: 0.4rem;
 }
 
+.memory-augment-worldinfo-book-actions {
+    align-items: center;
+    border-top: 1px solid var(--SmartThemeBorderColor);
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    padding: 0.4rem;
+}
+
+.memory-augment-worldinfo-book-actions .menu_button {
+    display: inline-flex !important;
+    flex: 0 0 auto !important;
+    justify-content: center;
+    white-space: nowrap !important;
+    writing-mode: horizontal-tb !important;
+}
+
 .memory-augment-worldinfo-entry {
     align-items: center;
     display: flex;
@@ -1337,6 +1355,9 @@
 .memory-augment-phone-conversation-actions > button,
 .memory-augment-phone-composer > button,
 .memory-augment-phone-message-tools > button,
+.memory-augment-phone-selection-actions > button,
+.memory-augment-phone-conversation-header.is-selecting > button,
+.memory-augment-phone-quote-preview > button,
 .memory-augment-phone-sheet button,
 .memory-augment-phone-sticker-heading > button {
     align-items: center;
@@ -1496,6 +1517,29 @@
     opacity: 0.5;
 }
 
+.memory-augment-phone-conversation-header.is-selecting {
+    gap: 0.45rem;
+}
+
+.memory-augment-phone-conversation-header.is-selecting > strong {
+    flex: 1 1 auto;
+    text-align: center;
+}
+
+.memory-augment-phone-conversation-header.is-selecting > button {
+    background: rgb(92 86 116 / 11%);
+    border-radius: 0.55rem;
+    color: inherit;
+    min-height: 2rem;
+    padding: 0 0.6rem;
+}
+
+.memory-augment-phone-conversation-header.is-selecting > .memory-augment-phone-selection-close {
+    border-radius: 50%;
+    padding: 0;
+    width: 2rem;
+}
+
 .memory-augment-phone-message-list {
     display: flex;
     flex-direction: column;
@@ -1511,6 +1555,9 @@
     display: flex;
     gap: 0.38rem;
     max-width: 88%;
+    position: relative;
+    touch-action: pan-y;
+    user-select: none;
 }
 
 .memory-augment-phone-message-row.is-user {
@@ -1520,6 +1567,34 @@
 
 .memory-augment-phone-message-row.is-contact {
     align-self: flex-start;
+}
+
+.memory-augment-phone-message-row.is-selected .memory-augment-phone-message-bubble {
+    box-shadow: 0 0 0 2px #756b92, 0 0.2rem 0.5rem rgb(63 57 82 / 7%);
+}
+
+.memory-augment-phone-message-row.is-selected::after {
+    align-items: center;
+    background: #756b92;
+    border-radius: 50%;
+    color: #fff;
+    content: '✓';
+    display: flex;
+    font-size: 0.55rem;
+    height: 1rem;
+    justify-content: center;
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 1rem;
+}
+
+.memory-augment-phone-message-row.is-user.is-selected::after {
+    left: -1.3rem;
+}
+
+.memory-augment-phone-message-row.is-contact.is-selected::after {
+    right: -1.3rem;
 }
 
 .memory-augment-phone-message-bubble-wrap {
@@ -1544,6 +1619,30 @@
     line-height: 1.45;
     overflow-wrap: anywhere;
     padding: 0.48rem 0.58rem;
+}
+
+.memory-augment-phone-message-reference {
+    border-left: 0.16rem solid rgb(105 97 127 / 48%);
+    font-size: 0.58rem;
+    line-height: 1.4;
+    margin-bottom: 0.35rem;
+    max-width: 12rem;
+    opacity: 0.66;
+    overflow: hidden;
+    padding-left: 0.35rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.memory-augment-phone-message-reference.is-forwarded {
+    font-weight: 600;
+}
+
+.memory-augment-phone-message-edited {
+    font-size: 0.5rem;
+    margin-top: 0.2rem;
+    opacity: 0.42;
+    text-align: right;
 }
 
 .memory-augment-phone-message-row.is-user .memory-augment-phone-message-bubble {
@@ -1700,7 +1799,7 @@
     border-top: 1px solid rgb(102 97 121 / 12%);
     display: grid;
     gap: 0.35rem;
-    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
     padding: 0.42rem;
 }
 
@@ -1727,10 +1826,67 @@
     padding: 0 0.58rem;
 }
 
-.memory-augment-phone-composer > button:first-child {
+.memory-augment-phone-composer > button[aria-label="更多消息类型"] {
     border-radius: 50%;
     padding: 0;
     width: 2rem;
+}
+
+.memory-augment-phone-quote-preview {
+    align-items: center;
+    background: rgb(105 97 127 / 9%);
+    border-left: 0.18rem solid #756b92;
+    border-radius: 0.45rem;
+    display: flex;
+    font-size: 0.58rem;
+    gap: 0.35rem;
+    grid-column: 1 / -1;
+    justify-content: space-between;
+    min-width: 0;
+    padding: 0.32rem 0.42rem;
+}
+
+.memory-augment-phone-quote-preview > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.memory-augment-phone-quote-preview > button {
+    background: transparent;
+    color: inherit;
+    flex: 0 0 auto;
+    height: 1.4rem;
+    padding: 0;
+    width: 1.4rem;
+}
+
+.memory-augment-phone-selection-actions {
+    background: rgb(243 242 247 / 96%);
+    border-top: 1px solid rgb(102 97 121 / 12%);
+    display: grid;
+    gap: 0.15rem;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    padding: 0.35rem;
+}
+
+.memory-augment-phone-selection-actions > button {
+    background: transparent;
+    border-radius: 0.55rem;
+    color: inherit;
+    flex-direction: column;
+    font-size: 0.56rem;
+    gap: 0.16rem;
+    min-width: 0;
+    padding: 0.28rem 0.1rem;
+}
+
+.memory-augment-phone-selection-actions > button:disabled {
+    opacity: 0.32;
+}
+
+.memory-augment-phone-selection-actions > button:last-child {
+    color: #b53c45;
 }
 
 .memory-augment-phone-sheet-overlay {
@@ -1759,6 +1915,13 @@
     font-size: 0.9rem;
     margin: 0 0 0.7rem;
     text-align: center;
+}
+
+.memory-augment-phone-confirm-message {
+    font-size: 0.7rem;
+    line-height: 1.65;
+    margin: 0.1rem 0 0.85rem;
+    text-align: left;
 }
 
 .memory-augment-phone-memory-sheet {
@@ -1906,6 +2069,11 @@
 .memory-augment-phone-sheet-actions > button:last-child,
 .memory-augment-phone-sticker-heading > button {
     background: #69617f;
+    color: #fff;
+}
+
+.memory-augment-phone-sheet-actions > button.is-danger {
+    background: #b74d5c;
     color: #fff;
 }
 

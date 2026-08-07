@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Phone message management harness</title>
+    <link rel="stylesheet" href="../style.css">
+    <style>
+        body { margin: 0; background: #d8d6df; color: #29243a; font-family: sans-serif; }
+        #phone-test-root { background: #f6f4f8; height: 640px; margin: 0 auto; max-width: 390px; overflow: hidden; }
+    </style>
+</head>
+<body>
+    <main id="phone-test-root"></main>
+    <script type="module">
+        import { createPhoneMessagesController } from '../phone-messages.js';
+
+        const now = Date.now();
+        const seed = {
+            version: 3,
+            chatId: 'phone-management-harness',
+            profile: { nickname: '玩家', avatar: '' },
+            conversations: [{
+                id: 'direct-demo',
+                type: 'direct',
+                name: '死狐狸（备注）',
+                avatar: '',
+                identity: { mode: 'custom', label: '沈越', persona: '经纪人沈越。' },
+                members: [],
+                memberIdentities: {},
+                createdAt: now,
+                messages: [
+                    { id: 'm1', roundId: 'r1', sender: '玩家', fromUser: true, type: 'text', content: '明天下午三点见。', timestamp: now, storyPending: true },
+                    { id: 'm2', roundId: 'r1', sender: '死狐狸（备注）', fromUser: false, type: 'text', content: '好，我会带合同。', timestamp: now + 1, storyPending: true },
+                ],
+                rounds: [{ id: 'r1', summary: '双方约定见面。', createdAt: now, updatedAt: now }],
+            }, {
+                id: 'group-demo',
+                type: 'group',
+                name: '剧组群',
+                avatar: '',
+                identity: { mode: 'unbound' },
+                members: ['导演', '主演'],
+                memberIdentities: {},
+                createdAt: now - 1,
+                messages: [],
+                rounds: [],
+            }],
+            onlineMemory: { events: [] },
+            updatedAt: now,
+        };
+        let saved = structuredClone(seed);
+        globalThis.fetch = async (url, options = {}) => {
+            const method = String(options.method ?? 'GET').toUpperCase();
+            if (method === 'GET' && String(url).startsWith('/user/files/')) {
+                return new Response(JSON.stringify(saved), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            }
+            if (String(url) === '/api/files/upload') {
+                const body = JSON.parse(options.body);
+                saved = JSON.parse(decodeURIComponent(escape(atob(body.data))));
+                return new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } });
+            }
+            return new Response('{}', { status: 404, headers: { 'Content-Type': 'application/json' } });
+        };
+        const context = {
+            getCurrentChatId: () => 'phone-management-harness',
+            getRequestHeaders: () => ({ 'Content-Type': 'application/json' }),
+            saveSettingsDebounced: () => undefined,
+        };
+        globalThis.SillyTavern = { getContext: () => context };
+        globalThis.phoneGenerateCalls = 0;
+        const controller = createPhoneMessagesController({
+            document,
+            settings: {
+                phone: { profile: seed.profile, stickers: [] },
+                apis: { barrage: { url: 'https://example.invalid/v1', apiKey: 'test-only', model: 'test-model' } },
+            },
+            contextGetter: () => context,
+            prepareStoryContext: async () => '',
+            generatePhone: async () => {
+                globalThis.phoneGenerateCalls += 1;
+                return {
+                    content: JSON.stringify({
+                        messages: [{ type: 'text', sender: '死狐狸（备注）', content: '两条我都看到了。' }],
+                        roundSummary: '玩家连发两条消息，对方做出回复。',
+                        memoryEvents: [],
+                    }),
+                };
+            },
+        });
+        await controller.open(document.querySelector('#phone-test-root'));
+        document.querySelector('.memory-augment-phone-conversation-row')?.click();
+    </script>
+</body>
+</html>

@@ -93,6 +93,19 @@ function normalizeClaim(value) {
     };
 }
 
+function normalizeMessageReference(value = {}) {
+    const content = cleanText(value?.content, 1000);
+    const sender = cleanText(value?.sender, 80);
+    const conversationName = cleanText(value?.conversationName, 120);
+    if (!content && !sender && !conversationName) return null;
+    return {
+        messageId: cleanText(value?.messageId ?? value?.id, 120),
+        sender,
+        content,
+        conversationName,
+    };
+}
+
 export function normalizePhoneIdentity(value = {}) {
     const mode = PHONE_IDENTITY_MODES.includes(value?.mode) ? value.mode : 'unbound';
     return {
@@ -119,7 +132,11 @@ export function normalizePhoneMessage(value) {
         count: Math.max(0, Math.trunc(Number(value?.count) || 0)),
         duration: Math.max(1, Math.min(60, Math.trunc(Number(value?.duration) || 1))),
         claims: Array.isArray(value?.claims) ? value.claims.map(normalizeClaim).filter(item => item.name) : [],
+        quote: normalizeMessageReference(value?.quote),
+        forwardedFrom: normalizeMessageReference(value?.forwardedFrom),
+        editedAt: Number.isFinite(Number(value?.editedAt)) ? Number(value.editedAt) : 0,
         timestamp: Number.isFinite(Number(value?.timestamp)) ? Number(value.timestamp) : Date.now(),
+        queued: value?.queued === true,
         storyPending: value?.storyPending === true,
     };
 }
@@ -313,6 +330,27 @@ export function createPhoneConversation(store, input = {}) {
     return conversation;
 }
 
+export function renamePhoneConversation(store, conversationId, name) {
+    const conversation = store?.conversations?.find(item => item.id === conversationId);
+    const nextName = cleanText(name, 120);
+    if (!conversation || !nextName) return null;
+    conversation.name = nextName;
+    return conversation;
+}
+
+export function removePhoneConversation(store, conversationId) {
+    const conversations = store?.conversations;
+    if (!Array.isArray(conversations)) return null;
+    const index = conversations.findIndex(item => item.id === conversationId);
+    if (index < 0) return null;
+    const [conversation] = conversations.splice(index, 1);
+    if (Array.isArray(store?.onlineMemory?.events)) {
+        store.onlineMemory.events = store.onlineMemory.events
+            .filter(event => event.conversationId !== conversationId);
+    }
+    return conversation;
+}
+
 export function appendPhoneMessage(store, conversationId, input = {}) {
     const conversation = store.conversations.find(item => item.id === conversationId);
     if (!conversation) throw new Error('没有找到这个联系人或群聊。');
@@ -321,7 +359,8 @@ export function appendPhoneMessage(store, conversationId, input = {}) {
         id: makeId('msg'),
         roundId: cleanText(input?.roundId, 120) || createPhoneRoundId(),
         timestamp: Date.now(),
-        storyPending: input?.storyPending !== false,
+        queued: input?.queued === true,
+        storyPending: input?.queued === true ? false : input?.storyPending !== false,
     });
     conversation.messages.push(message);
     conversation.rounds ??= [];
@@ -334,6 +373,143 @@ export function appendPhoneMessage(store, conversationId, input = {}) {
         });
     }
     return message;
+}
+
+function invalidatePhoneRound(conversation, roundId) {
+    const round = conversation.rounds?.find(item => item.id === roundId);
+    if (!round) return;
+    round.summary = '';
+    round.updatedAt = Date.now();
+}
+
+function removeMemoryEventsBackedByMessage(store, conversationId, message) {
+    if (!Array.isArray(store?.onlineMemory?.events)) return 0;
+    const before = store.onlineMemory.events.length;
+    store.onlineMemory.events = store.onlineMemory.events.filter(event => {
+        if (event.conversationId !== conversationId) return true;
+        const sourceIds = Array.isArray(event.sourceMessageIds) ? event.sourceMessageIds : [];
+        const explicitlyOnlyFromMessage = sourceIds.length === 1 && sourceIds[0] === message.id;
+        const quotesBackedByMessage = (event.evidenceQuotes ?? [])
+            .some(quote => quoteExistsInMessages(quote, [message]));
+        return !explicitlyOnlyFromMessage && !quotesBackedByMessage;
+    });
+    return before - store.onlineMemory.events.length;
+}
+
+export function updatePhoneMessage(store, conversationId, messageId, changes = {}) {
+    const conversation = store?.conversations?.find(item => item.id === conversationId);
+    const message = conversation?.messages?.find(item => item.id === messageId);
+    if (!conversation || !message) return null;
+    const removedMemoryEvents = removeMemoryEventsBackedByMessage(store, conversationId, message);
+    if (changes.content !== undefined) message.content = cleanText(changes.content, 4000);
+    if (changes.stickerName !== undefined) message.stickerName = cleanText(changes.stickerName, 120);
+    message.editedAt = Date.now();
+    message.storyPending = message.queued !== true;
+    invalidatePhoneRound(conversation, message.roundId);
+    return { message, removedMemoryEvents };
+}
+
+export function forwardPhoneMessages(store, sourceConversationId, targetConversationId, messageIds, sender = '我') {
+    const source = store?.conversations?.find(item => item.id === sourceConversationId);
+    const target = store?.conversations?.find(item => item.id === targetConversationId);
+    const selected = new Set((Array.isArray(messageIds) ? messageIds : []).map(String));
+    if (!source || !target || selected.size === 0) return [];
+    const roundId = createPhoneRoundId();
+    return source.messages
+        .filter(message => selected.has(message.id))
+        .map(message => appendPhoneMessage(store, target.id, {
+            ...message,
+            roundId,
+            sender: cleanText(sender, 80) || '我',
+            fromUser: true,
+            forwardedFrom: {
+                messageId: message.id,
+                sender: message.sender,
+                content: formatPhoneMessageForAi(message),
+                conversationName: source.name,
+            },
+            editedAt: 0,
+            queued: true,
+            storyPending: false,
+        }));
+}
+
+export function getQueuedPhoneMessages(store, conversationId) {
+    const conversation = store?.conversations?.find(item => item.id === conversationId);
+    return conversation?.messages?.filter(message => message.queued === true) ?? [];
+}
+
+export function commitQueuedPhoneMessages(store, conversationId) {
+    const conversation = store?.conversations?.find(item => item.id === conversationId);
+    if (!conversation) return null;
+    const messages = conversation.messages.filter(message => message.queued === true);
+    if (messages.length === 0) return null;
+    const roundId = messages[0].roundId || createPhoneRoundId();
+    const abandonedRoundIds = new Set(messages.map(message => message.roundId).filter(id => id && id !== roundId));
+    for (const message of messages) {
+        message.roundId = roundId;
+        message.queued = false;
+        message.storyPending = true;
+    }
+    conversation.rounds = (conversation.rounds ?? []).filter(round => (
+        !abandonedRoundIds.has(round.id)
+        || conversation.messages.some(message => message.roundId === round.id)
+    ));
+    if (!conversation.rounds.some(round => round.id === roundId)) {
+        conversation.rounds.push({
+            id: roundId,
+            summary: '',
+            createdAt: messages[0].timestamp,
+            updatedAt: Date.now(),
+        });
+    }
+    return { roundId, messages };
+}
+
+export function removeLatestPhoneReply(store, conversationId) {
+    const conversation = store?.conversations?.find(item => item.id === conversationId);
+    if (!conversation) return null;
+    const latestReply = [...conversation.messages]
+        .reverse()
+        .find(message => message.fromUser !== true && message.queued !== true);
+    if (!latestReply) return null;
+    const removed = conversation.messages.filter(message => (
+        message.roundId === latestReply.roundId
+        && message.fromUser !== true
+        && message.queued !== true
+    ));
+    const removedIds = new Set(removed.map(message => message.id));
+    conversation.messages = conversation.messages.filter(message => !removedIds.has(message.id));
+    invalidatePhoneRound(conversation, latestReply.roundId);
+    const before = store?.onlineMemory?.events?.length ?? 0;
+    if (Array.isArray(store?.onlineMemory?.events)) {
+        store.onlineMemory.events = store.onlineMemory.events.filter(event => {
+            if (event.conversationId !== conversationId) return true;
+            if ((event.sourceMessageIds ?? []).some(id => removedIds.has(id))) return false;
+            return !(event.evidenceQuotes ?? []).some(quote => quoteExistsInMessages(quote, removed));
+        });
+    }
+    return {
+        roundId: latestReply.roundId,
+        messages: removed,
+        removedMemoryEvents: before - (store?.onlineMemory?.events?.length ?? 0),
+    };
+}
+
+export function removePhoneMessage(store, conversationId, messageId) {
+    const conversation = store?.conversations?.find(item => item.id === conversationId);
+    if (!conversation) return null;
+    const index = conversation.messages.findIndex(message => message.id === messageId);
+    if (index < 0) return null;
+    const [message] = conversation.messages.splice(index, 1);
+    const roundStillExists = conversation.messages.some(item => item.roundId === message.roundId);
+    if (roundStillExists) {
+        invalidatePhoneRound(conversation, message.roundId);
+    } else {
+        conversation.rounds = (conversation.rounds ?? []).filter(round => round.id !== message.roundId);
+    }
+    const removedMemoryEvents = removeMemoryEventsBackedByMessage(store, conversationId, message);
+    return { message, removedMemoryEvents };
 }
 
 export function setPhoneRoundSummary(store, conversationId, roundId, summary) {
@@ -612,16 +788,26 @@ export function formatPhoneMessageForAi(message) {
         : ['redpacket', 'group_redpacket'].includes(message.type)
             ? `${message.amount}元 ${message.content}`.trim()
             : message.content;
-    return `${message.sender} [${typeLabels[message.type] ?? '文字'}]: ${details}`;
+    const references = [
+        message.forwardedFrom
+            ? `【转发自${message.forwardedFrom.conversationName || '其他会话'} · ${message.forwardedFrom.sender || '未知'}】`
+            : '',
+        message.quote
+            ? `【引用${message.quote.sender || '未知'}：${message.quote.content || '消息'}】`
+            : '',
+    ].filter(Boolean).join('');
+    return `${references}${message.sender} [${typeLabels[message.type] ?? '文字'}]: ${details}`;
 }
 
 export function buildPhoneAiSnapshot(store, conversationId, stickers = [], limit = null) {
     const conversation = store.conversations.find(item => item.id === conversationId);
     if (!conversation) return null;
     const hasRoundLimit = Number.isFinite(Number(limit)) && Number(limit) > 0;
+    const deliveredMessages = conversation.messages.filter(message => message.queued !== true);
+    const deliveredConversation = { ...conversation, messages: deliveredMessages };
     const recentMessages = hasRoundLimit
-        ? getRecentRoundMessages(conversation, limit)
-        : [...conversation.messages];
+        ? getRecentRoundMessages(deliveredConversation, limit)
+        : deliveredMessages;
     const recentRoundIds = new Set(recentMessages.map(message => message.roundId));
     const olderRoundSummaries = (conversation.rounds ?? [])
         .filter(round => !recentRoundIds.has(round.id) && cleanText(round.summary, 1200))
@@ -663,7 +849,9 @@ export function buildPhoneAiSnapshot(store, conversationId, stickers = [], limit
 
 function getPhoneContextSelection(store, limit = 12, recalledEvents = []) {
     const allMessages = store.conversations
-        .flatMap(conversation => conversation.messages.map(message => ({ conversation, message })))
+        .flatMap(conversation => conversation.messages
+            .filter(message => message.queued !== true)
+            .map(message => ({ conversation, message })))
         .sort((left, right) => left.message.timestamp - right.message.timestamp);
     const pendingMessages = allMessages.filter(item => item.message.storyPending === true);
     const pendingIds = new Set(pendingMessages.map(item => item.message.id));

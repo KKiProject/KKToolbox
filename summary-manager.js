@@ -452,6 +452,9 @@ function limitText(value, maximum) {
 }
 
 const COMPLETE_SENTENCE_END = /[。！？…!?；;.!」』）)】]$/u;
+const SUMMARY_EVENT_LIMIT = 5;
+const SUMMARY_OVERVIEW_LIMIT = 150;
+const INCOMPLETE_ELLIPSIS_END = /(?:…|\.\.\.)[」』）)】]?$/u;
 const REFUSAL_OR_DRAFT_PATTERN = /(?:抱歉|对不起|无法|不能|不便).{0,30}(?:总结|概括|处理|协助|提供)|(?:内容|题材).{0,20}(?:敏感|不当|违规)|作为(?:一个)?AI|\b(?:drafting|analyzing|analysis|we need|i cannot|i can't|sorry)\b/i;
 
 export function isUnusableSummaryOutput(output) {
@@ -462,8 +465,8 @@ export function isUnusableSummaryOutput(output) {
 function normalizeOverview(value) {
     const text = String(value ?? '').replace(/\s+/g, ' ').trim();
     if (!text) return '';
-    const characters = Array.from(text);
-    if (characters.length > 150) return `${characters.slice(0, 149).join('')}…`;
+    if (Array.from(text).length > SUMMARY_OVERVIEW_LIMIT) return '';
+    if (INCOMPLETE_ELLIPSIS_END.test(text)) return '';
     return COMPLETE_SENTENCE_END.test(text) ? text : '';
 }
 
@@ -477,7 +480,8 @@ export function parseSummaryEvents(output) {
     const text = String(output ?? '').trim();
     if (isUnusableSummaryOutput(text)) return [];
     const headers = [...text.matchAll(/\[事件\s*\d+\]/g)];
-    const blocks = headers.slice(0, 8).map((header, index) => {
+    if (headers.length > SUMMARY_EVENT_LIMIT) return [];
+    const blocks = headers.map((header, index) => {
         const start = header.index + header[0].length;
         const end = headers[index + 1]?.index ?? text.length;
         return text.slice(start, end).trim();
@@ -499,9 +503,9 @@ export function parseSummaryEvents(output) {
             location: limitText(location, 100) || '未明确',
             overview: normalizedOverview,
         };
-    }).filter(Boolean);
+    });
 
-    if (events.length > 0) {
+    if (events.length > 0 && events.every(Boolean)) {
         return events;
     }
     if (headers.length > 0 || /(?:重要度|事件概述|涉及角色|地点|时间)\s*[：:]/.test(text)) {
@@ -537,15 +541,20 @@ function guardHistoricalSummaryTimes(content) {
 export function formatSummaryContent(events) {
     return [...events]
         .sort((left, right) => right.importance - left.importance)
-        .slice(0, 8)
+        .slice(0, SUMMARY_EVENT_LIMIT)
         .map(formatEventContent)
         .join('\n\n');
 }
 
 export function isMalformedSummaryContent(content) {
     const text = String(content ?? '').trim();
+    const hasLegacyForcedTruncation = text.split(/\r?\n/).some((line) => {
+        const value = line.trim();
+        return Array.from(value).length === SUMMARY_OVERVIEW_LIMIT && INCOMPLETE_ELLIPSIS_END.test(value);
+    });
     return isUnusableSummaryOutput(text)
         || /\[事件\s*\d+\]|(?:重要度|事件概述)\s*[：:]/.test(text)
+        || hasLegacyForcedTruncation
         || !COMPLETE_SENTENCE_END.test(text);
 }
 
@@ -608,11 +617,11 @@ function formatSummaryTimeline(timelineContext) {
 
 export function buildSummaryPrompt(messages, start, end, timelineContext = []) {
     return [
-        `以下${end - start + 1}楼只是本次处理窗口，不是事件边界。请按剧情自然发生的事件提取1-8个关键事件，按重要度从高到低排列。跨楼的同一事件应合并；同一楼若发生时间跳跃，应拆成不同事件。每个事件严格按以下格式输出，不要输出其他内容：`,
+        `以下${end - start + 1}楼只是本次处理窗口，不是事件边界。通常提取1-3个关键事件；只有确实存在彼此独立的事件或明确时间跳跃时才可增加，但绝对不超过5个。按重要度从高到低排列。跨楼的同一事件必须合并，不能把同一件事的动作、对话和结果拆成多个事件。每个事件严格按以下格式输出，不要输出其他内容：`,
         '',
         '[事件1]',
         '重要度：X（1-5，5为最重要）',
-        '事件概述：（最多150字，抓取核心骨干和重要细节，忽略氛围描写和无关对话）',
+        '事件概述：（只写1-2句完整的剧情骨架：谁因为什么做了什么，造成什么结果、关系或局势变化；通常不超过100字，绝不超过150字）',
         '时间：（优先复制下方时间锚点；未明确就写“未明确”，禁止把历史中的相对时间按总结时的现在重算）',
         '地点：（事件发生的地点）',
         '涉及角色：（角色名，逗号分隔；放在最后）',
@@ -621,6 +630,8 @@ export function buildSummaryPrompt(messages, start, end, timelineContext = []) {
         '...',
         '',
         '评判标准：',
+        '- 这是梗概，不是正文摘录；不要复述动作、对话、外貌、气氛和细枝末节，原文细节会由 RAG 另行召回',
+        '- 同一矛盾、同一场对话、同一行动及其直接结果算一个事件，禁止为了凑数量拆开',
         '- 有矛盾冲突、清晰脉络、角色关系变化、重大决策的事件 = 高重要度',
         '- 纯日常流水账、寒暄、无实质进展 = 低重要度',
         '- 如果这段对话全是日常闲聊没有值得记录的事件，只输出一个1星事件简单概括即可',
@@ -638,10 +649,19 @@ export function buildSummaryPrompt(messages, start, end, timelineContext = []) {
 
 function buildSummaryRetryPrompt(messages, start, end, timelineContext = []) {
     return [
-        `概括下面第${start + 1}-${end + 1}楼发生的关键事件。`,
-        '上一次结构化回答被意外截断，这次只输出一段完整的中文事件概述，最多150字。',
-        '不要输出标题、序号、字段名、角色名单或解释；宁可简短，也必须把核心事件写完整。',
+        `重新概括下面第${start + 1}-${end + 1}楼发生的关键事件。上一次回答存在事件过多、概述过长、格式错误或句子不完整的问题。`,
+        '通常只提取1-3个事件；只有明确独立事件或时间跳跃才可增加，绝对不超过5个。同一事件的起因、行动和结果必须合并。',
+        '每个事件都按“[事件N]、重要度、事件概述、时间、地点、涉及角色”的原格式输出，不要输出解释。',
+        '事件概述只写1-2句完整的因果骨架，通常不超过100字，绝不超过150字；不要复述细节，不要用省略号收尾。',
         '保留原剧情中的时间关系；楼层数不代表时间流逝，不能自行把“三天前”改成“昨天”。',
+        '',
+        '输出格式：',
+        '[事件1]',
+        '重要度：X',
+        '事件概述：完整的简短概述。',
+        '时间：未明确',
+        '地点：未明确',
+        '涉及角色：角色名',
         '',
         '时间锚点：',
         formatSummaryTimeline(timelineContext),
@@ -1175,7 +1195,9 @@ export async function summarizePendingMessages(settings, context, options = {}) 
 
 export async function repairMalformedSummaries(settings, context, options = {}) {
     let repaired = 0;
-    for (let attempt = 0; attempt < 20; attempt++) {
+    const state = getSummaryState(context?.chatMetadata);
+    const maximumAttempts = Math.min(200, Math.max(20, state?.entries?.length ?? 0));
+    for (let attempt = 0; attempt < maximumAttempts; attempt++) {
         const state = getSummaryState(context?.chatMetadata);
         if (!state || !await findMalformedSummaryRange(context, state)) break;
         const result = await summarizePendingMessages(settings, context, {

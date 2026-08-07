@@ -28,6 +28,9 @@ test('summary prompt treats floor batches as processing windows and uses saved a
         segments: [{ startQuote: '三天前', anchorLabel: '王历100年二月廿七', mode: 'mention' }],
     }]);
     assert.match(prompt, /只是本次处理窗口，不是事件边界/);
+    assert.match(prompt, /通常提取1-3个关键事件/);
+    assert.match(prompt, /绝对不超过5个/);
+    assert.match(prompt, /原文细节会由 RAG 另行召回/);
     assert.match(prompt, /场景时间=王历100年春三月初一/);
     assert.match(prompt, /从“三天前”开始｜片段时间=王历100年二月廿七/);
     assert.match(prompt, /“昨天、三天前、十年前”等词只相对于它所在的场景时间有效/);
@@ -258,20 +261,24 @@ test('a summary starts only after one full batch has left the recent-message win
     assert.equal(context.chat.slice(0, 10).every(message => message.is_system === true), true);
 });
 
-test('event parser keeps natural events up to eight and limits each overview to 150 characters', () => {
-    const longOverview = '细'.repeat(180);
-    const output = Array.from({ length: 4 }, (_, index) => [
+test('event parser accepts at most five complete concise events without cutting their text', () => {
+    const output = Array.from({ length: 5 }, (_, index) => [
         `[事件${index + 1}]`,
-        `重要度：${index + 2}`,
+        `重要度：${Math.min(index + 1, 5)}`,
         '时间：深夜',
         '涉及角色：甲、乙',
         '地点：旧城区',
-        `事件概述：${longOverview}`,
+        `事件概述：甲与乙完成了第${index + 1}件关键事项。`,
     ].join('\n')).join('\n\n');
     const events = parseSummaryEvents(output);
-    assert.equal(events.length, 4);
-    assert.deepEqual(events.map(event => event.importance), [2, 3, 4, 5]);
-    assert.equal(Array.from(events[0].overview).length, 150);
+    assert.equal(events.length, 5);
+    assert.equal(events[0].overview, '甲与乙完成了第1件关键事项。');
+
+    const sixth = `${output}\n\n[事件6]\n重要度：1\n事件概述：不应被静默保存。\n时间：深夜\n地点：旧城区\n涉及角色：甲`;
+    assert.deepEqual(parseSummaryEvents(sixth), []);
+
+    const overlong = `[事件1]\n重要度：5\n事件概述：${'细'.repeat(151)}。\n时间：深夜\n地点：旧城区\n涉及角色：甲`;
+    assert.deepEqual(parseSummaryEvents(overlong), [], 'overlong output must retry instead of being cut into an ellipsis');
 });
 
 test('event parser accepts fields on one line and rejects truncated structured output', () => {
@@ -286,6 +293,9 @@ test('event parser accepts fields on one line and rejects truncated structured o
     const truncated = '[事件1] 重要度：5 时间：午夜 涉及角色：奥蕾莉亚·';
     assert.deepEqual(parseSummaryEvents(truncated), []);
     assert.equal(isMalformedSummaryContent('[★☆☆☆☆]\n⏰ 未明确\n 未明确\n 未明确\n ' + truncated), true);
+    assert.deepEqual(parseSummaryEvents('[事件1] 重要度：5 事件概述：A仍在追查真相…… 时间：午夜 地点：旧王宫 涉及角色：A'), []);
+    const legacyCutoff = `${'旧'.repeat(149)}…`;
+    assert.equal(isMalformedSummaryContent(`[★☆☆☆☆]\n⏰ 未明确\n 未明确\n 未明确\n ${legacyCutoff}`), true);
     assert.equal(isUnusableSummaryOutput('抱歉，我无法总结这类敏感内容。'), true);
     assert.equal(isUnusableSummaryOutput('Drafting Event 3 (analysis)'), true);
 });
@@ -341,7 +351,7 @@ test('ordinary automatic summary checks do not repair old malformed entries in t
     assert.equal(generationCalls, 0);
 });
 
-test('a truncated structured summary retries as a plain complete overview before hiding', async () => {
+test('a truncated structured summary retries as concise structured events before hiding', async () => {
     const context = createContext(dialoguePairs(15));
     let generationCalls = 0;
     const result = await summarizePendingMessages({ context: { recentMessages: 20, summaryBatchSize: 10 } }, context, {
@@ -351,8 +361,10 @@ test('a truncated structured summary retries as a plain complete overview before
             if (generationCalls === 1) {
                 return '[事件1] 重要度：5 时间：午夜 涉及角色：奥蕾莉亚·';
             }
-            assert.match(prompt, /只输出一段完整的中文事件概述/);
-            return '主角在旧王宫找回王冠，并决定翌日公开失踪多年的真相。';
+            assert.match(prompt, /通常只提取1-3个事件/);
+            assert.match(prompt, /绝对不超过5个/);
+            assert.match(prompt, /不要用省略号收尾/);
+            return '[事件1]\n重要度：5\n事件概述：主角在旧王宫找回王冠，并决定翌日公开失踪多年的真相。\n时间：午夜\n地点：旧王宫\n涉及角色：主角';
         },
     });
 

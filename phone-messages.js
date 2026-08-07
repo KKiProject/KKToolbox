@@ -3,19 +3,27 @@ import {
     addPhoneSticker,
     appendPhoneMessage,
     buildPhoneAiSnapshot,
+    commitQueuedPhoneMessages,
     createPhoneRoundId,
     createPhoneConversation,
+    forwardPhoneMessages,
+    getQueuedPhoneMessages,
     getRecentRoundMessages,
     loadPhoneStore,
     normalizePhoneIdentity,
     normalizePhoneProfile,
     normalizePhoneStickers,
     recordPhoneMemoryEvents,
+    removePhoneConversation,
+    removeLatestPhoneReply,
+    removePhoneMessage,
     removePhoneSticker,
     removePhoneMemoryEvent,
     savePhoneStore,
     setPhoneRoundSummary,
     splitGroupRedPacket,
+    renamePhoneConversation,
+    updatePhoneMessage,
     updatePhoneMemoryEvent,
     uploadPhoneImage,
 } from './phone-store.js';
@@ -48,6 +56,17 @@ function lastMessagePreview(message) {
         location: '[位置]', sticker: `[表情包] ${message.stickerName}`,
     };
     return text(labels[message.type] ?? message.content, 80) || '[消息]';
+}
+
+function messageReferenceContent(message) {
+    if (message.type === 'sticker') return `[表情包] ${message.stickerName || '未知'}`;
+    if (message.type === 'voice') return `[语音] ${message.content || '无文字'}`;
+    if (message.type === 'image') return `[图片] ${message.content || '无描述'}`;
+    if (message.type === 'location') return `[位置] ${message.content || '无描述'}`;
+    if (['redpacket', 'group_redpacket'].includes(message.type)) {
+        return `[${message.type === 'group_redpacket' ? '群红包' : '红包'}] ${message.amount}元 ${message.content || ''}`.trim();
+    }
+    return message.content || '[消息]';
 }
 
 function parseJsonObject(raw) {
@@ -164,6 +183,12 @@ function openForm(root, config) {
         heading.textContent = config.title;
         const fields = new Map();
         form.append(heading);
+        if (config.message) {
+            const message = documentRef.createElement('p');
+            message.className = 'memory-augment-phone-confirm-message';
+            message.textContent = config.message;
+            form.append(message);
+        }
         for (const descriptor of config.fields ?? []) {
             const field = createField(documentRef, descriptor);
             fields.set(descriptor.name, field.input);
@@ -179,6 +204,7 @@ function openForm(root, config) {
         const submit = documentRef.createElement('button');
         submit.type = 'submit';
         submit.textContent = config.submitLabel ?? '确定';
+        if (config.danger) submit.classList.add('is-danger');
         actions.append(cancel, submit);
         form.append(error, actions);
         overlay.append(form);
@@ -209,6 +235,17 @@ function openForm(root, config) {
         });
         fields.values().next().value?.focus?.();
     });
+}
+
+async function openConfirm(root, config) {
+    return Boolean(await openForm(root, {
+        title: config.title ?? '请确认',
+        message: config.message,
+        submitLabel: config.confirmLabel ?? '确定',
+        danger: config.danger !== false,
+        fields: [],
+        onSubmit: () => true,
+    }));
 }
 
 async function resolveImage(values, prefix) {
@@ -352,6 +389,25 @@ function messageText(documentRef, className, value) {
     return element;
 }
 
+function renderMessageReferences(documentRef, message) {
+    const fragment = documentRef.createDocumentFragment();
+    if (message.forwardedFrom) {
+        fragment.append(messageText(
+            documentRef,
+            'memory-augment-phone-message-reference is-forwarded',
+            `转发自 ${message.forwardedFrom.conversationName || '其他会话'} · ${message.forwardedFrom.sender || '未知'}`,
+        ));
+    }
+    if (message.quote) {
+        fragment.append(messageText(
+            documentRef,
+            'memory-augment-phone-message-reference is-quote',
+            `${message.quote.sender || '未知'}：${message.quote.content || '消息'}`,
+        ));
+    }
+    return fragment;
+}
+
 function renderMessageBody(documentRef, message, stickers, onClaims) {
     if (message.type === 'sticker') {
         const sticker = stickers.find(item => item.name === message.stickerName);
@@ -429,6 +485,8 @@ export function createPhoneMessagesController(options = {}) {
     let currentConversationId = '';
     let busy = false;
     let identitySources = null;
+    let selectedMessageIds = new Set();
+    let pendingQuote = null;
 
     const getConversation = () => store?.conversations?.find(item => item.id === currentConversationId);
     const stickers = () => normalizePhoneStickers(settings);
@@ -551,6 +609,236 @@ export function createPhoneMessagesController(options = {}) {
         });
     }
 
+    async function editConversationName() {
+        const conversation = getConversation();
+        if (!conversation || busy) return;
+        const direct = conversation.type === 'direct';
+        const result = await openForm(root, {
+            title: direct ? '修改昵称备注' : '修改群聊名称',
+            submitLabel: '保存',
+            fields: [{
+                name: 'name',
+                label: direct ? '昵称备注（只影响手机显示，不是人物本名）' : '群聊名称',
+                value: conversation.name,
+                required: true,
+            }],
+        });
+        if (!result) return;
+        renamePhoneConversation(store, conversation.id, result.name);
+        try {
+            await persist();
+            renderConversation();
+        } catch (error) {
+            renderConversation();
+            setStatus(`名称暂时没保存成功：${error.message}`, true);
+        }
+    }
+
+    async function deleteCurrentConversation() {
+        const conversation = getConversation();
+        if (!conversation || busy) return;
+        const label = conversation.type === 'group' ? '群聊' : '单聊';
+        if (!await openConfirm(root, {
+            title: `删除${label}？`,
+            message: `“${conversation.name}”的聊天记录和它产生的线上记忆都会删除；已经生成的正文不会改变。`,
+            confirmLabel: '确认删除',
+        })) return;
+        removePhoneConversation(store, conversation.id);
+        currentConversationId = '';
+        try {
+            await persist();
+            renderList();
+        } catch (error) {
+            showListError(`${label}暂时没删除成功：${error.message}`);
+        }
+    }
+
+    const selectedMessages = () => {
+        const conversation = getConversation();
+        return conversation?.messages?.filter(message => selectedMessageIds.has(message.id)) ?? [];
+    };
+
+    function leaveMessageSelection({ keepQuote = true } = {}) {
+        selectedMessageIds = new Set();
+        if (!keepQuote) pendingQuote = null;
+    }
+
+    function toggleMessageSelection(messageId) {
+        const next = new Set(selectedMessageIds);
+        if (next.has(messageId)) next.delete(messageId); else next.add(messageId);
+        selectedMessageIds = next;
+        renderConversation();
+    }
+
+    function bindMessageLongPress(row, message) {
+        let timer = null;
+        let startX = 0;
+        let startY = 0;
+        let consumed = false;
+        const cancel = () => {
+            if (timer) clearTimeout(timer);
+            timer = null;
+        };
+        row.addEventListener('pointerdown', event => {
+            if (event.button !== undefined && event.button !== 0) return;
+            startX = event.clientX;
+            startY = event.clientY;
+            consumed = false;
+            cancel();
+            timer = setTimeout(() => {
+                timer = null;
+                consumed = true;
+                selectedMessageIds = new Set([message.id]);
+                renderConversation();
+            }, 480);
+        });
+        row.addEventListener('pointermove', event => {
+            if (Math.hypot(event.clientX - startX, event.clientY - startY) > 10) cancel();
+        });
+        row.addEventListener('pointerup', cancel);
+        row.addEventListener('pointercancel', cancel);
+        row.addEventListener('pointerleave', cancel);
+        row.addEventListener('contextmenu', event => {
+            event.preventDefault();
+            selectedMessageIds = new Set([message.id]);
+            renderConversation();
+        });
+        row.addEventListener('click', event => {
+            if (!consumed && selectedMessageIds.size === 0) return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (consumed) {
+                consumed = false;
+                return;
+            }
+            toggleMessageSelection(message.id);
+        }, true);
+    }
+
+    async function deleteSelectedMessages() {
+        const conversation = getConversation();
+        const messages = selectedMessages();
+        if (!conversation || busy || messages.length === 0) return;
+        if (!await openConfirm(root, {
+            title: `删除选中的 ${messages.length} 条消息？`,
+            message: '相应的轮次概括和关联线上记忆也会清理；已经生成的正文不会改变。',
+            confirmLabel: '确认删除',
+        })) return;
+        for (const message of messages) {
+            removePhoneMessage(store, conversation.id, message.id);
+        }
+        leaveMessageSelection();
+        try {
+            await persist();
+            renderConversation();
+        } catch (error) {
+            renderConversation();
+            setStatus(`消息暂时没删除成功：${error.message}`, true);
+        }
+    }
+
+    async function editSelectedMessage() {
+        const conversation = getConversation();
+        const [message] = selectedMessages();
+        if (!conversation || selectedMessageIds.size !== 1 || !message || busy) return;
+        const sticker = message.type === 'sticker';
+        const currentStickers = stickers();
+        if (sticker && currentStickers.length === 0) {
+            leaveMessageSelection();
+            renderConversation();
+            setStatus('没有可用表情包，无法修改这条表情消息。', true);
+            return;
+        }
+        const result = await openForm(root, {
+            title: '编辑消息',
+            submitLabel: '保存修改',
+            fields: sticker ? [{
+                name: 'stickerName',
+                label: '表情包',
+                type: 'select',
+                value: message.stickerName,
+                options: currentStickers.map(item => ({ value: item.name, label: item.name })),
+            }] : [{
+                name: 'content',
+                label: message.type === 'voice' ? '语音文字'
+                    : message.type === 'image' ? '图片描述'
+                        : message.type === 'location' ? '位置与备注'
+                            : ['redpacket', 'group_redpacket'].includes(message.type) ? '红包留言' : '消息内容',
+                type: 'textarea',
+                value: message.content,
+                required: true,
+            }],
+        });
+        if (!result) return;
+        const update = updatePhoneMessage(store, conversation.id, message.id, result);
+        leaveMessageSelection();
+        try {
+            await persist();
+            renderConversation();
+            setStatus(`消息已修改${update?.removedMemoryEvents ? `，并清理 ${update.removedMemoryEvents} 条旧线上记忆` : ''}。`);
+        } catch (error) {
+            renderConversation();
+            setStatus(`消息暂时没修改成功：${error.message}`, true);
+        }
+    }
+
+    async function forwardSelectedMessages() {
+        const conversation = getConversation();
+        const messages = selectedMessages();
+        const targets = store?.conversations?.filter(item => item.id !== conversation?.id) ?? [];
+        if (!conversation || messages.length === 0 || busy) return;
+        if (targets.length === 0) {
+            leaveMessageSelection();
+            renderConversation();
+            setStatus('还没有其他单聊或群聊可以接收转发。', true);
+            return;
+        }
+        const result = await openForm(root, {
+            title: `转发 ${messages.length} 条消息`,
+            submitLabel: '转发',
+            fields: [{
+                name: 'target',
+                label: '选择接收聊天',
+                type: 'select',
+                value: targets[0].id,
+                options: targets.map(item => ({
+                    value: item.id,
+                    label: `${item.type === 'group' ? '群聊' : '单聊'} · ${item.name}`,
+                })),
+            }],
+        });
+        if (!result) return;
+        const forwarded = forwardPhoneMessages(
+            store,
+            conversation.id,
+            result.target,
+            messages.map(message => message.id),
+            store.profile.nickname || '我',
+        );
+        leaveMessageSelection();
+        try {
+            await persist();
+            renderConversation();
+            setStatus(`已转发 ${forwarded.length} 条消息。`);
+        } catch (error) {
+            renderConversation();
+            setStatus(`消息暂时没转发成功：${error.message}`, true);
+        }
+    }
+
+    function quoteSelectedMessage() {
+        const [message] = selectedMessages();
+        if (selectedMessageIds.size !== 1 || !message) return;
+        pendingQuote = {
+            messageId: message.id,
+            sender: message.sender,
+            content: messageReferenceContent(message),
+        };
+        leaveMessageSelection();
+        renderConversation();
+        root?.querySelector('.memory-augment-phone-composer textarea')?.focus?.();
+    }
+
     function showClaims(message) {
         const claims = message.claims ?? [];
         void openForm(root, {
@@ -584,33 +872,72 @@ export function createPhoneMessagesController(options = {}) {
         wrapper.className = 'memory-augment-phone-conversation';
         const header = documentRef.createElement('header');
         header.className = 'memory-augment-phone-conversation-header';
-        const identity = documentRef.createElement('div');
-        identity.append(avatarElement(documentRef, conversation.name, conversation.avatar));
-        const title = documentRef.createElement('span');
-        const strong = documentRef.createElement('strong');
-        strong.textContent = conversation.name;
-        const small = documentRef.createElement('small');
-        small.textContent = conversation.type === 'group'
-            ? `${conversation.members.length + 1} 人 · 可分别绑定身份`
-            : `单聊 · ${normalizePhoneIdentity(conversation.identity).label}`;
-        title.append(strong, small);
-        identity.append(title);
-        const receive = documentRef.createElement('button');
-        receive.type = 'button';
-        receive.title = '收取新消息';
-        receive.setAttribute('aria-label', '收取新消息');
-        receive.innerHTML = '<i class="fa-solid fa-rotate"></i>';
-        receive.addEventListener('click', () => void requestAiReplies());
-        const identitySettings = documentRef.createElement('button');
-        identitySettings.type = 'button';
-        identitySettings.title = conversation.type === 'group' ? '设置群成员真实身份' : '设置联系人真实身份';
-        identitySettings.setAttribute('aria-label', identitySettings.title);
-        identitySettings.innerHTML = '<i class="fa-solid fa-address-card"></i>';
-        identitySettings.addEventListener('click', () => void editConversationIdentities());
-        const headerActions = documentRef.createElement('div');
-        headerActions.className = 'memory-augment-phone-conversation-actions';
-        headerActions.append(identitySettings, receive);
-        header.append(identity, headerActions);
+        if (selectedMessageIds.size > 0) {
+            header.classList.add('is-selecting');
+            const closeSelection = documentRef.createElement('button');
+            closeSelection.type = 'button';
+            closeSelection.className = 'memory-augment-phone-selection-close';
+            closeSelection.setAttribute('aria-label', '退出多选');
+            closeSelection.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+            closeSelection.addEventListener('click', () => {
+                leaveMessageSelection();
+                renderConversation();
+            });
+            const count = documentRef.createElement('strong');
+            count.textContent = `已选 ${selectedMessageIds.size} 条`;
+            const selectAll = documentRef.createElement('button');
+            selectAll.type = 'button';
+            const everySelected = conversation.messages.length > 0
+                && conversation.messages.every(message => selectedMessageIds.has(message.id));
+            selectAll.textContent = everySelected ? '取消全选' : '全选';
+            selectAll.addEventListener('click', () => {
+                selectedMessageIds = everySelected
+                    ? new Set()
+                    : new Set(conversation.messages.map(message => message.id));
+                renderConversation();
+            });
+            header.append(closeSelection, count, selectAll);
+        } else {
+            const identity = documentRef.createElement('div');
+            identity.append(avatarElement(documentRef, conversation.name, conversation.avatar));
+            const title = documentRef.createElement('span');
+            const strong = documentRef.createElement('strong');
+            strong.textContent = conversation.name;
+            const small = documentRef.createElement('small');
+            small.textContent = conversation.type === 'group'
+                ? `${conversation.members.length + 1} 人 · 长按消息可多选`
+                : `昵称备注 · ${normalizePhoneIdentity(conversation.identity).label} · 长按消息可多选`;
+            title.append(strong, small);
+            identity.append(title);
+            const regenerate = documentRef.createElement('button');
+            regenerate.type = 'button';
+            regenerate.title = '重新生成最近一次回复';
+            regenerate.setAttribute('aria-label', '重新生成最近一次回复');
+            regenerate.innerHTML = '<i class="fa-solid fa-rotate"></i>';
+            regenerate.addEventListener('click', () => void regenerateLatestReply());
+            const identitySettings = documentRef.createElement('button');
+            identitySettings.type = 'button';
+            identitySettings.title = conversation.type === 'group' ? '设置群成员真实身份' : '设置联系人真实身份';
+            identitySettings.setAttribute('aria-label', identitySettings.title);
+            identitySettings.innerHTML = '<i class="fa-solid fa-address-card"></i>';
+            identitySettings.addEventListener('click', () => void editConversationIdentities());
+            const rename = documentRef.createElement('button');
+            rename.type = 'button';
+            rename.title = conversation.type === 'group' ? '修改群聊名称' : '修改昵称备注';
+            rename.setAttribute('aria-label', rename.title);
+            rename.innerHTML = '<i class="fa-solid fa-pen"></i>';
+            rename.addEventListener('click', () => void editConversationName());
+            const removeConversation = documentRef.createElement('button');
+            removeConversation.type = 'button';
+            removeConversation.title = conversation.type === 'group' ? '删除群聊' : '删除单聊';
+            removeConversation.setAttribute('aria-label', removeConversation.title);
+            removeConversation.innerHTML = '<i class="fa-solid fa-trash"></i>';
+            removeConversation.addEventListener('click', () => void deleteCurrentConversation());
+            const headerActions = documentRef.createElement('div');
+            headerActions.className = 'memory-augment-phone-conversation-actions';
+            headerActions.append(identitySettings, rename, removeConversation, regenerate);
+            header.append(identity, headerActions);
+        }
 
         const messageList = documentRef.createElement('div');
         messageList.className = 'memory-augment-phone-message-list';
@@ -622,6 +949,7 @@ export function createPhoneMessagesController(options = {}) {
         conversation.messages.forEach(message => {
             const row = documentRef.createElement('article');
             row.className = `memory-augment-phone-message-row ${message.fromUser ? 'is-user' : 'is-contact'}`;
+            row.classList.toggle('is-selected', selectedMessageIds.has(message.id));
             if (!message.fromUser) row.append(avatarElement(documentRef, message.sender, '', 'is-small'));
             const bubbleWrap = documentRef.createElement('div');
             bubbleWrap.className = 'memory-augment-phone-message-bubble-wrap';
@@ -630,9 +958,12 @@ export function createPhoneMessagesController(options = {}) {
             }
             const bubble = documentRef.createElement('div');
             bubble.className = `memory-augment-phone-message-bubble is-${message.type}`;
+            bubble.append(renderMessageReferences(documentRef, message));
             bubble.append(renderMessageBody(documentRef, message, currentStickers, showClaims));
+            if (message.editedAt) bubble.append(messageText(documentRef, 'memory-augment-phone-message-edited', '已编辑'));
             bubbleWrap.append(bubble);
             row.append(bubbleWrap);
+            bindMessageLongPress(row, message);
             messageList.append(row);
         });
 
@@ -658,25 +989,73 @@ export function createPhoneMessagesController(options = {}) {
             tools.append(button);
         });
         const composer = documentRef.createElement('div');
-        composer.className = 'memory-augment-phone-composer';
-        const more = documentRef.createElement('button');
-        more.type = 'button';
-        more.setAttribute('aria-label', '更多消息类型');
-        more.innerHTML = '<i class="fa-solid fa-plus"></i>';
-        more.addEventListener('click', () => tools.hidden = !tools.hidden);
-        const input = documentRef.createElement('textarea');
-        input.rows = 1;
-        input.placeholder = '输入消息';
-        const send = documentRef.createElement('button');
-        send.type = 'button';
-        send.textContent = '发送';
-        send.addEventListener('click', () => {
-            const content = text(input.value);
-            if (!content) return;
-            input.value = '';
-            void sendPlayerMessage({ type: 'text', content });
-        });
-        composer.append(more, input, send);
+        if (selectedMessageIds.size > 0) {
+            composer.className = 'memory-augment-phone-selection-actions';
+            const oneSelected = selectedMessageIds.size === 1;
+            const actions = [
+                ['编辑', 'fa-pen', editSelectedMessage, !oneSelected],
+                ['转发', 'fa-share', forwardSelectedMessages, false],
+                ['引用', 'fa-reply', quoteSelectedMessage, !oneSelected],
+                ['删除', 'fa-trash', deleteSelectedMessages, false],
+            ];
+            for (const [label, icon, action, disabled] of actions) {
+                const button = documentRef.createElement('button');
+                button.type = 'button';
+                button.disabled = disabled;
+                button.innerHTML = `<i class="fa-solid ${icon}"></i><span>${label}</span>`;
+                button.addEventListener('click', () => void action());
+                composer.append(button);
+            }
+        } else {
+            composer.className = 'memory-augment-phone-composer';
+            if (pendingQuote) {
+                const quotePreview = documentRef.createElement('div');
+                quotePreview.className = 'memory-augment-phone-quote-preview';
+                const copy = documentRef.createElement('span');
+                copy.textContent = `引用 ${pendingQuote.sender || '未知'}：${pendingQuote.content || '消息'}`;
+                const cancelQuote = documentRef.createElement('button');
+                cancelQuote.type = 'button';
+                cancelQuote.setAttribute('aria-label', '取消引用');
+                cancelQuote.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+                cancelQuote.addEventListener('click', () => {
+                    pendingQuote = null;
+                    renderConversation();
+                });
+                quotePreview.append(copy, cancelQuote);
+                composer.append(quotePreview);
+            }
+            const more = documentRef.createElement('button');
+            more.type = 'button';
+            more.setAttribute('aria-label', '更多消息类型');
+            more.innerHTML = '<i class="fa-solid fa-plus"></i>';
+            more.addEventListener('click', () => tools.hidden = !tools.hidden);
+            const input = documentRef.createElement('textarea');
+            input.rows = 1;
+            input.placeholder = '输入消息';
+            const send = documentRef.createElement('button');
+            send.type = 'button';
+            send.textContent = '↑';
+            send.title = '放到聊天屏幕';
+            send.setAttribute('aria-label', '放到聊天屏幕');
+            const stageTextMessage = () => {
+                const content = text(input.value);
+                if (!content) return;
+                input.value = '';
+                void sendPlayerMessage({ type: 'text', content });
+            };
+            send.addEventListener('click', stageTextMessage);
+            input.addEventListener('keydown', event => {
+                if (event.key !== 'Enter' || event.shiftKey || event.isComposing || event.keyCode === 229) return;
+                event.preventDefault();
+                stageTextMessage();
+            });
+            const finalSend = documentRef.createElement('button');
+            finalSend.type = 'button';
+            finalSend.className = 'memory-augment-phone-final-send';
+            finalSend.textContent = '发送';
+            finalSend.addEventListener('click', () => void sendOrReceiveMessages());
+            composer.append(more, input, send, finalSend);
+        }
         wrapper.append(header, messageList, status, tools, composer);
         root.append(wrapper);
         requestAnimationFrame(() => messageList.scrollTop = messageList.scrollHeight);
@@ -685,12 +1064,15 @@ export function createPhoneMessagesController(options = {}) {
     async function sendPlayerMessage(message) {
         const conversation = getConversation();
         if (!conversation || busy) return;
-        const roundId = createPhoneRoundId();
+        const roundId = getQueuedPhoneMessages(store, conversation.id)[0]?.roundId || createPhoneRoundId();
         const normalized = {
             ...message,
             roundId,
             sender: store.profile.nickname || '我',
             fromUser: true,
+            quote: pendingQuote,
+            queued: true,
+            storyPending: false,
         };
         if (message.type === 'group_redpacket') {
             normalized.claims = splitGroupRedPacket(
@@ -701,6 +1083,7 @@ export function createPhoneMessagesController(options = {}) {
             );
         }
         appendPhoneMessage(store, conversation.id, normalized);
+        pendingQuote = null;
         renderConversation();
         try {
             await persist();
@@ -708,7 +1091,48 @@ export function createPhoneMessagesController(options = {}) {
             setStatus(`消息暂时没保存成功：${error.message}`, true);
             return;
         }
-        await requestAiReplies({ roundId });
+        setStatus('');
+    }
+
+    async function sendOrReceiveMessages() {
+        const conversation = getConversation();
+        if (!conversation || busy) return;
+        const committed = commitQueuedPhoneMessages(store, conversation.id);
+        if (!committed) {
+            await requestAiReplies();
+            return;
+        }
+        renderConversation();
+        try {
+            await persist();
+        } catch (error) {
+            for (const message of committed.messages) {
+                message.queued = true;
+                message.storyPending = false;
+            }
+            renderConversation();
+            setStatus(`这一批暂时没发送成功：${error.message}`, true);
+            return;
+        }
+        await requestAiReplies({ roundId: committed.roundId });
+    }
+
+    async function regenerateLatestReply() {
+        const conversation = getConversation();
+        if (!conversation || busy) return;
+        const removed = removeLatestPhoneReply(store, conversation.id);
+        if (!removed) {
+            setStatus('还没有可以重新生成的回复。', true);
+            return;
+        }
+        renderConversation();
+        try {
+            await persist();
+        } catch (error) {
+            setStatus(`暂时无法重新生成：${error.message}`, true);
+            return;
+        }
+        await requestAiReplies({ roundId: removed.roundId, insertBeforeQueued: true });
     }
 
     async function requestAiReplies(options = {}) {
@@ -721,7 +1145,7 @@ export function createPhoneMessagesController(options = {}) {
             return;
         }
         busy = true;
-        setStatus('正在收取新消息…');
+        setStatus(conversation.type === 'group' ? '群聊中有人正在输入…' : '对方正在输入…');
         try {
             const context = contextGetter();
             const recentStory = collectRecentStory(context);
@@ -766,11 +1190,19 @@ export function createPhoneMessagesController(options = {}) {
                         `${activeConversation.id}-${Date.now()}-${reply.sender}`,
                     );
                 }
-                appendPhoneMessage(store, activeConversation.id, {
+                const appendedReply = appendPhoneMessage(store, activeConversation.id, {
                     ...reply,
                     roundId,
                     fromUser: false,
                 });
+                if (options?.insertBeforeQueued) {
+                    const replyIndex = activeConversation.messages.findIndex(message => message.id === appendedReply.id);
+                    const queuedIndex = activeConversation.messages.findIndex(message => message.queued === true);
+                    if (replyIndex >= 0 && queuedIndex >= 0 && replyIndex > queuedIndex) {
+                        activeConversation.messages.splice(replyIndex, 1);
+                        activeConversation.messages.splice(queuedIndex, 0, appendedReply);
+                    }
+                }
             }
             const activeConversation = getConversation();
             if (activeConversation) {
@@ -923,7 +1355,7 @@ export function createPhoneMessagesController(options = {}) {
         };
         const definition = definitions[type];
         if (!definition) return;
-        const values = await openForm(root, { ...definition, submitLabel: '发送' });
+        const values = await openForm(root, { ...definition, submitLabel: '↑' });
         if (values) await sendPlayerMessage(definition.build(values));
     }
 
@@ -965,7 +1397,7 @@ export function createPhoneMessagesController(options = {}) {
             title: group ? '创建群聊' : '添加好友',
             submitLabel: group ? '创建' : '添加',
             fields: [
-                { name: 'name', label: group ? '群名称' : '好友名称', required: true },
+                { name: 'name', label: group ? '群聊名称' : '好友昵称备注（不是人物本名）', required: true },
                 ...(group ? [{ name: 'members', label: '群成员（每行或逗号分隔）', type: 'textarea', required: true }] : []),
                 ...(!group ? [
                     {
@@ -1126,7 +1558,12 @@ export function createPhoneMessagesController(options = {}) {
             remove.type = 'button';
             remove.textContent = '删除';
             remove.addEventListener('click', async () => {
-                if (!globalThis.confirm?.('删除这条线上记忆？原始聊天记录不会删除。')) return;
+                overlay.remove();
+                if (!await openConfirm(root, {
+                    title: '删除这条线上记忆？',
+                    message: '这只会删除提炼出的线上记忆，原始聊天记录不会删除。',
+                    confirmLabel: '确认删除',
+                })) return openOnlineMemory();
                 removePhoneMemoryEvent(store, memory.id);
                 await persist();
                 await openOnlineMemory();
@@ -1150,6 +1587,7 @@ export function createPhoneMessagesController(options = {}) {
     function renderList() {
         if (!root || !store) return;
         currentConversationId = '';
+        leaveMessageSelection({ keepQuote: false });
         root.replaceChildren();
         const wrapper = documentRef.createElement('div');
         wrapper.className = 'memory-augment-phone-message-home';
@@ -1220,6 +1658,7 @@ export function createPhoneMessagesController(options = {}) {
             row.append(copy);
             row.addEventListener('click', () => {
                 currentConversationId = conversation.id;
+                leaveMessageSelection({ keepQuote: false });
                 renderConversation();
             });
             list.append(row);
@@ -1253,6 +1692,11 @@ export function createPhoneMessagesController(options = {}) {
             const overlay = root?.querySelector('.memory-augment-phone-sheet-overlay');
             if (overlay) {
                 overlay.remove();
+                return true;
+            }
+            if (selectedMessageIds.size > 0) {
+                leaveMessageSelection();
+                renderConversation();
                 return true;
             }
             if (currentConversationId) {

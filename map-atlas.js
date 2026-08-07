@@ -938,7 +938,7 @@ export function initializeMapAtlasUi(settings, context, options = {}) {
         generatorOpen: false,
         sourceBooks: [],
         sourceSearch: '',
-        confirm: options.confirm ?? (async (_title, message) => globalThis.confirm?.(message) ?? false),
+        confirm: options.confirm ?? (async () => false),
     };
     state.settings = settings;
     state.context = context;
