@@ -44,7 +44,9 @@ function quotedValues(command) {
 function createContext(messages = []) {
     let metadataSaves = 0;
     let worldInfoLoads = 0;
+    let worldInfoListUpdates = 0;
     const calls = [];
+    const reloadedWorldInfoBooks = [];
     const lorebooks = new Map();
     const bookName = '金钰琳-自动总结';
     const additionalBooks = [];
@@ -66,6 +68,12 @@ function createContext(messages = []) {
         },
         async createNewWorldInfo(name) {
             lorebooks.set(name, { entries: {} });
+        },
+        async updateWorldInfoList() {
+            worldInfoListUpdates++;
+        },
+        reloadWorldInfoEditor(name) {
+            reloadedWorldInfoBooks.push(name);
         },
         createWorldInfoEntry(_name, data) {
             const ids = Object.keys(data.entries).map(Number);
@@ -144,6 +152,12 @@ function createContext(messages = []) {
         get worldInfoLoads() {
             return worldInfoLoads;
         },
+        get worldInfoListUpdates() {
+            return worldInfoListUpdates;
+        },
+        get reloadedWorldInfoBooks() {
+            return reloadedWorldInfoBooks;
+        },
         get calls() {
             return calls;
         },
@@ -210,6 +224,8 @@ test('a summary starts only after one full batch has left the recent-message win
     assert.match(prompts[0].prompt, /如果这段对话全是日常闲聊/);
     assert.equal(prompts[0].maxTokens, 1200);
     assert.equal(context.chatMetadata[SUMMARY_STATE_KEY].lastSummarizedMessageIndex, 9);
+    assert.ok(context.worldInfoListUpdates > 0, 'the new summary lorebook must enter ST\'s live list immediately');
+    assert.ok(context.reloadedWorldInfoBooks.includes(context.additionalBooks[0]), 'the open lorebook editor must reload after content is saved');
 
     const data = context.lorebooks.get('金钰琳-自动总结');
     const entries = Object.values(data.entries);
@@ -558,4 +574,35 @@ test('MESSAGE_SENT checks window overflow while swipe events remain ignored', as
     assert.equal(calls.length, 1);
     assert.equal(calls[0][1], 1200);
     assert.match((await getSummaries(context))[0].summary, /普通的日常交谈/);
+});
+
+test('opening an existing chat backfills at most three configured-size batches immediately', async (testContext) => {
+    const context = createContext(dialoguePairs(20));
+    const handlers = new Map();
+    let calls = 0;
+    context.eventTypes = {
+        MESSAGE_SENT: 'sent',
+        CHAT_CHANGED: 'changed',
+    };
+    context.eventSource = { on: (event, handler) => handlers.set(event, handler) };
+
+    const originalSillyTavern = globalThis.SillyTavern;
+    testContext.after(() => globalThis.SillyTavern = originalSillyTavern);
+    globalThis.SillyTavern = { getContext: () => context };
+
+    initializeSummaryManager({ context: { recentMessages: 5, summaryBatchSize: 4 } }, context, {
+        generateSummary: async () => {
+            calls++;
+            return '[事件1]\n重要度：3\n时间：未明确\n涉及角色：A\n地点：庭院\n事件概述：A确认了一条足以继续推动剧情的可靠线索。';
+        },
+    });
+    await new Promise(resolve => setTimeout(resolve, 60));
+
+    assert.equal(calls, 3, 'one automatic check must be capped instead of flooding the side API');
+    assert.equal(context.chatMetadata[SUMMARY_STATE_KEY].lastSummarizedMessageIndex, 11);
+    const status = await getSummaryStatus(context, { context: { recentMessages: 5, summaryBatchSize: 4 } });
+    assert.equal(status.batchSize, 4, 'backfill must use the panel setting rather than a fixed floor count');
+    assert.equal(status.pendingFloors, 23);
+    assert.equal(status.phase, 'pending');
+    assert.ok(handlers.has('changed'));
 });

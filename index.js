@@ -423,6 +423,10 @@ function renderStatus(status) {
     const chunkCount = Number(status.chunkCount) || 0;
     const summaryEntryCount = Number(status.summaryEntryCount) || 0;
     const lastSummaryAt = String(status.lastSummaryAt ?? '').trim();
+    const summaryPendingFloors = Math.max(0, Number(status.summaryPendingFloors) || 0);
+    const summaryBatchSize = Math.max(1, Number(status.summaryBatchSize) || 15);
+    const summaryPhase = String(status.summaryPhase ?? 'idle');
+    const summaryError = String(status.summaryError ?? '').trim();
     const chatSize = String(status.chatSize ?? '').trim();
     document.querySelector('#memory_augment_status_chunks').textContent = chunkCount > 0
         ? String(chunkCount)
@@ -433,6 +437,25 @@ function renderStatus(status) {
     document.querySelector('#memory_augment_status_summary_entries').textContent = summaryEntryCount > 0
         ? String(summaryEntryCount)
         : '暂无摘要';
+    const summaryProgressElement = document.querySelector('#memory_augment_status_summary_progress');
+    if (summaryProgressElement) {
+        if (summaryPhase === 'error') {
+            summaryProgressElement.textContent = summaryError ? `失败：${summaryError}` : '生成失败';
+            summaryProgressElement.dataset.state = 'error';
+        } else if (summaryPhase === 'summarizing' || summaryPhase === 'repairing') {
+            summaryProgressElement.textContent = `生成中（待处理 ${summaryPendingFloors} 楼）`;
+            summaryProgressElement.dataset.state = 'working';
+        } else if (summaryPendingFloors >= summaryBatchSize) {
+            summaryProgressElement.textContent = `待补 ${summaryPendingFloors} 楼（每批 ${summaryBatchSize} 楼）`;
+            summaryProgressElement.dataset.state = 'pending';
+        } else if (summaryPendingFloors > 0) {
+            summaryProgressElement.textContent = `已积累 ${summaryPendingFloors}/${summaryBatchSize} 楼`;
+            summaryProgressElement.dataset.state = 'idle';
+        } else {
+            summaryProgressElement.textContent = '已跟上当前聊天';
+            summaryProgressElement.dataset.state = 'ok';
+        }
+    }
     document.querySelector('#memory_augment_status_size').textContent = !chatSize || /^0(?:\.0+)?\s*(?:B|Bytes?)$/i.test(chatSize)
         ? '空'
         : chatSize;
@@ -512,7 +535,7 @@ async function refreshStatus() {
     button?.classList.add('disabled');
 
     const context = SillyTavern.getContext();
-    const summaryStatus = await getSummaryStatus(context).catch(error => {
+    const summaryStatus = await getSummaryStatus(context, extension_settings[EXTENSION_KEY]).catch(error => {
         console.warn('[Memory Augment] Failed to read summary lorebook status.', error);
         return { entryCount: 0, lastSummaryAt: null };
     });
@@ -522,6 +545,10 @@ async function refreshStatus() {
         renderStatus({
             ...status,
             summaryEntryCount: summaryStatus.entryCount,
+            summaryPendingFloors: summaryStatus.pendingFloors,
+            summaryBatchSize: summaryStatus.batchSize,
+            summaryPhase: summaryStatus.phase,
+            summaryError: summaryStatus.error,
             lastSummaryAt: summaryStatus.lastSummaryAt
                 ? new Date(summaryStatus.lastSummaryAt).toLocaleString()
                 : null,
@@ -530,6 +557,10 @@ async function refreshStatus() {
         renderStatus({
             status: 'error',
             summaryEntryCount: summaryStatus.entryCount,
+            summaryPendingFloors: summaryStatus.pendingFloors,
+            summaryBatchSize: summaryStatus.batchSize,
+            summaryPhase: summaryStatus.phase,
+            summaryError: summaryStatus.error,
             lastSummaryAt: summaryStatus.lastSummaryAt
                 ? new Date(summaryStatus.lastSummaryAt).toLocaleString()
                 : null,
@@ -876,7 +907,7 @@ async function initialize() {
     bindMessageIngestion(settings, context);
     bindPhoneMemoryLifecycle(context);
     initializeChatMemoryUi(settings, context);
-    initializeSummaryManager(settings, context, { onSaved: refreshStatus });
+    initializeSummaryManager(settings, context, { onSaved: refreshStatus, onStatus: refreshStatus });
     // Create the always-available status/map launcher before optional async managers run.
     initializeStoryStatusUi(context, settings);
     initializePhoneShellUi(settings, context);

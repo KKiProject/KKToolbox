@@ -18,7 +18,9 @@ const HISTORICAL_OVERVIEW_GROUP_SIZE = 5;
 const HISTORICAL_OVERVIEW_ORDER = 99;
 const WORLD_INFO_POSITION_AT_DEPTH = 4;
 const SUMMARY_MIGRATION_VERSION = 1;
+const MAX_AUTOMATIC_BACKFILL_BATCHES = 3;
 let summaryQueue = Promise.resolve();
+const summaryRuntimeByChat = new Map();
 
 function clampInteger(value, fallback, minimum, maximum) {
     const number = Math.trunc(Number(value));
@@ -27,6 +29,42 @@ function clampInteger(value, fallback, minimum, maximum) {
 
 function getChatId(context) {
     return context?.getCurrentChatId?.() ?? context?.chatId;
+}
+
+function setSummaryRuntime(context, patch = {}) {
+    const chatId = getChatId(context);
+    if (!chatId) return;
+    const previous = summaryRuntimeByChat.get(chatId) ?? {
+        phase: 'idle',
+        pendingFloors: 0,
+        error: '',
+    };
+    summaryRuntimeByChat.set(chatId, { ...previous, ...patch });
+}
+
+async function refreshSummaryBookRuntime(context, bookName, worldModule = null, options = {}) {
+    if (options.updateList !== false) {
+        const updateList = context?.updateWorldInfoList ?? worldModule?.updateWorldInfoList;
+        if (typeof updateList === 'function') {
+            await updateList();
+        }
+    }
+
+    const reloadEditor = context?.reloadWorldInfoEditor ?? worldModule?.reloadEditor;
+    if (typeof reloadEditor === 'function') {
+        reloadEditor(bookName, false);
+    }
+
+    const settingsUpdated = context?.eventTypes?.WORLDINFO_SETTINGS_UPDATED
+        ?? context?.event_types?.WORLDINFO_SETTINGS_UPDATED;
+    if (settingsUpdated) {
+        await context?.eventSource?.emit?.(settingsUpdated);
+    }
+}
+
+async function saveSummaryBookData(context, bookName, data) {
+    await context.saveWorldInfo(bookName, data, true);
+    await refreshSummaryBookRuntime(context, bookName, null, { updateList: false });
 }
 
 function getSummaryState(metadata, create = false) {
@@ -82,6 +120,7 @@ function getCharacterFileName(character) {
 async function createSummaryBook(context, bookName) {
     if (typeof context?.createNewWorldInfo === 'function') {
         await context.createNewWorldInfo(bookName);
+        await refreshSummaryBookRuntime(context, bookName);
         return;
     }
     const worldModule = await import('../../../world-info.js');
@@ -89,11 +128,13 @@ async function createSummaryBook(context, bookName) {
     if (!created) {
         throw new Error(`创建摘要世界书失败：${bookName}`);
     }
+    await refreshSummaryBookRuntime(context, bookName, worldModule);
 }
 
 async function bindSummaryBookToCharacter(context, character, bookName) {
     if (typeof context?.bindAdditionalWorldInfoBook === 'function') {
         await context.bindAdditionalWorldInfoBook(bookName);
+        await refreshSummaryBookRuntime(context, bookName);
         return;
     }
     const fileName = getCharacterFileName(character);
@@ -105,20 +146,23 @@ async function bindSummaryBookToCharacter(context, character, bookName) {
         ? worldModule.world_info.charLore
         : [];
     let binding = charLore.find(item => item?.name === fileName);
-    if (binding?.extraBooks?.includes(bookName)) {
+    const alreadyBound = binding?.extraBooks?.includes(bookName) === true;
+    if (alreadyBound && worldModule.world_names?.includes(bookName)) {
         return;
     }
-    if (!binding) {
-        binding = { name: fileName, extraBooks: [] };
-        charLore.push(binding);
+    if (!alreadyBound) {
+        if (!binding) {
+            binding = { name: fileName, extraBooks: [] };
+            charLore.push(binding);
+        }
+        binding.extraBooks = Array.isArray(binding.extraBooks) ? binding.extraBooks : [];
+        binding.extraBooks.push(bookName);
+        Object.assign(worldModule.world_info, { charLore });
+        context.saveSettingsDebounced?.();
     }
-    binding.extraBooks = Array.isArray(binding.extraBooks) ? binding.extraBooks : [];
-    binding.extraBooks.push(bookName);
-    Object.assign(worldModule.world_info, { charLore });
-    context.saveSettingsDebounced?.();
-    const settingsUpdated = context?.eventTypes?.WORLDINFO_SETTINGS_UPDATED
-        ?? context?.event_types?.WORLDINFO_SETTINGS_UPDATED;
-    if (settingsUpdated) await context.eventSource?.emit?.(settingsUpdated);
+    // Even an already-bound book may be missing from ST's live world list or
+    // editor cache after being created in the background. Always reconcile it.
+    await refreshSummaryBookRuntime(context, bookName, worldModule);
 }
 
 async function getSummaryBookName(context, create = false) {
@@ -276,7 +320,7 @@ async function ensureHistoricalOverviewEntry(context, bookName) {
         const data = await context.loadWorldInfo(bookName);
         if (data) {
             const result = await ensureHistoricalOverviewEntryInData(context, bookName, data);
-            if (result.changed) await context.saveWorldInfo(bookName, data, true);
+            if (result.changed) await saveSummaryBookData(context, bookName, data);
             return result;
         }
     }
@@ -345,7 +389,7 @@ async function upsertSummaryEntry(context, events, start, end, createdAt, order 
         }
         await ensureHistoricalOverviewEntryInData(context, bookName, data);
         normalizeManagedSummaryOrders(data);
-        await context.saveWorldInfo(bookName, data, true);
+        await saveSummaryBookData(context, bookName, data);
         const verified = await context.loadWorldInfo(bookName);
         if (String(verified?.entries?.[keptUid]?.content ?? '').trim() !== content) {
             throw new Error(`摘要世界书正文保存失败：${key}`);
@@ -684,7 +728,7 @@ async function saveHistoricalOverviewBlock(context, bookName, start, end, overvi
         if (data) {
             const { entry } = await ensureHistoricalOverviewEntryInData(context, bookName, data);
             entry.content = replaceOverviewBlock(entry.content, start, end, overview);
-            await context.saveWorldInfo(bookName, data, true);
+            await saveSummaryBookData(context, bookName, data);
             return;
         }
     }
@@ -799,7 +843,7 @@ export async function getSummaries(context) {
     return summaries.sort((left, right) => left.start - right.start);
 }
 
-export async function getSummaryStatus(context) {
+export async function getSummaryStatus(context, settings = {}) {
     const state = getSummaryState(context?.chatMetadata);
     const bookName = await getSummaryBookName(context, false);
     let entryCount = state?.entries.length ?? 0;
@@ -809,10 +853,22 @@ export async function getSummaryStatus(context) {
         entryCount = Object.values(data?.entries ?? {}).filter(isManagedSummaryEntry).length;
     }
     const lastSummaryAt = state?.entries.map(item => item.createdAt).filter(Boolean).sort().at(-1) ?? null;
+    const recentMessages = clampInteger(settings?.context?.recentMessages, 20, 1, 1000);
+    const batchSize = clampInteger(settings?.context?.summaryBatchSize, 15, 1, 50);
+    const chat = Array.isArray(context?.chat) ? context.chat : [];
+    const nextStart = Math.max(0, (state?.lastSummarizedMessageIndex ?? -1) + 1);
+    const firstIndexInsideRecentWindow = Math.max(0, chat.length - recentMessages);
+    const calculatedPendingFloors = Math.max(0, firstIndexInsideRecentWindow - nextStart);
+    const runtime = summaryRuntimeByChat.get(getChatId(context)) ?? {};
     return {
         entryCount,
         summaryCount: state?.entries.length ?? 0,
         lastSummaryAt,
+        bookName,
+        batchSize,
+        pendingFloors: calculatedPendingFloors,
+        phase: String(runtime.phase ?? (calculatedPendingFloors >= batchSize ? 'pending' : 'idle')),
+        error: String(runtime.error ?? ''),
     };
 }
 
@@ -836,7 +892,7 @@ export async function clearAllSummaries(context) {
             }
         }
         if (removed > 0) {
-            await context.saveWorldInfo(bookName, data, true);
+            await saveSummaryBookData(context, bookName, data);
         }
     }
 
@@ -929,7 +985,7 @@ async function migrateLegacyLorebookEntries(context, state) {
         if (overview.changed) worldInfoChanged = true;
     }
     if (worldInfoChanged && typeof context?.saveWorldInfo === 'function') {
-        await context.saveWorldInfo(bookName, data, true);
+        await saveSummaryBookData(context, bookName, data);
     }
 
     for (const entry of Object.values(data?.entries ?? {})) {
@@ -1038,10 +1094,18 @@ export async function summarizePendingMessages(settings, context, options = {}) 
     const firstIndexInsideRecentWindow = Math.max(0, chat.length - recentMessages);
     const pendingFloors = Math.max(0, firstIndexInsideRecentWindow - start);
     if (!malformed && pendingFloors < batchSize) {
+        setSummaryRuntime(context, { phase: 'idle', pendingFloors, error: '' });
         return { created: 0, pendingFloors, ...(overviewUpdated ? { overviewUpdated } : {}) };
     }
 
     const end = malformed?.end ?? start + batchSize - 1;
+    setSummaryRuntime(context, {
+        phase: malformed ? 'repairing' : 'summarizing',
+        pendingFloors,
+        start,
+        end,
+        error: '',
+    });
     const messages = chat.slice(start, end + 1).map(message => ({
         name: message?.name,
         is_user: message?.is_user,
@@ -1066,6 +1130,7 @@ export async function summarizePendingMessages(settings, context, options = {}) 
 
     const currentContext = options.getCurrentContext?.() ?? context;
     if (getChatId(currentContext) !== chatId || currentContext.chatMetadata !== metadata) {
+        setSummaryRuntime(context, { phase: 'idle', pendingFloors, error: '' });
         return { created: 0, pendingFloors, discarded: true };
     }
 
@@ -1092,9 +1157,15 @@ export async function summarizePendingMessages(settings, context, options = {}) 
         options.getCurrentContext,
     );
     options.onSaved?.(saved);
+    const remainingFloors = Math.max(0, pendingFloors - (end - start + 1));
+    setSummaryRuntime(currentContext, {
+        phase: remainingFloors >= batchSize ? 'pending' : 'idle',
+        pendingFloors: remainingFloors,
+        error: '',
+    });
     return {
         created: 1,
-        pendingFloors: Math.max(0, pendingFloors - (end - start + 1)),
+        pendingFloors: remainingFloors,
         start,
         end,
         ...(overviewUpdated ? { overviewUpdated } : {}),
@@ -1138,31 +1209,71 @@ export function initializeSummaryManager(settings, context, options = {}) {
                     onSaved: options.onSaved,
                     generateSummary: options.generateSummary,
                 };
-                return summarizePendingMessages(settings, currentContext, summaryOptions);
+                let result = null;
+                for (let attempt = 0; attempt < MAX_AUTOMATIC_BACKFILL_BATCHES; attempt++) {
+                    const activeContext = SillyTavern.getContext();
+                    if (getChatId(activeContext) !== chatId) break;
+                    result = await summarizePendingMessages(settings, activeContext, summaryOptions);
+                    options.onStatus?.();
+                    if (result?.created !== 1 || result?.discarded) break;
+
+                    const batchSize = clampInteger(settings?.context?.summaryBatchSize, 15, 1, 50);
+                    if (Number(result.pendingFloors) < batchSize) break;
+                }
+                return result;
             })
             .catch((error) => {
+                const activeContext = SillyTavern.getContext();
+                if (getChatId(activeContext) === chatId) {
+                    setSummaryRuntime(activeContext, {
+                        phase: 'error',
+                        error: String(error?.message ?? error),
+                    });
+                    options.onStatus?.();
+                }
                 console.error('[Memory Augment] Automatic summary generation failed.', error);
             });
     };
 
-    void migrateLegacySummaries(context).then(options.onSaved).catch(error => {
-        console.error('[Memory Augment] Legacy summary migration failed.', error);
-    });
+    const migrateAndCheck = (targetContext) => {
+        const chatId = getChatId(targetContext);
+        void migrateLegacySummaries(targetContext)
+            .then((migrated) => {
+                if (migrated > 0) options.onSaved?.();
+                enqueueSummaryCheck(chatId);
+            })
+            .catch(error => {
+                setSummaryRuntime(targetContext, {
+                    phase: 'error',
+                    error: String(error?.message ?? error),
+                });
+                options.onStatus?.();
+                console.error('[Memory Augment] Legacy summary migration failed.', error);
+            });
+    };
+
+    // Existing chats may already have a large unsummarized backlog when the
+    // extension is installed. Check immediately instead of waiting for the
+    // next player message.
+    migrateAndCheck(context);
 
     context.eventSource.on(messageSent, (messageId) => {
         const eventContext = SillyTavern.getContext();
         const sentIndex = Number(messageId);
         const sentMessage = eventContext.chat?.[sentIndex];
-        if (!Number.isInteger(sentIndex) || sentMessage?.is_user !== true) return;
+        const latestMessage = eventContext.chat?.at?.(-1);
+        if (Number.isInteger(sentIndex) && sentMessage) {
+            if (sentMessage.is_user !== true) return;
+        } else if (latestMessage?.is_user !== true) {
+            return;
+        }
         enqueueSummaryCheck(getChatId(eventContext));
     });
 
     if (chatChanged) {
         context.eventSource.on(chatChanged, () => {
             const currentContext = SillyTavern.getContext();
-            void migrateLegacySummaries(currentContext).then(options.onSaved).catch(error => {
-                console.error('[Memory Augment] Legacy summary migration failed.', error);
-            });
+            migrateAndCheck(currentContext);
         });
     }
 }
