@@ -939,6 +939,29 @@
     width: min(32rem, calc(100vw - 2rem));
 }
 
+@media (min-width: 601px) {
+    #memory_augment_story_status_root[data-story-view="phone"] #memory_augment_story_status_panel {
+        height: min(86vh, 54rem);
+        max-height: min(86vh, 54rem);
+        width: min(40rem, calc(100vw - 2rem));
+    }
+
+    #memory_augment_story_status_root[data-story-view="phone"] .memory-augment-phone-device {
+        max-height: 50rem;
+        max-width: 27rem;
+        min-height: 34rem;
+    }
+
+    #memory_augment_story_status_root[data-story-view="phone"] .memory-augment-phone-screen {
+        font-weight: 450;
+        height: 89.2858%;
+        text-rendering: optimizeLegibility;
+        transform: scale(1.12);
+        transform-origin: left top;
+        width: 89.2858%;
+    }
+}
+
 .memory-augment-story-tabs {
     display: grid;
     flex: 0 0 auto;
@@ -2136,11 +2159,22 @@
     border: 1px solid rgb(102 97 121 / 18%);
     border-radius: 0.6rem;
     box-sizing: border-box;
+    caret-color: #ff6f00 !important;
     color: #25232b;
     font: inherit;
+    outline: none;
     padding: 0.48rem 0.55rem;
     resize: vertical;
+    transition: border-color 120ms ease, box-shadow 120ms ease, background-color 120ms ease;
     width: 100%;
+}
+
+.memory-augment-phone-form-field > input:focus,
+.memory-augment-phone-form-field > textarea:focus,
+.memory-augment-phone-form-field > select:focus {
+    background: #fffdfb;
+    border-color: #ff8200;
+    box-shadow: 0 0 0 0.16rem rgb(255 130 0 / 16%);
 }
 
 .memory-augment-phone-form-field > textarea {
@@ -2223,6 +2257,12 @@
 .memory-augment-phone-message-list,
 .memory-augment-phone-sheet,
 .memory-augment-phone-forward-bundle-list,
+.memory-augment-weibo-view,
+.memory-augment-weibo-comments-view,
+.memory-augment-weibo-relations-view,
+.memory-augment-weibo-role-profile-view,
+.memory-augment-weibo-onboarding,
+.memory-augment-weibo-composer,
 .memory-augment-phone-memory-list {
     -webkit-overflow-scrolling: touch;
     overscroll-behavior-y: contain;
@@ -2591,6 +2631,1460 @@
 .memory-augment-phone-forward-target.is-selected > i {
     background: #69617f;
     color: #fff;
+}
+
+.memory-augment-phone-app-content.is-weibo {
+    background: #f2f2f5;
+    color: #28252d;
+    overflow: hidden;
+    padding: 0;
+}
+
+.memory-augment-phone-weibo {
+    background: #f2f2f5;
+    display: grid;
+    grid-template-rows: 2.7rem minmax(0, 1fr) 3.05rem;
+    height: 100%;
+    min-height: 0;
+}
+
+.memory-augment-weibo-topbar {
+    align-items: center;
+    background: rgb(255 255 255 / 94%);
+    border-bottom: 1px solid rgb(42 36 49 / 7%);
+    display: flex;
+    justify-content: flex-start;
+    padding: 0 0.8rem;
+}
+
+.memory-augment-weibo-topbar > strong {
+    align-items: center;
+    display: flex;
+    font-size: 0.86rem;
+    gap: 0.38rem;
+}
+
+.memory-augment-weibo-topbar > strong i {
+    color: #ff8200;
+    font-size: 1.15rem;
+}
+
+.memory-augment-weibo-topbar button,
+.memory-augment-weibo-nav button,
+.memory-augment-weibo-post button,
+.memory-augment-weibo-onboarding button,
+.memory-augment-weibo-composer button,
+.memory-augment-weibo-detail button,
+.memory-augment-weibo-profile button,
+.memory-augment-weibo-hot-row,
+.memory-augment-weibo-empty button {
+    appearance: none;
+    border: 0;
+    color: inherit;
+    cursor: pointer;
+    font: inherit;
+    writing-mode: horizontal-tb;
+}
+
+.memory-augment-weibo-view {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    scrollbar-width: thin;
+}
+
+.memory-augment-weibo-nav {
+    align-items: stretch;
+    background: rgb(255 255 255 / 96%);
+    border-top: 1px solid rgb(42 36 49 / 7%);
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    padding: 0.18rem 0.42rem 0.28rem;
+}
+
+.memory-augment-weibo-nav button {
+    align-items: center;
+    background: transparent;
+    display: flex;
+    flex-direction: column;
+    font-size: 0.52rem;
+    gap: 0.12rem;
+    justify-content: center;
+    opacity: 0.5;
+    padding: 0;
+    white-space: nowrap;
+}
+
+.memory-augment-weibo-nav button i {
+    font-size: 0.92rem;
+}
+
+.memory-augment-weibo-nav button.is-active {
+    color: #ff7500;
+    font-weight: 700;
+    opacity: 1;
+}
+
+.memory-augment-weibo-feed {
+    display: grid;
+    gap: 0.48rem;
+}
+
+.memory-augment-weibo-post {
+    background: #fff;
+    border-bottom: 1px solid rgb(42 36 49 / 6%);
+    border-top: 1px solid rgb(42 36 49 / 4%);
+    padding: 0.72rem 0.78rem 0.48rem;
+}
+
+.memory-augment-weibo-post-head {
+    align-items: center;
+    display: grid;
+    gap: 0.55rem;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.memory-augment-weibo-avatar {
+    align-items: center;
+    background: linear-gradient(145deg, #f79a76, #d65775);
+    border: 2px solid rgb(255 255 255 / 85%);
+    border-radius: 50%;
+    box-shadow: 0 0.18rem 0.45rem rgb(64 43 61 / 16%);
+    color: #fff;
+    display: inline-flex;
+    flex: 0 0 auto;
+    font-size: 0.78rem;
+    font-weight: 750;
+    height: 2.25rem;
+    justify-content: center;
+    overflow: hidden;
+    width: 2.25rem;
+}
+
+.memory-augment-weibo-avatar img {
+    height: 100%;
+    object-fit: cover;
+    width: 100%;
+}
+
+.memory-augment-weibo-avatar.is-violet { background: linear-gradient(145deg, #9981d7, #6552a6); }
+.memory-augment-weibo-avatar.is-orange { background: linear-gradient(145deg, #ffae63, #e36a3e); }
+.memory-augment-weibo-avatar.is-gold { background: linear-gradient(145deg, #d6b062, #927139); }
+.memory-augment-weibo-avatar.is-blue { background: linear-gradient(145deg, #6e9ee3, #4767ad); }
+.memory-augment-weibo-avatar.is-green { background: linear-gradient(145deg, #67b99d, #3f846f); }
+.memory-augment-weibo-avatar.is-sand { background: linear-gradient(145deg, #c8a57a, #8e6946); }
+.memory-augment-weibo-avatar.is-cyan { background: linear-gradient(145deg, #5bbcca, #357c9a); }
+
+.memory-augment-weibo-post-author {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.memory-augment-weibo-post-author strong {
+    align-items: center;
+    display: flex;
+    font-size: 0.72rem;
+    gap: 0.22rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.memory-augment-weibo-post-author strong i {
+    color: #ff9b32;
+    font-size: 0.66rem;
+}
+
+.memory-augment-weibo-post-author small {
+    font-size: 0.53rem;
+    margin-top: 0.13rem;
+    opacity: 0.45;
+}
+
+.memory-augment-weibo-more {
+    background: transparent;
+    opacity: 0.42;
+    padding: 0.3rem;
+}
+
+.memory-augment-weibo-post-body {
+    font-size: 0.7rem;
+    line-height: 1.58;
+    padding: 0.48rem 0 0 2.8rem;
+}
+
+.memory-augment-weibo-topic-label {
+    color: #ee6b27;
+    display: inline;
+    font-size: 0.68rem;
+    margin: 0 0.18rem 0 0;
+}
+
+.memory-augment-weibo-custom-topic {
+    color: #ee6b27;
+    font-size: 0.68rem;
+    margin-right: 0.18rem;
+}
+
+.memory-augment-weibo-post-mentions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    margin-bottom: 0.22rem;
+}
+
+.memory-augment-weibo-post-mentions > span {
+    color: #4f78ad;
+    font-size: 0.64rem;
+}
+
+.memory-augment-weibo-post-text {
+    display: inline;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+.memory-augment-weibo-post-visual {
+    align-content: end;
+    background: linear-gradient(145deg, #6b5b81, #c66d7d);
+    border-radius: 0.75rem;
+    color: #fff;
+    display: grid;
+    height: 7.2rem;
+    margin-top: 0.5rem;
+    overflow: hidden;
+    padding: 0.62rem;
+    position: relative;
+}
+
+.memory-augment-weibo-post-visual::before {
+    background: radial-gradient(circle at 74% 20%, rgb(255 255 255 / 32%), transparent 32%);
+    content: '';
+    inset: 0;
+    position: absolute;
+}
+
+.memory-augment-weibo-post-visual.is-rose { background: linear-gradient(145deg, #7f3e6b, #e17272); }
+.memory-augment-weibo-post-visual.is-gold { background: linear-gradient(145deg, #5f5752, #b49564); }
+.memory-augment-weibo-post-visual.is-blue { background: linear-gradient(145deg, #244b78, #5ba3bd); }
+.memory-augment-weibo-post-visual.is-green { background: linear-gradient(145deg, #315e57, #77ad7d); }
+.memory-augment-weibo-post-visual.is-cyan { background: linear-gradient(145deg, #275169, #53a0a6); }
+
+.memory-augment-weibo-post-visual > * {
+    position: relative;
+    z-index: 1;
+}
+
+.memory-augment-weibo-post-visual i {
+    font-size: 1.1rem;
+    margin-bottom: auto;
+    opacity: 0.72;
+}
+
+.memory-augment-weibo-post-visual strong {
+    font-size: 0.8rem;
+}
+
+.memory-augment-weibo-post-visual small {
+    font-size: 0.52rem;
+    opacity: 0.72;
+}
+
+.memory-augment-weibo-post-location {
+    align-items: center;
+    color: #6b7590;
+    display: flex;
+    font-size: 0.56rem;
+    gap: 0.28rem;
+    margin-top: 0.45rem;
+}
+
+.memory-augment-weibo-post-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    margin: 0.45rem 0 0 2.8rem;
+}
+
+.memory-augment-weibo-post-actions button {
+    align-items: center;
+    background: transparent;
+    display: flex;
+    font-size: 0.55rem;
+    gap: 0.28rem;
+    justify-content: center;
+    opacity: 0.48;
+    padding: 0.28rem;
+}
+
+.memory-augment-weibo-post-actions button.is-liked {
+    color: #e54c61;
+    opacity: 1;
+}
+
+.memory-augment-weibo-hot-feature {
+    background: linear-gradient(135deg, #ff8c54, #ef526e 68%, #9d4bb4);
+    color: #fff;
+    display: grid;
+    margin-bottom: 0.52rem;
+    min-height: 6.5rem;
+    padding: 1rem 0.9rem;
+}
+
+.memory-augment-weibo-hot-feature > span {
+    font-size: 0.5rem;
+    font-weight: 800;
+    letter-spacing: 0.14em;
+    opacity: 0.72;
+}
+
+.memory-augment-weibo-hot-feature > strong {
+    align-self: end;
+    font-size: 1rem;
+}
+
+.memory-augment-weibo-hot-feature > small {
+    font-size: 0.55rem;
+    line-height: 1.45;
+    margin-top: 0.3rem;
+    opacity: 0.75;
+}
+
+.memory-augment-weibo-hot-list {
+    background: #fff;
+    display: grid;
+}
+
+.memory-augment-weibo-hot-row {
+    align-items: center;
+    background: #fff;
+    border-bottom: 1px solid rgb(42 36 49 / 6%);
+    display: grid;
+    gap: 0.6rem;
+    grid-template-columns: 1.2rem minmax(0, 1fr) auto;
+    min-height: 3.3rem;
+    padding: 0.45rem 0.78rem;
+    text-align: left;
+    width: 100%;
+}
+
+.memory-augment-weibo-hot-rank {
+    color: #85818a;
+    font-size: 0.72rem;
+    font-style: italic;
+    font-weight: 800;
+    text-align: center;
+}
+
+.memory-augment-weibo-hot-rank.is-top {
+    color: #ff5a3d;
+    font-size: 0.9rem;
+}
+
+.memory-augment-weibo-hot-copy {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.memory-augment-weibo-hot-copy strong {
+    align-items: center;
+    display: flex;
+    font-size: 0.68rem;
+    gap: 0.28rem;
+}
+
+.memory-augment-weibo-hot-copy em {
+    background: #ff5d45;
+    border-radius: 0.18rem;
+    color: #fff;
+    font-size: 0.48rem;
+    font-style: normal;
+    padding: 0.02rem 0.18rem;
+}
+
+.memory-augment-weibo-hot-copy em.is-新 { background: #ff9a32; }
+.memory-augment-weibo-hot-copy em.is-热 { background: #ee697b; }
+.memory-augment-weibo-hot-copy em.is-沸 { background: #d84c50; }
+
+.memory-augment-weibo-hot-copy small {
+    font-size: 0.52rem;
+    margin-top: 0.15rem;
+    opacity: 0.45;
+}
+
+.memory-augment-weibo-hot-row > i {
+    font-size: 0.55rem;
+    opacity: 0.28;
+}
+
+.memory-augment-weibo-profile {
+    background: #fff;
+    margin-bottom: 0.52rem;
+    padding-bottom: 0.65rem;
+}
+
+.memory-augment-weibo-profile-cover {
+    background:
+        radial-gradient(circle at 70% 25%, rgb(255 255 255 / 38%), transparent 25%),
+        linear-gradient(135deg, #ffad76, #dc6386 52%, #775eaa);
+    height: 5.7rem;
+}
+
+.memory-augment-weibo-profile-main {
+    align-items: flex-end;
+    display: flex;
+    justify-content: space-between;
+    padding: 0 0.8rem;
+}
+
+.memory-augment-weibo-profile-main .memory-augment-weibo-avatar {
+    border-width: 0.2rem;
+    height: 4rem;
+    margin-top: -2rem;
+    width: 4rem;
+}
+
+.memory-augment-weibo-profile-post {
+    align-items: center;
+    background: #ff8200;
+    border-radius: 999px;
+    color: #fff !important;
+    display: flex;
+    font-size: 0.6rem;
+    gap: 0.28rem;
+    margin-bottom: 0.12rem;
+    min-height: 1.75rem;
+    padding: 0 0.72rem;
+}
+
+.memory-augment-weibo-profile-copy {
+    display: grid;
+    padding: 0.48rem 0.82rem 0;
+}
+
+.memory-augment-weibo-profile-copy > strong {
+    font-size: 0.92rem;
+}
+
+.memory-augment-weibo-profile-copy > small {
+    font-size: 0.54rem;
+    opacity: 0.45;
+}
+
+.memory-augment-phone-app-content .memory-augment-weibo-profile-copy > p {
+    font-size: 0.65rem;
+    margin: 0.45rem 0 0;
+    opacity: 0.72;
+    text-align: left;
+}
+
+.memory-augment-weibo-profile-stats {
+    display: flex;
+    gap: 1.2rem;
+    padding: 0.6rem 0.82rem 0;
+}
+
+.memory-augment-weibo-profile-stats > span,
+.memory-augment-weibo-profile-stat {
+    align-items: baseline;
+    background: transparent;
+    display: flex;
+    gap: 0.24rem;
+    padding: 0;
+}
+
+.memory-augment-weibo-profile-stat {
+    cursor: pointer;
+}
+
+.memory-augment-weibo-profile-stats strong {
+    font-size: 0.72rem;
+}
+
+.memory-augment-weibo-profile-stats small {
+    font-size: 0.52rem;
+    opacity: 0.45;
+}
+
+.memory-augment-weibo-profile-actions {
+    display: flex;
+    padding: 0.62rem 0.82rem 0;
+}
+
+.memory-augment-weibo-profile-actions button {
+    align-items: center;
+    background: #f3f3f6;
+    border-radius: 999px;
+    display: flex;
+    font-size: 0.58rem;
+    gap: 0.28rem;
+    min-height: 1.7rem;
+    padding: 0 0.68rem;
+}
+
+.memory-augment-weibo-relations,
+.memory-augment-weibo-role-profile-page {
+    background: #f2f2f5;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    height: 100%;
+}
+
+.memory-augment-weibo-relations-view,
+.memory-augment-weibo-role-profile-view {
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.memory-augment-weibo-relations-intro {
+    align-items: center;
+    background: linear-gradient(135deg, #fff7ef, #fff);
+    border-bottom: 1px solid rgb(42 36 49 / 6%);
+    display: flex;
+    gap: 0.55rem;
+    justify-content: space-between;
+    padding: 0.75rem 0.82rem;
+}
+
+.memory-augment-weibo-relations-intro > div {
+    display: grid;
+    gap: 0.24rem;
+    min-width: 0;
+}
+
+.memory-augment-weibo-relations-intro > div > strong {
+    font-size: 0.7rem;
+}
+
+.memory-augment-weibo-relations-intro > div > small {
+    font-size: 0.54rem;
+    line-height: 1.55;
+    opacity: 0.56;
+}
+
+.memory-augment-weibo-role-create {
+    align-items: center;
+    background: #ff8200;
+    border-radius: 999px;
+    color: #fff !important;
+    display: flex;
+    flex: 0 0 auto;
+    font-size: 0.54rem;
+    gap: 0.22rem;
+    min-height: 1.7rem;
+    padding: 0 0.62rem;
+}
+
+.memory-augment-weibo-role-list {
+    background: #fff;
+    display: grid;
+    margin-top: 0.48rem;
+}
+
+.memory-augment-weibo-role-row {
+    align-items: center;
+    border-bottom: 1px solid rgb(42 36 49 / 6%);
+    display: grid;
+    gap: 0.45rem;
+    grid-template-columns: minmax(0, 1fr) auto;
+    min-height: 3.7rem;
+    padding: 0.45rem 0.7rem;
+}
+
+.memory-augment-weibo-role-row.is-included {
+    background: linear-gradient(90deg, rgb(255 130 0 / 5%), transparent 45%);
+}
+
+.memory-augment-weibo-role-open {
+    align-items: center;
+    background: transparent;
+    display: grid;
+    gap: 0.52rem;
+    grid-template-columns: auto minmax(0, 1fr);
+    min-width: 0;
+    padding: 0;
+    text-align: left;
+}
+
+.memory-augment-weibo-role-open .memory-augment-weibo-avatar {
+    height: 2.45rem;
+    width: 2.45rem;
+}
+
+.memory-augment-weibo-role-copy {
+    display: grid;
+    min-width: 0;
+}
+
+.memory-augment-weibo-role-copy > strong {
+    font-size: 0.68rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.memory-augment-weibo-role-copy > small {
+    color: #e56f19;
+    font-size: 0.52rem;
+    margin-top: 0.15rem;
+}
+
+.memory-augment-weibo-role-toggle {
+    align-items: center;
+    background: #ff8200;
+    border-radius: 999px;
+    color: #fff !important;
+    display: flex;
+    font-size: 0.54rem;
+    gap: 0.22rem;
+    min-height: 1.65rem;
+    padding: 0 0.58rem;
+    white-space: nowrap;
+}
+
+.memory-augment-weibo-role-toggle.is-active {
+    background: #f0f0f3;
+    color: #6d6875 !important;
+}
+
+.memory-augment-weibo-role-more {
+    align-items: center;
+    display: grid;
+    gap: 0.12rem 0.52rem;
+    grid-template-columns: auto minmax(0, 1fr);
+    padding: 0.78rem;
+}
+
+.memory-augment-weibo-role-more-icon {
+    align-items: center;
+    background: #f0f0f3;
+    border-radius: 50%;
+    display: flex;
+    font-size: 1rem;
+    grid-row: 1 / 3;
+    height: 2.35rem;
+    justify-content: center;
+    width: 2.35rem;
+}
+
+.memory-augment-weibo-role-more > strong {
+    font-size: 0.63rem;
+}
+
+.memory-augment-weibo-role-more > small {
+    font-size: 0.5rem;
+    opacity: 0.42;
+}
+
+.memory-augment-weibo-role-empty {
+    align-items: center;
+    color: rgb(42 36 49 / 45%);
+    display: flex;
+    flex-direction: column;
+    gap: 0.28rem;
+    padding: 1.2rem 0.8rem;
+    text-align: center;
+}
+
+.memory-augment-weibo-role-empty > i {
+    color: #ff8200;
+    font-size: 1.1rem;
+}
+
+.memory-augment-weibo-role-empty > strong {
+    color: #2a2431;
+    font-size: 0.64rem;
+}
+
+.memory-augment-weibo-role-empty > small {
+    font-size: 0.52rem;
+}
+
+.memory-augment-weibo-profile.is-role .memory-augment-weibo-profile-cover {
+    background:
+        radial-gradient(circle at 25% 22%, rgb(255 255 255 / 35%), transparent 26%),
+        linear-gradient(135deg, #8a7cc7, #d8789e 58%, #efa978);
+}
+
+.memory-augment-weibo-role-relation {
+    background: #f2f2f5;
+    border-radius: 999px;
+    color: #6d6875;
+    font-size: 0.52rem;
+    justify-self: start;
+    margin-top: 0.48rem;
+    padding: 0.28rem 0.52rem;
+}
+
+.memory-augment-weibo-role-relation[data-relation="mutual"] {
+    background: #fff0e3;
+    color: #d96308;
+}
+
+.memory-augment-weibo-role-edit {
+    background: transparent;
+    color: #df6c19;
+    font-size: 0.56rem;
+    justify-self: end;
+    padding: 0.3rem;
+}
+
+.memory-augment-weibo-role-profile-actions {
+    display: flex;
+    gap: 0.45rem;
+    justify-content: flex-end;
+    padding: 0.42rem 0.82rem 0;
+}
+
+.memory-augment-weibo-role-profile-actions > button {
+    align-items: center;
+    background: transparent;
+    color: #a64d58;
+    display: flex;
+    border-radius: 999px;
+    font-size: 0.58rem;
+    gap: 0.24rem;
+    min-height: 1.8rem;
+    padding: 0.38rem 0.65rem;
+}
+
+.memory-augment-weibo-role-profile-actions > .memory-augment-weibo-role-generate {
+    background: #ff710a;
+    color: #fff;
+}
+
+.memory-augment-weibo-role-profile-actions > .memory-augment-weibo-role-generate:disabled {
+    background: #e6e3e8;
+    color: #99919f;
+}
+
+.memory-augment-weibo-detail-header > button,
+.memory-augment-weibo-role-open,
+.memory-augment-weibo-role-toggle,
+.memory-augment-weibo-role-create,
+.memory-augment-weibo-role-edit,
+.memory-augment-weibo-role-profile-actions > button {
+    appearance: none;
+    border: 0 !important;
+    box-shadow: none !important;
+    outline: 0 !important;
+}
+
+.memory-augment-weibo-section-heading {
+    align-items: center;
+    background: #fff;
+    border-bottom: 1px solid rgb(42 36 49 / 6%);
+    display: flex;
+    justify-content: space-between;
+    padding: 0.65rem 0.78rem;
+}
+
+.memory-augment-weibo-section-heading strong {
+    border-bottom: 0.14rem solid #ff8200;
+    font-size: 0.68rem;
+    padding-bottom: 0.38rem;
+}
+
+.memory-augment-weibo-section-heading small {
+    font-size: 0.52rem;
+    opacity: 0.42;
+}
+
+.memory-augment-weibo-empty {
+    align-items: center;
+    background: #fff;
+    display: flex;
+    flex-direction: column;
+    min-height: 10rem;
+    padding: 2rem 1rem;
+    text-align: center;
+}
+
+.memory-augment-weibo-empty > i {
+    color: #ff9b53;
+    font-size: 1.7rem;
+    margin-bottom: 0.55rem;
+}
+
+.memory-augment-weibo-empty > strong {
+    font-size: 0.72rem;
+}
+
+.memory-augment-weibo-empty > small {
+    font-size: 0.56rem;
+    margin-top: 0.2rem;
+    opacity: 0.48;
+}
+
+.memory-augment-weibo-empty button {
+    background: #ff8200;
+    border-radius: 999px;
+    color: #fff;
+    font-size: 0.6rem;
+    margin-top: 0.72rem;
+    min-height: 1.8rem;
+    padding: 0 0.8rem;
+}
+
+.memory-augment-weibo-onboarding {
+    background:
+        radial-gradient(circle at 92% 10%, rgb(255 172 115 / 28%), transparent 30%),
+        linear-gradient(180deg, #fffaf6, #fff 45%);
+    box-sizing: border-box;
+    height: 100%;
+    overflow-y: auto;
+    padding: 1.2rem 0.9rem 1rem;
+}
+
+.memory-augment-weibo-onboarding > header {
+    display: grid;
+}
+
+.memory-augment-weibo-onboarding > header > span {
+    color: #ef7332;
+    font-size: 0.5rem;
+    font-weight: 800;
+    letter-spacing: 0.12em;
+}
+
+.memory-augment-weibo-onboarding > header > strong {
+    font-size: 1.22rem;
+    margin-top: 0.18rem;
+}
+
+.memory-augment-phone-app-content .memory-augment-weibo-onboarding > header > p {
+    font-size: 0.62rem;
+    line-height: 1.55;
+    margin: 0.42rem 0 0;
+    max-width: 92%;
+    opacity: 0.52;
+    text-align: left;
+}
+
+.memory-augment-weibo-interest-grid {
+    display: grid;
+    gap: 0.48rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    margin-top: 1rem;
+}
+
+.memory-augment-weibo-interest-grid button {
+    align-items: center;
+    background: #fff;
+    border: 1px solid rgb(62 51 65 / 9%);
+    border-radius: 0.72rem;
+    box-shadow: 0 0.25rem 0.7rem rgb(84 58 62 / 6%);
+    display: flex;
+    font-size: 0.66rem;
+    gap: 0.45rem;
+    min-height: 2.55rem;
+    padding: 0 0.7rem;
+    text-align: left;
+}
+
+.memory-augment-weibo-interest-grid button i {
+    align-items: center;
+    background: #f5f2f3;
+    border-radius: 50%;
+    color: #8c7e86;
+    display: flex;
+    height: 1.45rem;
+    justify-content: center;
+    width: 1.45rem;
+}
+
+.memory-augment-weibo-interest-grid button.is-selected {
+    background: #fff6ef;
+    border-color: rgb(255 130 0 / 45%);
+    color: #db6500;
+    font-weight: 700;
+}
+
+.memory-augment-weibo-interest-grid button.is-selected i {
+    background: #ff8200;
+    color: #fff;
+}
+
+.memory-augment-weibo-onboarding > footer {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+    margin-top: 1rem;
+}
+
+.memory-augment-weibo-interest-count {
+    font-size: 0.55rem;
+    opacity: 0.5;
+}
+
+.memory-augment-weibo-primary {
+    align-items: center;
+    background: #ff8200;
+    border-radius: 999px;
+    color: #fff !important;
+    display: flex;
+    flex-direction: row-reverse;
+    font-size: 0.62rem;
+    gap: 0.38rem;
+    min-height: 2rem;
+    padding: 0 0.85rem;
+}
+
+.memory-augment-weibo-primary:disabled {
+    cursor: default;
+    opacity: 0.36;
+}
+
+.memory-augment-weibo-composer {
+    background: #fff;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow-y: auto;
+}
+
+.memory-augment-weibo-ai-status {
+    min-height: 100%;
+    padding: 72px 28px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    text-align: center;
+    color: #4b4359;
+    background: linear-gradient(160deg, #fff 0%, #fff7f4 58%, #f6f2ff 100%);
+}
+
+.memory-augment-weibo-ai-status > i {
+    font-size: 34px;
+    color: #ff6a00;
+}
+
+.memory-augment-weibo-ai-status > strong {
+    font-size: 17px;
+}
+
+.memory-augment-weibo-ai-status > p {
+    max-width: 290px;
+    margin: 0;
+    color: #887f93;
+    line-height: 1.65;
+}
+
+.memory-augment-weibo-composer > header {
+    align-items: center;
+    border-bottom: 1px solid rgb(42 36 49 / 7%);
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    min-height: 2.75rem;
+    padding: 0 0.75rem;
+}
+
+.memory-augment-weibo-composer > header button {
+    background: transparent;
+    font-size: 0.62rem;
+    justify-self: start;
+    padding: 0.3rem;
+}
+
+.memory-augment-weibo-composer > header button.is-publish {
+    background: #ff8200;
+    border-radius: 999px;
+    color: #fff;
+    justify-self: end;
+    min-height: 1.65rem;
+    padding: 0 0.68rem;
+}
+
+.memory-augment-weibo-composer > header button.is-publish:disabled {
+    opacity: 0.38;
+}
+
+.memory-augment-weibo-composer > header strong {
+    font-size: 0.72rem;
+}
+
+.memory-augment-weibo-composer-body {
+    display: grid;
+    gap: 0.55rem;
+    grid-template-columns: auto minmax(0, 1fr);
+    padding: 0.8rem;
+}
+
+.memory-augment-weibo-editor {
+    display: flex;
+    flex-direction: column;
+    min-height: 9rem;
+}
+
+.memory-augment-weibo-editor textarea {
+    background: transparent;
+    border: 0;
+    color: inherit;
+    flex: 1 1 auto;
+    font: inherit;
+    font-size: 0.72rem;
+    line-height: 1.6;
+    outline: none;
+    padding: 0.2rem 0;
+    resize: none;
+    width: 100%;
+}
+
+.memory-augment-weibo-editor textarea::placeholder {
+    color: rgb(40 37 45 / 32%);
+}
+
+.memory-augment-weibo-editor > small {
+    align-self: flex-end;
+    font-size: 0.52rem;
+    opacity: 0.38;
+}
+
+.memory-augment-weibo-compose-topics {
+    border-bottom: 1px solid rgb(42 36 49 / 7%);
+    border-top: 1px solid rgb(42 36 49 / 7%);
+    padding: 0.68rem 0.8rem;
+}
+
+.memory-augment-weibo-compose-topics > header {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+}
+
+.memory-augment-weibo-compose-topics > header > strong {
+    font-size: 0.6rem;
+}
+
+.memory-augment-weibo-compose-topics > header > button {
+    align-items: center;
+    display: flex;
+    gap: 0.2rem;
+}
+
+.memory-augment-weibo-compose-topics > div {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-top: 0.5rem;
+}
+
+.memory-augment-weibo-compose-topics button {
+    background: #f3f3f6;
+    border-radius: 999px;
+    flex: 0 0 auto;
+    font-size: 0.56rem;
+    min-height: 1.55rem;
+    padding: 0 0.58rem;
+    white-space: nowrap;
+}
+
+.memory-augment-weibo-compose-topics button.is-custom {
+    background: #eef4fb;
+    color: #4f78ad;
+}
+
+.memory-augment-weibo-compose-topic-empty {
+    font-size: 0.52rem;
+    opacity: 0.42;
+    padding: 0.18rem 0;
+}
+
+.memory-augment-weibo-compose-extras {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    padding: 0.5rem 0.75rem 0;
+}
+
+.memory-augment-weibo-compose-extras[hidden] {
+    display: none;
+}
+
+.memory-augment-weibo-compose-extras > span {
+    align-items: center;
+    background: #f3f3f6;
+    border-radius: 999px;
+    display: flex;
+    font-size: 0.52rem;
+    gap: 0.22rem;
+    max-width: 100%;
+    overflow: hidden;
+    padding: 0.28rem 0.48rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.memory-augment-weibo-compose-extras i {
+    color: #ff8200;
+}
+
+.memory-augment-weibo-compose-tool-panel {
+    background: #faf9fb;
+    border-bottom: 1px solid rgb(42 36 49 / 7%);
+    border-top: 1px solid rgb(42 36 49 / 7%);
+    padding: 0.55rem 0.7rem;
+}
+
+.memory-augment-weibo-compose-tool-panel[hidden] {
+    display: none;
+}
+
+.memory-augment-weibo-compose-tool-panel > header {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+}
+
+.memory-augment-weibo-compose-tool-panel > header strong {
+    font-size: 0.58rem;
+}
+
+.memory-augment-weibo-compose-tool-panel > header button {
+    align-items: center;
+    background: transparent;
+    color: #df6c19;
+    display: flex;
+    font-size: 0.52rem;
+    gap: 0.18rem;
+    padding: 0.2rem;
+}
+
+.memory-augment-weibo-compose-tool-panel > div {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.34rem;
+    margin-top: 0.48rem;
+    max-height: 7rem;
+    overflow-y: auto;
+}
+
+.memory-augment-weibo-compose-tool-panel > div button {
+    background: #fff;
+    border: 1px solid rgb(42 36 49 / 8%);
+    border-radius: 0.55rem;
+    font-size: 0.72rem;
+    min-height: 1.8rem;
+    min-width: 1.8rem;
+    padding: 0.28rem 0.45rem;
+}
+
+.memory-augment-weibo-compose-tool-panel > div button.is-selected {
+    background: #fff0e3;
+    border-color: rgb(255 130 0 / 35%);
+    color: #dd690d;
+}
+
+.memory-augment-weibo-compose-tool-empty {
+    font-size: 0.54rem;
+    opacity: 0.5;
+    padding: 0.45rem 0;
+}
+
+.memory-augment-weibo-compose-tools {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    padding: 0.7rem 0.55rem;
+}
+
+.memory-augment-weibo-compose-tools button {
+    align-items: center;
+    background: transparent;
+    display: flex;
+    flex-direction: column;
+    font-size: 0.5rem;
+    gap: 0.25rem;
+    opacity: 0.68;
+    padding: 0.2rem;
+}
+
+.memory-augment-weibo-compose-tools button.is-active {
+    color: #df6c19;
+    opacity: 1;
+}
+
+.memory-augment-weibo-compose-tools button i {
+    color: #ff8200;
+    font-size: 0.95rem;
+}
+
+.memory-augment-weibo-repost-card {
+    background: #f4f4f7;
+    border-radius: 0.68rem;
+    display: grid;
+    gap: 0.25rem;
+    margin-top: 0.48rem;
+    padding: 0.6rem;
+}
+
+.memory-augment-weibo-repost-card > strong {
+    color: #df6a22;
+    font-size: 0.62rem;
+}
+
+.memory-augment-weibo-repost-card > strong small {
+    color: #28252d;
+    font-size: 0.5rem;
+    font-weight: 400;
+    opacity: 0.45;
+}
+
+.memory-augment-weibo-repost-card > span {
+    color: #ed722d;
+    font-size: 0.56rem;
+}
+
+.memory-augment-phone-app-content .memory-augment-weibo-repost-card > p {
+    font-size: 0.64rem;
+    line-height: 1.5;
+    margin: 0;
+    opacity: 0.86;
+    text-align: left;
+    white-space: pre-wrap;
+}
+
+.memory-augment-weibo-repost-visual {
+    align-items: center;
+    background: linear-gradient(135deg, #665477, #c17480);
+    border-radius: 0.5rem;
+    color: #fff;
+    display: flex;
+    font-size: 0.55rem;
+    gap: 0.4rem;
+    min-height: 2.4rem;
+    padding: 0 0.55rem;
+}
+
+.memory-augment-weibo-detail {
+    background: #f2f2f5;
+    display: grid;
+    grid-template-rows: 2.7rem minmax(0, 1fr) auto;
+    height: 100%;
+    min-height: 0;
+}
+
+.memory-augment-weibo-detail-header {
+    align-items: center;
+    background: rgb(255 255 255 / 96%);
+    border-bottom: 1px solid rgb(42 36 49 / 7%);
+    display: grid;
+    grid-template-columns: 4rem 1fr 4rem;
+    padding: 0 0.65rem;
+}
+
+.memory-augment-weibo-detail-header > button {
+    align-items: center;
+    background: transparent;
+    display: flex;
+    font-size: 0.6rem;
+    gap: 0.28rem;
+    justify-self: start;
+    padding: 0.3rem 0;
+}
+
+.memory-augment-weibo-detail-header > strong {
+    font-size: 0.72rem;
+    justify-self: center;
+}
+
+.memory-augment-weibo-comments-view {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+}
+
+.memory-augment-weibo-comment-heading {
+    align-items: center;
+    background: #fff;
+    border-bottom: 1px solid rgb(42 36 49 / 6%);
+    display: flex;
+    justify-content: space-between;
+    margin-top: 0.48rem;
+    padding: 0.65rem 0.78rem;
+}
+
+.memory-augment-weibo-comment-heading strong {
+    font-size: 0.68rem;
+}
+
+.memory-augment-weibo-comment-heading small {
+    font-size: 0.5rem;
+    opacity: 0.42;
+}
+
+.memory-augment-weibo-comment-list {
+    background: #fff;
+    display: grid;
+}
+
+.memory-augment-weibo-comment-empty {
+    align-items: center;
+    color: rgb(42 36 49 / 42%);
+    display: flex;
+    flex-direction: column;
+    gap: 0.32rem;
+    min-height: 8rem;
+    padding: 1.5rem 1rem;
+    text-align: center;
+}
+
+.memory-augment-weibo-comment-empty > i {
+    color: #ff8200;
+    font-size: 1.25rem;
+    opacity: 0.72;
+}
+
+.memory-augment-weibo-comment-empty > strong {
+    color: #2a2431;
+    font-size: 0.68rem;
+}
+
+.memory-augment-weibo-comment-empty > small {
+    font-size: 0.54rem;
+}
+
+.memory-augment-weibo-comment {
+    align-items: start;
+    border-bottom: 1px solid rgb(42 36 49 / 6%);
+    display: grid;
+    gap: 0.55rem;
+    grid-template-columns: auto minmax(0, 1fr);
+    padding: 0.72rem 0.78rem;
+}
+
+.memory-augment-weibo-comment > .memory-augment-weibo-avatar {
+    height: 2rem;
+    width: 2rem;
+}
+
+.memory-augment-weibo-comment-copy {
+    min-width: 0;
+}
+
+.memory-augment-weibo-comment-copy > header {
+    align-items: baseline;
+    display: flex;
+    justify-content: space-between;
+}
+
+.memory-augment-weibo-comment-copy > header strong {
+    font-size: 0.65rem;
+}
+
+.memory-augment-weibo-comment-copy > header small {
+    font-size: 0.48rem;
+    opacity: 0.38;
+}
+
+.memory-augment-phone-app-content .memory-augment-weibo-comment-copy > p {
+    font-size: 0.64rem;
+    line-height: 1.55;
+    margin: 0.3rem 0;
+    opacity: 0.82;
+    text-align: left;
+}
+
+.memory-augment-weibo-comment-copy > footer {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+}
+
+.memory-augment-weibo-comment-copy > footer button {
+    align-items: center;
+    background: transparent;
+    display: flex;
+    font-size: 0.52rem;
+    gap: 0.25rem;
+    opacity: 0.48;
+    padding: 0.2rem 0;
+}
+
+.memory-augment-weibo-player-replies {
+    background: #f5f5f7;
+    border-radius: 0.48rem;
+    display: grid;
+    gap: 0.25rem;
+    margin-top: 0.4rem;
+    padding: 0.45rem 0.5rem;
+}
+
+.memory-augment-phone-app-content .memory-augment-weibo-player-replies > p {
+    font-size: 0.57rem;
+    line-height: 1.5;
+    margin: 0;
+    opacity: 0.76;
+    text-align: left;
+}
+
+.memory-augment-weibo-player-replies strong {
+    color: #e46e2b;
+}
+
+.memory-augment-weibo-reply-form {
+    background: rgb(255 255 255 / 97%);
+    border-top: 1px solid rgb(42 36 49 / 8%);
+    display: grid;
+    gap: 0.3rem;
+    padding: 0.45rem 0.65rem 0.55rem;
+}
+
+.memory-augment-weibo-reply-form > small {
+    color: #e06b29;
+    font-size: 0.5rem;
+}
+
+.memory-augment-weibo-reply-form > div {
+    align-items: end;
+    display: grid;
+    gap: 0.4rem;
+    grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.memory-augment-weibo-reply-form textarea {
+    background: #f3f3f6;
+    border: 0;
+    border-radius: 0.68rem;
+    color: inherit;
+    font: inherit;
+    font-size: 0.62rem;
+    line-height: 1.45;
+    max-height: 5rem;
+    min-height: 2rem;
+    outline: none;
+    padding: 0.52rem 0.65rem;
+    resize: vertical;
+}
+
+.memory-augment-weibo-reply-form button {
+    background: #ff8200;
+    border-radius: 999px;
+    color: #fff;
+    font-size: 0.58rem;
+    min-height: 1.85rem;
+    padding: 0 0.7rem;
+}
+
+.memory-augment-weibo-reply-form button:disabled,
+.memory-augment-weibo-reply-form textarea:disabled {
+    cursor: default;
+    opacity: 0.42;
+}
+
+.memory-augment-weibo-composer.is-repost .memory-augment-weibo-editor {
+    min-height: 5.5rem;
+}
+
+.memory-augment-weibo-repost-preview {
+    padding: 0 0.8rem 0.8rem 3.6rem;
+}
+
+.memory-augment-weibo-repost-preview .memory-augment-weibo-repost-card {
+    margin: 0;
 }
 
 .memory-augment-phone-placeholder-heading,

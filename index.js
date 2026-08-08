@@ -26,6 +26,7 @@ import { clearAllSummaries, getSummaryStatus, initializeSummaryManager, repairMa
 import { initializeWorldInfoManager, rebuildAllCurrentWorldInfo } from './world-info-manager.js';
 import { initializeHtmlRenderer, refreshHtmlRenderer } from './html-renderer.js';
 import { initializePhoneShellUi } from './phone-shell.js';
+import { initializePhoneWeiboLifecycle } from './phone-weibo-ai.js';
 import {
     clearPreparedPhoneContext,
     consumePreparedPhoneContext,
@@ -110,6 +111,25 @@ export const defaultSettings = Object.freeze({
         stickers: [],
         stickerGroups: [{ id: 'default', name: '默认' }],
         profile: { nickname: '我', avatar: '' },
+        weibo: {
+            interests: [],
+            posts: [],
+            feedPostIds: [],
+            hotTopics: [],
+            likedPostIds: [],
+            commentReplies: [],
+            roleAccounts: [],
+            followingRoleIds: [],
+            followerRoleIds: [],
+            followerCount: 0,
+            followerHistory: [],
+            generationBatches: [],
+            generationMaxTokens: 12000,
+            initialized: false,
+            initializing: false,
+            lastError: '',
+            profileBio: '记录故事里正在发生的新鲜事。',
+        },
     },
 });
 
@@ -938,6 +958,7 @@ async function initialize() {
     // Create the always-available status/map launcher before optional async managers run.
     initializeStoryStatusUi(context, settings);
     initializePhoneShellUi(settings, context);
+    initializePhoneWeiboLifecycle(settings, context);
     initializeCharacterDevelopmentUi(context);
     initializeDevelopmentBaselineUi(settings, context, {
         chooseSource: async (info) => {

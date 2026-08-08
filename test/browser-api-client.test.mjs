@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+    buildWeiboUserContent,
     createEmbeddings,
     generateAtlasCompletion,
     generateBarrageCompletion,
@@ -8,6 +9,22 @@ import {
     generateSummaryCompletion,
     rerankCandidates,
 } from '../browser-api-client.js';
+
+test('weibo prompt enforces account, evidence, public-knowledge, and five-comment gates', () => {
+    const prompt = buildWeiboUserContent({
+        request: {
+            mode: 'story',
+            storyText: '林晚推开门。',
+            profile: { nickname: '玩家' },
+            roleAccounts: [{ id: 'role-lin', nickname: '晚风', identity: { mode: 'custom', persona: '林晚' } }],
+        },
+    });
+    assert.match(prompt, /恰好生成 5 条/);
+    assert.match(prompt, /未建立账号的角色.*永远不能发帖/);
+    assert.match(prompt, /storyEvidence 必须逐字复制正文/);
+    assert.match(prompt, /网友只能讨论公开可知的信息/);
+    assert.match(prompt, /林晚推开门/);
+});
 
 function response(payload, status = 200) {
     return {

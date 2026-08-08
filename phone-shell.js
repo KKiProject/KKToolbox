@@ -1,4 +1,10 @@
 import { createPhoneMessagesController } from './phone-messages.js';
+import { createPhoneWeiboController } from './phone-weibo.js';
+import {
+    isPhoneWeiboAiReady,
+    requestPhoneWeiboBootstrap,
+    requestPhoneWeiboOperation,
+} from './phone-weibo-ai.js';
 
 export const PHONE_APP_SHELLS = Object.freeze([
     { id: 'messages', label: '消息', icon: 'fa-envelope', tone: 'green' },
@@ -9,7 +15,7 @@ export const PHONE_APP_SHELLS = Object.freeze([
 ]);
 
 let phoneShellBound = false;
-let messagesController = null;
+let appControllers = {};
 let activeApp = '';
 
 function renderAppButtons() {
@@ -94,23 +100,41 @@ export function initializePhoneShellUi(settings = {}, context = globalThis.Silly
     }
     if (phoneShellBound) return true;
 
-    messagesController = createPhoneMessagesController({
+    const controllerOptions = {
         document: documentRef,
         settings,
         contextGetter: () => globalThis.SillyTavern?.getContext?.() ?? context,
         saveSettings: () => (globalThis.SillyTavern?.getContext?.() ?? context)?.saveSettingsDebounced?.(),
-    });
+        weiboAiReady: () => isPhoneWeiboAiReady(settings),
+        bootstrapWeibo: () => {
+            const current = globalThis.SillyTavern?.getContext?.() ?? context;
+            return requestPhoneWeiboBootstrap(settings, current, {
+                saveSettings: () => current?.saveSettingsDebounced?.(),
+            });
+        },
+        performWeiboOperation: operation => {
+            const current = globalThis.SillyTavern?.getContext?.() ?? context;
+            return requestPhoneWeiboOperation(settings, current, operation, {
+                saveSettings: () => current?.saveSettingsDebounced?.(),
+            });
+        },
+    };
+    appControllers = {
+        messages: createPhoneMessagesController(controllerOptions),
+        weibo: createPhoneWeiboController(controllerOptions),
+    };
 
     root.querySelectorAll('[data-phone-app]').forEach(button => button.addEventListener('click', () => {
         activeApp = button.dataset.phoneApp;
         setPhoneScreen(root, 'app', button.dataset.phoneLabel);
         const content = root.querySelector('.memory-augment-phone-app-content');
         if (!content) return;
-        if (activeApp === 'messages') void messagesController.open(content);
+        const controller = appControllers[activeApp];
+        if (controller) void controller.open(content);
         else renderPlaceholder(content, button.dataset.phoneLabel);
     }));
     root.querySelector('[data-phone-back]')?.addEventListener('click', () => {
-        if (activeApp === 'messages' && messagesController.back()) return;
+        if (appControllers[activeApp]?.back?.()) return;
         activeApp = '';
         setPhoneScreen(root, 'home');
     });
@@ -123,7 +147,7 @@ export function initializePhoneShellUi(settings = {}, context = globalThis.Silly
         context.eventSource.on(chatChanged, () => setTimeout(() => {
             if (activeApp !== 'messages') return;
             const content = root.querySelector('.memory-augment-phone-app-content');
-            if (content) void messagesController.open(content);
+            if (content) void appControllers.messages.open(content);
         }, 0));
     }
     phoneShellBound = true;

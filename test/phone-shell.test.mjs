@@ -23,8 +23,9 @@ test('phone shell delegates message data and API work to the message controller'
     assert.doesNotMatch(source, /fetch\s*\(/);
     assert.doesNotMatch(source, /generatePhoneCompletion|loadPhoneStore|savePhoneStore/);
     assert.match(source, /createPhoneMessagesController/);
+    assert.match(source, /createPhoneWeiboController/);
     assert.match(source, /CHAT_CHANGED/);
-    assert.match(source, /messagesController\.open\(content\)/);
+    assert.match(source, /appControllers\.messages\.open\(content\)/);
 });
 
 test('the empty phone list clearly asks for a SillyTavern character chat', async () => {

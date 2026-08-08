@@ -90,11 +90,72 @@ test('world-info quick selection controls stay in a horizontal row', async () =>
 test('KKToolbox never falls back to native browser dialogs', async () => {
     const sources = await Promise.all([
         readFile(new URL('../phone-messages.js', import.meta.url), 'utf8'),
+        readFile(new URL('../phone-weibo.js', import.meta.url), 'utf8'),
         readFile(new URL('../map-atlas.js', import.meta.url), 'utf8'),
     ]);
     const combined = sources.join('\n');
     assert.doesNotMatch(combined, /globalThis\.(?:confirm|alert|prompt)/);
     assert.doesNotMatch(combined, /window\.(?:confirm|alert|prompt)/);
+});
+
+test('weibo keeps its three main views, interest picker, and composer inside the phone', async () => {
+    const [source, css] = await Promise.all([
+        readFile(new URL('../phone-weibo.js', import.meta.url), 'utf8'),
+        readFile(new URL('../style.css', import.meta.url), 'utf8'),
+    ]);
+    assert.match(source, /\['home', '首页'/);
+    assert.match(source, /\['hot', '热搜'/);
+    assert.match(source, /\['profile', '我的'/);
+    assert.match(source, /你想看些什么/);
+    assert.match(source, /分享此刻的新鲜事/);
+    assert.match(source, /按热度排序 · 展示 5 条/);
+    assert.match(source, /createPhoneWeiboCommentReply/);
+    assert.match(source, /createPhoneWeiboRepost/);
+    assert.match(source, /topic\.postId/);
+    assert.match(source, /还没有评论/);
+    assert.match(source, /buildPhoneWeiboRoleAccounts/);
+    assert.match(source, /loadPhoneIdentitySources/);
+    assert.match(source, /新建微博角色账号/);
+    assert.match(source, /互相关注/);
+    assert.match(source, /路人 NPC 已折叠/);
+    assert.match(source, /添加微博话题/);
+    assert.match(source, /没有话题也可以直接发布/);
+    assert.match(source, /删除话题/);
+    assert.match(source, /customTopics\.splice/);
+    assert.match(source, /选择要提及的人/);
+    assert.match(source, /😀/);
+    assert.match(source, /添加图片描述/);
+    assert.match(source, /添加位置/);
+    assert.match(source, /编辑微博资料/);
+    assert.match(source, /state\(\)\.profile = result/);
+    assert.doesNotMatch(source, /renderInterestStrip|enableHorizontalStrip/);
+    assert.doesNotMatch(css, /\.memory-augment-weibo-interest-strip/);
+    assert.doesNotMatch(source, /memory-augment-weibo-compose-button/);
+    const likeHandler = source.match(/function toggleLike\([\s\S]*?\n    \}/)?.[0] ?? '';
+    assert.doesNotMatch(likeHandler, /renderMain/);
+    assert.match(likeHandler, /control\.classList\.toggle/);
+    assert.match(css, /\.memory-augment-phone-app-content\.is-weibo/);
+    assert.match(css, /\.memory-augment-weibo-interest-grid/);
+    assert.match(css, /\.memory-augment-weibo-composer/);
+    assert.match(css, /\.memory-augment-weibo-comment-list/);
+    assert.match(css, /\.memory-augment-weibo-repost-card/);
+    assert.match(css, /\.memory-augment-weibo-comment-empty/);
+    assert.match(css, /\.memory-augment-weibo-role-row/);
+    assert.match(css, /\.memory-augment-weibo-role-relation/);
+    assert.match(css, /caret-color:\s*#ff6f00/);
+    assert.match(css, /\.memory-augment-weibo-compose-tool-panel/);
+    assert.match(css, /\.memory-augment-weibo-post-mentions/);
+    assert.match(css, /\.memory-augment-weibo-topic-label/);
+    assert.match(css, /\.memory-augment-weibo-compose-topic-empty/);
+});
+
+test('desktop phone view grows and scales its contents without changing the mobile full-screen rule', async () => {
+    const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
+    const desktop = css.match(/@media \(min-width: 601px\)\s*\{([\s\S]*?)\n\}/)?.[1] ?? '';
+    const mobile = css.match(/@media \(max-width: 600px\)\s*\{([\s\S]*?)$/)?.[1] ?? '';
+    assert.match(desktop, /max-width:\s*27rem/);
+    assert.match(desktop, /transform:\s*scale\(1\.12\)/);
+    assert.match(mobile, /\.memory-augment-phone-device[\s\S]*?max-width:\s*none/);
 });
 
 test('phone forms keep validation inside the simulated phone and conversation headers stay immersive', async () => {

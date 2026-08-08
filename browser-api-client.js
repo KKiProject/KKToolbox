@@ -750,6 +750,78 @@ export async function generatePhoneCompletion(payload, options = {}) {
     return { content: extractChatContent(response, '手机通讯副 API') };
 }
 
+export function buildWeiboUserContent(payload = {}) {
+    const request = payload?.request && typeof payload.request === 'object' ? payload.request : {};
+    const mode = String(request.mode ?? 'story');
+    const roleAccounts = (Array.isArray(request.roleAccounts) ? request.roleAccounts : []).map(account => ({
+        id: account?.id,
+        nickname: account?.nickname,
+        bio: account?.bio,
+        identity: {
+            mode: account?.identity?.mode,
+            label: account?.identity?.label,
+            persona: String(account?.identity?.persona ?? '').slice(0, 8000),
+            note: String(account?.identity?.note ?? '').slice(0, 2000),
+        },
+    }));
+    const operationRules = {
+        player_post: '只生成 1 条 authorType=player 的完整帖子。正文、话题、图片描述、位置和提及必须忠实保留 operation 中的玩家输入；玩家输入先前尚未公开，不得假装网友已经见过别的版本。',
+        player_repost: '只生成 1 条 authorType=player、kind=repost 的完整帖子，必须忠实保留 operation 中的转发文字与原帖 source。',
+        player_reply: 'posts 必须为空。reply 的 postId、commentId、content 必须逐字对应 operation；根据这次公开回复只调整合理的粉丝变化和现有公共热度。',
+        role_post: '只生成 1 条 authorType=role 的完整帖子，authorId 必须等于 operation.roleId。内容由该账号绑定人设、operation.instruction 与现有公共信息共同决定。',
+        bootstrap: '生成 5–8 条初始首页帖子。若没有正文事件，则按玩家兴趣生成自然、互不重复的世界日常；同时根据玩家设定给出合理的初始粉丝基线（通过 followerDelta 返回）。',
+        story: '根据本次正文新增 5–8 条首页帖子。确实没有适合公开讨论的剧情时，才按玩家兴趣补足世界日常。热搜增量更新，不要求每条新帖都上热搜。',
+    };
+    return [
+        '你负责模拟虚构故事世界里的公共微博。只输出合法 JSON，不要 Markdown，不要解释。',
+        `本次模式：${mode}`,
+        operationRules[mode] ?? operationRules.story,
+        '',
+        '输出结构：',
+        '{"posts":[{"id":"唯一ID","authorType":"npc|role|player","authorId":"角色账号ID或空","author":"公开昵称","badge":"身份标签","tone":"rose","kind":"original|repost","content":"正文","topics":["兴趣ID"],"customTopics":["自由话题"],"imageDescription":"可空","location":"可空","mentions":[{"id":"账号ID","nickname":"昵称"}],"source":null,"createdAt":0,"metrics":{"reposts":0,"comments":0,"likes":0},"storyEvidence":"角色发帖时必须是正文中的逐字依据，否则为空","hotComments":[{"id":"唯一ID","author":"网友昵称","content":"必须与本帖高度相关","likes":0,"createdAt":0,"tone":"violet"}]}],"hotTopics":[{"id":"唯一ID","title":"热搜标题","postId":"必须指向本批新增帖子","heat":0,"mark":"爆|沸|热|新|"}],"reply":null,"followerDelta":0,"followerReason":"变化原因"}',
+        '',
+        '硬性规则：',
+        '1. 每条帖子必须恰好生成 5 条与该帖具体内容高度相关的热评，不能把同一套评论复制给不同帖子；玩家回复模式除外，因为它不生成帖子。',
+        '2. 点赞、评论、转发和热度按作者身份、内容性质与世界规模合理安排，不要所有帖子使用近似数据。',
+        '3. 只有下方“已建立角色微博账号”中的账号允许 authorType=role。未建立账号的角色即使出现在正文也永远不能发帖。',
+        '4. 正文驱动时，角色发帖必须有正文明确写出的动作或处境依据；storyEvidence 必须逐字复制正文中的一小段原句。仅出现姓名、仅有人设上可能会发、或网友可能猜到，都不构成依据。',
+        '5. 即使正文有依据，也要判断角色性格、动机与公开发帖习惯；不适合发就不要强行发。',
+        '6. 网友只能讨论公开可知的信息。私人场景没有公开来源时，不得让路人知道；可公开的目击、传闻或推测必须明确写成目击、传闻或推测。',
+        '7. 玩家发帖、转发和回复的原始文字属于玩家本人，禁止改写意思或替玩家添加新的立场。',
+        '8. 热搜只能指向本批 posts 中真实存在的 postId。没有值得上榜的内容可以返回空数组。',
+        '9. followerDelta 表示本次增减量而非粉丝总数。普通互动通常小幅变化，爆款或名人事件才允许大幅变化，并给出简短原因。',
+        '',
+        `玩家微博资料：${JSON.stringify(request.profile ?? {})}`,
+        `玩家设定：${String(request.userPersona ?? '').slice(0, 12000) || '未提供；按普通人处理'}`,
+        `当前粉丝数：${Number(request.followerCount) || 0}`,
+        `兴趣标签：${JSON.stringify(request.interests ?? [])}`,
+        `已建立角色微博账号：${JSON.stringify(roleAccounts)}`,
+        `本次正文：${String(request.storyText ?? '').slice(0, 20000) || '（无）'}`,
+        `本次玩家操作：${JSON.stringify(request.operation ?? {})}`,
+        `当前首页帖子摘要：${JSON.stringify(request.recentPosts ?? [])}`,
+        `当前热搜摘要：${JSON.stringify(request.hotTopics ?? [])}`,
+        `当前时间戳：${Number(request.now) || Date.now()}`,
+    ].join('\n');
+}
+
+export async function generateWeiboCompletion(payload, options = {}) {
+    const config = normalizeConfig(payload?.barrage, '微博更新');
+    const endpoint = new URL(`${config.baseUrl}/v1/chat/completions`).toString();
+    const maxTokens = Math.max(4096, Math.min(16_384, Math.trunc(Number(payload?.maxTokens) || 8192)));
+    const response = await postJson(endpoint, {
+        model: config.model,
+        messages: [
+            {
+                role: 'system',
+                content: '你只维护虚构世界的微博结构化数据。严格遵守角色账号门槛、正文证据门槛与 JSON 输出结构。',
+            },
+            { role: 'user', content: buildWeiboUserContent(payload) },
+        ],
+        max_tokens: maxTokens,
+    }, config, { timeoutMs: 180_000, ...options });
+    return { content: extractChatContent(response, '微博更新 API') };
+}
+
 function buildAtlasUserContent(books) {
     const sections = (Array.isArray(books) ? books : []).map((book) => {
         const entries = (Array.isArray(book?.entries) ? book.entries : [])

@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Phone Weibo harness</title>
+    <link rel="stylesheet" href="../style.css">
+    <style>
+        body { margin: 0; background: #d8d6df; color: #29243a; font-family: sans-serif; }
+        .memory-augment-phone-stage { box-sizing: border-box; min-height: 100vh; padding: 16px; }
+        .memory-augment-phone-device { height: min(720px, calc(100vh - 32px)); margin: 0 auto; max-width: 390px; }
+    </style>
+</head>
+<body>
+    <div class="memory-augment-phone-stage">
+        <section class="memory-augment-phone-device">
+            <div class="memory-augment-phone-screen">
+                <header class="memory-augment-phone-statusbar">
+                    <span class="memory-augment-phone-clock">09:41</span>
+                    <span class="memory-augment-phone-island"></span>
+                    <span class="memory-augment-phone-signals">5G&nbsp;&nbsp;▰</span>
+                </header>
+                <main class="memory-augment-phone-app-page">
+                    <header class="memory-augment-phone-app-header">
+                        <button type="button" aria-label="返回">‹</button>
+                        <strong>微博</strong>
+                        <span></span>
+                    </header>
+                    <div class="memory-augment-phone-app-content"></div>
+                </main>
+                <span class="memory-augment-phone-home-indicator"></span>
+            </div>
+        </section>
+    </div>
+    <script type="module">
+        import { createPhoneWeiboController } from '../phone-weibo.js';
+
+        const onboarding = new URLSearchParams(location.search).has('onboarding');
+        const settings = {
+            phone: {
+                profile: { nickname: '夜酱', avatar: '' },
+                weibo: {
+                    interests: onboarding ? [] : ['entertainment', 'film', 'music', 'anime', 'fashion', 'pets'],
+                    posts: [],
+                    likedPostIds: [],
+                    roleAccounts: [
+                        { id: 'role-linwan', nickname: '晚风不熄', bio: '演员，偶尔分享片场和生活。' },
+                        { id: 'role-shenyan', nickname: '砚边人', bio: '导演，正在筹备下一部作品。' },
+                        { id: 'role-jiangchi', nickname: '凌晨三点半', bio: '歌手，把凌晨写进歌里。' },
+                    ],
+                    profileBio: '在故事和手机之间，收集今天的新鲜事。',
+                },
+            },
+        };
+        const controller = createPhoneWeiboController({
+            document,
+            settings,
+            saveSettings: () => { globalThis.savedWeiboSettings = structuredClone(settings.phone.weibo); },
+        });
+        controller.open(document.querySelector('.memory-augment-phone-app-content'));
+        globalThis.weiboHarness = { controller, settings };
+    </script>
+</body>
+</html>
