@@ -5,6 +5,7 @@ const STORY_STATUS_MARKER = 'memory_augment_story_status';
 const TIMELINE_TRANSITIONS = new Set(['unchanged', 'advance', 'jump', 'enter_flashback', 'return_mainline', 'unknown']);
 const TIMELINE_MODES = new Set(['mainline', 'flashback', 'flashforward', 'mention', 'unknown']);
 let statusUiBound = false;
+let statusUiSettings = null;
 
 function cleanText(value, maximum = 1200) {
     return String(value ?? '').trim().slice(0, maximum);
@@ -834,7 +835,9 @@ function renderStatusRecord(record) {
 
 export function refreshStoryStatusUi(context = globalThis.SillyTavern?.getContext?.()) {
     const record = getLatestStoryStatus(context);
-    const options = context?.extensionSettings?.['st-memory-augment']?.status ?? {};
+    const options = statusUiSettings?.status
+        ?? context?.extensionSettings?.['st-memory-augment']?.status
+        ?? {};
     renderStatusRecord(options.enabled === true && record
         ? {
             ...record,
@@ -1011,6 +1014,7 @@ function bindPanelWheelScrolling(root) {
 
 export function initializeStoryStatusUi(context, settings) {
     if (typeof document === 'undefined') return;
+    statusUiSettings = settings;
     if (!document.querySelector('#memory_augment_story_status_root')) {
         const root = document.createElement('div');
         root.id = 'memory_augment_story_status_root';

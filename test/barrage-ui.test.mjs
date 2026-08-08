@@ -4,6 +4,7 @@ import {
     BARRAGE_METADATA_KEY,
     clearDeletedBarrageRecords,
     collectRecentMessages,
+    findLatestEligibleAssistantMessageId,
     handleCharacterMessageRendered,
     restoreStoredBarrages,
 } from '../barrage-ui.js';
@@ -67,6 +68,16 @@ test('recent floor setting selects N recap messages plus the rendered AI respons
         collectRecentMessages(context.chat, 5, 3).map(message => message.id),
         [2, 3, 4, 5],
     );
+});
+
+test('latest recovery skips streaming placeholders and finds the newest finished assistant floor', () => {
+    const context = createContext();
+    context.chat.push({ is_user: false, is_system: false, mes: '...' });
+    assert.equal(findLatestEligibleAssistantMessageId(context), 5);
+    context.chat.push({ is_user: false, is_system: true, mes: 'hidden system floor' });
+    assert.equal(findLatestEligibleAssistantMessageId(context), 5);
+    context.chat.push({ is_user: false, is_system: false, mes: 'finished reply' });
+    assert.equal(findLatestEligibleAssistantMessageId(context), 8);
 });
 
 test('barrage generation renders and caches without mutating context.chat', async () => {
@@ -163,7 +174,9 @@ test('missing barrage API configuration produces no request or chat mutation', a
     const settings = createSettings();
     settings.apis.barrage = { url: '', apiKey: '', model: '' };
     let requested = false;
+    const renders = [];
     const result = await handleCharacterMessageRendered(5, settings, context, {
+        renderBarrage: (...args) => renders.push(args),
         async generateBarrage() {
             requested = true;
             return { content: 'unexpected' };
@@ -172,6 +185,8 @@ test('missing barrage API configuration produces no request or chat mutation', a
 
     assert.equal(result.reason, 'missing-config');
     assert.equal(requested, false);
+    assert.equal(renders.at(-1)[2], 'error');
+    assert.match(renders.at(-1)[1], /Base URL.*API Key.*模型名/);
     assert.deepEqual(context.chat, originalChat);
 });
 
@@ -204,6 +219,40 @@ test('status can run without rendering or storing barrage', async () => {
     assert.equal(rendered, false);
     assert.equal(context.chatMetadata[BARRAGE_METADATA_KEY], undefined);
     assert.equal(context.chatMetadata[STORY_STATUS_METADATA_KEY]['5'].status.environment.time, '清晨');
+});
+
+test('missing status in a combined response gets one focused recovery request without losing barrage', async () => {
+    const context = createContext();
+    let calls = 0;
+    const result = await handleCharacterMessageRendered(5, createSettings(), context, {
+        renderBarrage: () => true,
+        getCurrentContext: () => context,
+        async generateBarrage(payload) {
+            calls++;
+            if (calls === 1) {
+                assert.equal(payload.outputOptions.barrageEnabled, true);
+                return { content: '先保留下来的弹幕' };
+            }
+            assert.deepEqual(payload.outputOptions, {
+                barrageEnabled: false,
+                statusEnabled: true,
+                developmentEnabled: false,
+            });
+            return { content: JSON.stringify({
+                barrage: '',
+                status: {
+                    environment: { time: '深夜', location: '走廊' },
+                    characters: [{ name: '玩家', role: 'user' }],
+                    event: { activity: '等待' },
+                },
+            }) };
+        },
+    });
+    assert.equal(calls, 2);
+    assert.equal(result.generated, true);
+    assert.equal(result.statusSaved, true);
+    assert.equal(getOnlyBarrageVariant(context).content, '先保留下来的弹幕');
+    assert.equal(context.chatMetadata[STORY_STATUS_METADATA_KEY]['5'].status.environment.location, '走廊');
 });
 
 test('player-declared character development shares the same side request and is cached', async () => {

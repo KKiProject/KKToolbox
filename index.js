@@ -5,7 +5,7 @@ import { bindChatIngestionLifecycle, reconcileBufferedMessageQueue } from './cha
 import { initializeChatMemoryUi } from './chat-memory-ui.js';
 import { memoryAugmentInterceptor } from './context-manager.js';
 import { fetchModels, getStatus, ingestChat, reconcileChatVectors } from './rag-client.js';
-import { initializeBarrageUi, refreshBarrageVisibility } from './barrage-ui.js';
+import { initializeBarrageUi, refreshBarrageVisibility, scheduleLatestSideGeneration } from './barrage-ui.js';
 import {
     correctLatestStoryTime,
     getMessageTimelineMetadata,
@@ -203,6 +203,8 @@ function bindSettings(settings, context) {
             if (input.dataset.setting.startsWith('status.')) refreshStoryStatusUi(context);
             if (input.dataset.setting.startsWith('development.')) refreshCharacterDevelopmentUi(context);
             if (input.dataset.setting === 'barrage.enabled') refreshBarrageVisibility(settings, context);
+            if ((input.dataset.setting === 'barrage.enabled' || input.dataset.setting === 'status.enabled')
+                && input.checked) scheduleLatestSideGeneration(settings, context);
             if (input.dataset.setting === 'htmlRenderer.enabled') refreshHtmlRenderer();
         });
     });
@@ -957,6 +959,11 @@ async function initialize() {
     initializeSummaryManager(settings, context, { onSaved: refreshStatus, onStatus: refreshStatus });
     // Create the always-available status/map launcher before optional async managers run.
     initializeStoryStatusUi(context, settings);
+    try {
+        await initializeBarrageUi(settings, { templatePath: TEMPLATE_PATH });
+    } catch (error) {
+        console.warn('[Memory Augment] Barrage UI initialization failed; the remaining extension will continue.', error);
+    }
     initializePhoneShellUi(settings, context);
     initializePhoneWeiboLifecycle(settings, context);
     initializeCharacterDevelopmentUi(context);
@@ -996,8 +1003,11 @@ async function initialize() {
             return '';
         },
     });
-    await initializeWorldInfoManager(settings, context);
-    await initializeBarrageUi(settings, { templatePath: TEMPLATE_PATH });
+    try {
+        await initializeWorldInfoManager(settings, context);
+    } catch (error) {
+        console.warn('[Memory Augment] World-info UI initialization failed; continuing with side generation.', error);
+    }
     initializeSwipeCleanup(context);
     initializeMapAtlasUi(settings, context, {
         confirm: (title, message) => Popup.show.confirm(title, message),

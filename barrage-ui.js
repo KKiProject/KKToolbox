@@ -35,6 +35,7 @@ const inFlight = new Map();
 let barrageTemplate = '';
 let regenerationBound = false;
 let statusRegenerationBound = false;
+let barrageLifecycleBound = false;
 
 function clampInteger(value, fallback, minimum, maximum) {
     const number = Math.trunc(Number(value));
@@ -517,7 +518,21 @@ async function getRagFragments(settings, context, recentMessages, clients) {
 function createPanelFromTemplate() {
     const template = document.createElement('template');
     template.innerHTML = barrageTemplate.trim();
-    return template.content.firstElementChild;
+    const rendered = template.content.firstElementChild;
+    if (rendered) return rendered;
+    const panel = document.createElement('details');
+    panel.className = 'memory-augment-barrage';
+    panel.innerHTML = `
+        <summary class="memory-augment-barrage-toggle">
+            <span class="fa-solid fa-comments" aria-hidden="true"></span>
+            <span>观众弹幕</span>
+            <span class="memory-augment-barrage-status"></span>
+        </summary>
+        <div class="memory-augment-barrage-content" aria-live="polite"></div>
+        <div class="memory-augment-barrage-actions">
+            <button type="button" class="menu_button memory-augment-barrage-regenerate">重新生成弹幕</button>
+        </div>`;
+    return panel;
 }
 
 export function renderBarragePanel(messageId, content, state = 'ready') {
@@ -528,7 +543,7 @@ export function renderBarragePanel(messageId, content, state = 'ready') {
 
     const messageElement = document.querySelector(`#chat .mes[mesid="${numericId}"]`);
     const messageBlock = messageElement?.querySelector('.mes_block');
-    if (!messageBlock || !barrageTemplate) {
+    if (!messageBlock) {
         return false;
     }
 
@@ -564,6 +579,19 @@ function safelyRender(render, messageId, content, state) {
     }
 }
 
+function showSideGenerationDiagnostic(context, message, { preserveStatus = true } = {}) {
+    if (typeof document === 'undefined') return;
+    refreshStoryStatusUi(context);
+    const statusContent = document.querySelector('#memory_augment_story_status_content');
+    if (preserveStatus && statusContent?.hidden === false) return;
+    if (!preserveStatus && statusContent) statusContent.hidden = true;
+    const empty = document.querySelector('#memory_augment_story_status_empty');
+    if (empty) {
+        empty.hidden = false;
+        empty.textContent = message;
+    }
+}
+
 export async function handleCharacterMessageRendered(messageId, settings, context, dependencies = {}, options = {}) {
     const numericId = Number(messageId);
     const message = Number.isInteger(numericId) ? context?.chat?.[numericId] : null;
@@ -580,6 +608,11 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
     }
     const barrage = completeApiConfig(settings?.apis?.barrage);
     if (!barrage) {
+        const detail = '副 API 配置不完整：请检查 Base URL、API Key 和模型名。';
+        const diagnosticRender = dependencies.renderBarrage
+            ?? (typeof document !== 'undefined' ? renderBarragePanel : null);
+        if (barrageEnabled && diagnosticRender) safelyRender(diagnosticRender, numericId, detail, 'error');
+        if (statusEnabled) showSideGenerationDiagnostic(context, detail);
         return { generated: false, reason: 'missing-config' };
     }
     const developmentSource = developmentConfigured
@@ -701,7 +734,7 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
                 };
             }
         }
-        const response = await request({
+        const requestPayload = {
             barrage,
             systemPrompt: String(settings.barrage.systemPrompt ?? '').trim(),
             maxTokens: settings.barrage.maxTokens,
@@ -717,14 +750,37 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
                 statusEnabled: requestStatus,
                 developmentEnabled: requestDevelopment,
             },
-        });
-        const parsed = parseSideResponse(response?.content);
+        };
+        const response = await request(requestPayload);
+        let parsed = parseSideResponse(response?.content);
+        let statusRecoveryError = null;
+        if (requestStatus && !parsed.status) {
+            try {
+                const recoveryResponse = await request({
+                    ...requestPayload,
+                    outputOptions: {
+                        barrageEnabled: false,
+                        statusEnabled: true,
+                        developmentEnabled: false,
+                    },
+                });
+                const recovered = parseSideResponse(recoveryResponse?.content);
+                if (recovered.status) {
+                    parsed = {
+                        ...parsed,
+                        status: recovered.status,
+                        timeline: recovered.timeline,
+                    };
+                } else {
+                    statusRecoveryError = new Error('副 API 连续两次没有返回有效的剧情状态。');
+                }
+            } catch (error) {
+                statusRecoveryError = error;
+            }
+        }
         const generatedContent = parsed.barrage;
         if (requestBarrage && !generatedContent) {
             throw new Error('Barrage endpoint returned empty content.');
-        }
-        if (requestStatus && !parsed.status && !requestBarrage) {
-            throw new Error('Story status endpoint returned no valid status.');
         }
 
         const currentContext = dependencies.getCurrentContext?.()
@@ -799,6 +855,10 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
             console.warn('[Memory Augment] Barrage metadata save failed.', error);
         }
         refreshStoryStatusUi(currentContext);
+        if (requestStatus && !finalStatus) {
+            const detail = String(statusRecoveryError?.message ?? '副 API 没有返回有效的剧情状态。').trim();
+            showSideGenerationDiagnostic(currentContext, `状态栏生成失败：${detail}`, { preserveStatus: false });
+        }
         refreshCharacterDevelopmentUi(currentContext);
         return {
             generated: true,
@@ -830,6 +890,9 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
                 }
             } else if (barrageEnabled && cached?.content) {
                 safelyRender(render, numericId, cached.content, 'ready');
+            }
+            if (requestStatus) {
+                showSideGenerationDiagnostic(currentContext, `状态栏生成失败：${detail}`, { preserveStatus: false });
             }
         }
         console.warn('[Memory Augment] Barrage generation failed.', error);
@@ -922,6 +985,29 @@ function scheduleBarrageGeneration(messageId, settings, options = {}) {
             console.warn('[Memory Augment] Barrage scheduling failed.', error);
         }
     }, 0);
+}
+
+export function findLatestEligibleAssistantMessageId(context) {
+    const chat = Array.isArray(context?.chat) ? context.chat : [];
+    for (let index = chat.length - 1; index >= 0; index--) {
+        const message = chat[index];
+        const content = String(message?.mes ?? '').trim();
+        if (!message || message.is_user || message.is_system || !content || content === '...') continue;
+        if (!chat.slice(0, index).some(item => item?.is_user)) continue;
+        return index;
+    }
+    return -1;
+}
+
+export function scheduleLatestSideGeneration(settings, context = globalThis.SillyTavern?.getContext?.(), options = {}) {
+    if (!context) return false;
+    if (options.requireVisibleOutput !== false
+        && settings?.barrage?.enabled !== true
+        && settings?.status?.enabled !== true) return false;
+    const messageId = findLatestEligibleAssistantMessageId(context);
+    if (messageId < 0) return false;
+    scheduleBarrageGeneration(messageId, settings, options.generationOptions ?? {});
+    return true;
 }
 
 function invalidateDerivedResults(messageId, { dropCurrentVariant = false } = {}) {
@@ -1058,12 +1144,11 @@ function bindStatusRegeneration(settings) {
 export async function initializeBarrageUi(settings, options = {}) {
     const context = SillyTavern.getContext();
     initializeStoryStatusUi(context, settings);
-    try {
-        barrageTemplate = await context.renderExtensionTemplateAsync(options.templatePath, 'barrage');
-    } catch (error) {
-        console.warn('[Memory Augment] Barrage template loading failed.', error);
-        return;
-    }
+    barrageTemplate = '';
+    void Promise.resolve()
+        .then(() => context.renderExtensionTemplateAsync(options.templatePath, 'barrage'))
+        .then(template => { barrageTemplate = String(template ?? ''); })
+        .catch(error => console.warn('[Memory Augment] Barrage template loading failed; using built-in panel.', error));
     const messageRendered = context.eventTypes?.CHARACTER_MESSAGE_RENDERED
         ?? context.event_types?.CHARACTER_MESSAGE_RENDERED;
     const messageSwiped = context.eventTypes?.MESSAGE_SWIPED
@@ -1073,24 +1158,33 @@ export async function initializeBarrageUi(settings, options = {}) {
     const messageDeleted = context.eventTypes?.MESSAGE_DELETED
         ?? context.event_types?.MESSAGE_DELETED;
     const chatChanged = context.eventTypes?.CHAT_CHANGED ?? context.event_types?.CHAT_CHANGED;
+    const generationEnded = context.eventTypes?.GENERATION_ENDED ?? context.event_types?.GENERATION_ENDED;
+    const generationStopped = context.eventTypes?.GENERATION_STOPPED ?? context.event_types?.GENERATION_STOPPED;
 
     if (!messageRendered) {
         console.warn('[Memory Augment] CHARACTER_MESSAGE_RENDERED event is unavailable for barrage UI.');
-        return;
     }
 
-    context.eventSource.on(messageRendered, (messageId) => {
-        scheduleBarrageGeneration(messageId, settings);
-    });
+    if (!barrageLifecycleBound) {
+        if (messageRendered) context.eventSource.on(messageRendered, (messageId) => {
+            scheduleBarrageGeneration(messageId, settings);
+        });
 
-    if (messageSwiped) {
+        const recoverLatest = () => scheduleLatestSideGeneration(settings, SillyTavern.getContext(), {
+            requireVisibleOutput: false,
+        });
+        if (generationEnded) context.eventSource.on(generationEnded, recoverLatest);
+        if (generationStopped) context.eventSource.on(generationStopped, recoverLatest);
+    }
+
+    if (!barrageLifecycleBound && messageSwiped) {
         context.eventSource.on(messageSwiped, (messageId) => {
             activateStoredSideResult(messageId, settings);
             scheduleBarrageGeneration(messageId, settings);
         });
     }
 
-    if (messageUpdated) {
+    if (!barrageLifecycleBound && messageUpdated) {
         context.eventSource.on(messageUpdated, (messageId) => {
             // SillyTavern rebuilds .mes_text after an edit, which removes the
             // injected panel from the DOM. Reattach the same swipe's cached
@@ -1100,7 +1194,7 @@ export async function initializeBarrageUi(settings, options = {}) {
         });
     }
 
-    if (messageDeleted) {
+    if (!barrageLifecycleBound && messageDeleted) {
         context.eventSource.on(messageDeleted, async (messageId) => {
             try {
                 const currentContext = SillyTavern.getContext();
@@ -1119,7 +1213,7 @@ export async function initializeBarrageUi(settings, options = {}) {
         });
     }
 
-    if (chatChanged) {
+    if (!barrageLifecycleBound && chatChanged) {
         context.eventSource.on(chatChanged, () => {
             setTimeout(() => {
                 try {
@@ -1138,6 +1232,8 @@ export async function initializeBarrageUi(settings, options = {}) {
     } catch (error) {
         console.warn('[Memory Augment] Stored barrage restoration failed.', error);
     }
+    barrageLifecycleBound = true;
+    scheduleLatestSideGeneration(settings, context);
 }
 
 export function refreshBarrageVisibility(settings, context = globalThis.SillyTavern?.getContext?.()) {

@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Barrage fallback harness</title>
+    <link rel="stylesheet" href="../style.css">
+    <style>
+        body { margin: 0; padding: 24px; background: #eceaf0; color: #2a2431; font-family: sans-serif; }
+        #chat { max-width: 720px; margin: auto; }
+        .mes_block { padding: 18px; border-radius: 14px; background: #fff; box-shadow: 0 8px 30px rgb(42 36 49 / 10%); }
+        .mes_text > p { margin: 0 0 12px; }
+    </style>
+</head>
+<body>
+    <div id="chat">
+        <article class="mes" mesid="1">
+            <div class="mes_block">
+                <div class="mes_text"><p>这是一条已经完成的角色回复。</p></div>
+            </div>
+        </article>
+    </div>
+    <script type="module">
+        import { renderBarragePanel } from '../barrage-ui.js';
+        renderBarragePanel(1, '副 API 暂时不可用；正文与其他功能不受影响，可以点击重新生成。', 'error');
+    </script>
+</body>
+</html>
