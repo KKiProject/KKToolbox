@@ -543,6 +543,8 @@ export async function generateSummaryCompletion(payload, options = {}) {
     return { content: extractChatContent(response, '自动总结副 API') };
 }
 
+const PHONE_JSON_OUTPUT_SHAPE = '{"messages":[{"sender":"发言者姓名","type":"text","content":"正文","duration":1,"amount":0,"recipient":"","count":0,"stickerName":""}],"roundSummary":"用一两句话概括本轮线上对话中明确发生的内容，不推测未表达的反应","memory":{"events":[{"type":"commitment","summary":"只写明确成立的线上事实","participants":["人物"],"sourceMessageIds":["msg-id"],"evidenceQuotes":["逐字证据"],"status":"active","resolvesEventIds":[]}]}}';
+
 export function buildPhoneUserContent(payload = {}) {
     const PHONE_PROMPT_CHAR_LIMIT = 50_000;
     const snapshot = payload?.snapshot && typeof payload.snapshot === 'object' ? payload.snapshot : {};
@@ -551,8 +553,11 @@ export function buildPhoneUserContent(payload = {}) {
         : {};
     const conversation = snapshot?.conversation ?? {};
     const profile = snapshot?.profile ?? {};
+    const playerNickname = String(profile.nickname ?? '我').trim() || '我';
     const participants = conversation.type === 'group'
         ? (Array.isArray(conversation.members) ? conversation.members : [])
+            .map(value => String(value ?? '').trim())
+            .filter(value => value && value !== playerNickname)
         : [conversation.name];
     const recentStory = (Array.isArray(payload?.recentStory) ? payload.recentStory : [])
         .map(item => String(item ?? '').trim())
@@ -604,7 +609,7 @@ export function buildPhoneUserContent(payload = {}) {
     };
     const fixedHeader = [
         '你正在模拟虚构故事中的手机通讯，只扮演对话中的联系人或群成员，不扮演玩家。',
-        `玩家手机昵称：${String(profile.nickname ?? '我').trim() || '我'}`,
+        `玩家手机昵称：${playerNickname}`,
         `会话类型：${conversation.type === 'group' ? '群聊' : '单聊'}`,
         `会话名称：${String(conversation.name ?? '').trim()}`,
         `允许发言者：${participants.filter(Boolean).join('、') || '会话中的联系人'}`,
@@ -615,20 +620,20 @@ export function buildPhoneUserContent(payload = {}) {
     const rules = [
         '返回1至5条自然的联系人回复。只输出合法 JSON，不要 Markdown，不要解释。',
         '输出结构：',
-        '{"messages":[{"sender":"发言者姓名","type":"text","content":"正文","duration":1,"amount":0,"count":0,"stickerName":""}],"roundSummary":"用一两句话概括本轮线上对话中明确发生的内容，不推测未表达的反应","memory":{"events":[{"type":"commitment","summary":"只写明确成立的线上事实","participants":["人物"],"sourceMessageIds":["msg-id"],"evidenceQuotes":["逐字证据"],"status":"active","resolvesEventIds":[]}]}}',
+        PHONE_JSON_OUTPUT_SHAPE,
         'type 只能是 text、voice、image、redpacket、group_redpacket、location、sticker。',
         'text：content 是文字。',
         'voice：content 是语音转成的文字，duration 是1至60秒。',
         'image：content 只写图片内容描述，不输出图片链接，也不声称读取了真实图片。',
-        'redpacket：amount 是模拟红包金额，content 是祝福语。',
-        'group_redpacket：仅群聊可用；amount 是模拟总金额，count 是红包份数，content 是祝福语。',
+        'redpacket：amount 是模拟红包金额，content 是祝福语；在群聊中必须用 recipient 指定一名真实群成员，单聊中 recipient 留空。',
+        'group_redpacket：仅群聊可用；amount 是模拟总金额，count 是红包份数，content 是祝福语，recipient 留空。发送者本人也可以参与随机领取。',
         'location：content 是地点名称及必要备注。',
         'sticker：stickerName 必须逐字选择上面已有的表情包名称，content 留空；没有可用名称时禁止使用。',
         'AI 只根据表情包名称选择，不需要也不得读取表情包图片内容。',
         '人物身份优先级：玩家补充／绑定人物设定 ＞ 手机聊天记录中已成立的信息 ＞ 最近正文。最近正文只提供事件与时间，不得擅自改变联系人是谁。',
         '事实与时间优先级：玩家刚刚发送的手机消息及最新用户正文 ＞ 当前剧情状态与较晚内容 ＞ 相关历史召回和较早总结。历史只供保持连续性，绝不能让时间线倒退或覆盖玩家的新设定。',
         '世界书、人物发展和地图属于背景约束；只在与本次通讯相关时自然体现，不要为了证明读过设定而强行提及。',
-        '单聊只能由联系人发言；群聊可由一个或多个群成员分别发言。不要代替玩家发送消息。',
+        '单聊只能由联系人发言；群聊可由一个或多个群成员分别发言。sender 必须使用允许发言者中的原名。不要代替玩家发送消息。',
         '这些功能都只是剧情中的通讯表现，不进行真实转账、定位、通话或图片识别。',
         'memory.events 只保存值得长期记住的内容；没有就返回空数组。type 只能是 platform_fact、explicit_action、commitment、conflict、confirmed_reaction、unknown_state。',
         '每条记忆必须提供至少一段 evidenceQuotes，且必须逐字存在于本次输出消息或上面的手机聊天记录；sourceMessageIds 只能使用记录前方真实存在的 msg-id。',
@@ -682,10 +687,11 @@ export function buildPhoneUserContent(payload = {}) {
         }
         return [summarySection, recentSection].filter(Boolean).join('\n\n').slice(0, maximum);
     };
-    const otherContextSections = [
-        olderRoundSummaries ? `【更早手机轮次概括】\n${olderRoundSummaries}` : '',
+    const priorityContextSections = [
         `【最近正文】（只用于人物、关系与当前事件连续性）\n${recentStory.join('\n') || '（无）'}`,
         `【仍有效的线上约定或冲突】（只有后续消息明确完成、取消或化解时，才能填写 resolvesEventIds）\n${activeMemory.join('\n') || '（无）'}`,
+    ].filter(Boolean);
+    const supplementalContextSections = [
         contextSection('当前剧情状态与时间线', storyContext.storyStatus, 12000),
         contextSection('故事基础设定', storyContext.storyFoundation, 24000),
         contextSection('酒馆关键词触发的世界书设定', storyContext.activatedWorldInfo, 24000),
@@ -694,18 +700,27 @@ export function buildPhoneUserContent(payload = {}) {
         contextSection('人物在长期剧情中已经形成的变化', storyContext.characterDevelopment, 12000),
         contextSection('当前地点关系', storyContext.mapContext, 8000),
         `【可用表情包名称】${stickerNames.length > 0 ? stickerNames.join('、') : '（无）'}`,
+        olderRoundSummaries ? `【更早手机轮次概括】\n${olderRoundSummaries}` : '',
     ].filter(Boolean);
-    const fullContextSections = [fullPhoneHistory, ...otherContextSections];
+    const fullContextSections = [fullPhoneHistory, ...priorityContextSections, ...supplementalContextSections];
     const fixedText = fixedHeader.join('\n');
     const ruleText = rules.join('\n');
     let remaining = Math.max(0, PHONE_PROMPT_CHAR_LIMIT - fixedText.length - ruleText.length - 4);
     const fullContextLength = fullContextSections.reduce((total, section) => total + section.length + 2, 0);
+    const priorityContextLength = priorityContextSections
+        .reduce((total, section) => total + section.length + 2, 0);
+    const availableForPhoneHistory = Math.max(0, remaining - priorityContextLength - 2);
     const phoneHistoryBudget = fullContextLength <= remaining
         ? fullPhoneHistory.length
-        : Math.min(fullPhoneHistory.length, Math.max(8000, Math.floor(remaining * 0.65)));
+        : Math.min(
+            fullPhoneHistory.length,
+            availableForPhoneHistory,
+            Math.max(8000, Math.floor(remaining * 0.65)),
+        );
     const contextSections = [
         compressPhoneHistory(phoneHistoryBudget),
-        ...otherContextSections,
+        ...priorityContextSections,
+        ...supplementalContextSections,
     ].filter(Boolean);
     const fittedContext = [];
     for (const section of contextSections) {

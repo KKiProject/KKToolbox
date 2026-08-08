@@ -1,4 +1,6 @@
-export const PHONE_STORE_VERSION = 3;
+import { cleanPhoneText as cleanText } from './phone-utils.js';
+
+export const PHONE_STORE_VERSION = 4;
 export const PHONE_MESSAGE_TYPES = Object.freeze([
     'text',
     'voice',
@@ -7,6 +9,7 @@ export const PHONE_MESSAGE_TYPES = Object.freeze([
     'group_redpacket',
     'location',
     'sticker',
+    'forward_bundle',
 ]);
 export const PHONE_IDENTITY_MODES = Object.freeze(['unbound', 'character_card', 'worldbook', 'custom']);
 export const PHONE_MEMORY_EVENT_TYPES = Object.freeze([
@@ -18,6 +21,7 @@ export const PHONE_MEMORY_EVENT_TYPES = Object.freeze([
     'unknown_state',
 ]);
 export const PHONE_MEMORY_EVENT_STATUSES = Object.freeze(['informational', 'active', 'resolved']);
+export const PHONE_DEFAULT_STICKER_GROUP_ID = 'default';
 
 const storeCache = new Map();
 const writeLocks = new Map();
@@ -25,10 +29,7 @@ const preparedStoryInjections = new Map();
 const PHONE_CONTEXT_MARKER = 'memory_augment_phone_context';
 const PHONE_MAIN_CONTEXT_CHAR_LIMIT = 50_000;
 const PHONE_PENDING_RAW_CHAR_TARGET = 46_000;
-
-function cleanText(value, maximum = 4000) {
-    return String(value ?? '').trim().slice(0, maximum);
-}
+const PHONE_CONTEXT_GUARD = '以上线上记录按较早到较新排列；最后一个线上轮次代表手机当前最新状态，正文应优先承接。如与最新用户回复冲突，以最新用户回复为最高准则。涉及约定、承诺与冲突时应保持连续性。不得推测任何未明确的查看状态或人物反应，也不得把模拟媒体形式误认为真实转账、定位或图片识别。';
 
 function stableHash(value) {
     let hash = 2166136261;
@@ -106,6 +107,33 @@ function normalizeMessageReference(value = {}) {
     };
 }
 
+function normalizeForwardBundleItem(value = {}) {
+    const type = PHONE_MESSAGE_TYPES.includes(value?.type) ? value.type : 'text';
+    return {
+        messageId: cleanText(value?.messageId ?? value?.id, 120),
+        sender: cleanText(value?.sender, 80) || '未知联系人',
+        type,
+        content: cleanText(value?.content, 4000),
+        assetUrl: cleanText(value?.assetUrl, 4000),
+        stickerName: cleanText(value?.stickerName ?? value?.sticker, 120),
+        amount: Math.max(0, Number(value?.amount) || 0).toFixed(2),
+        recipient: cleanText(value?.recipient, 80),
+        count: Math.max(0, Math.trunc(Number(value?.count) || 0)),
+        duration: Math.max(1, Math.min(60, Math.trunc(Number(value?.duration) || 1))),
+    };
+}
+
+function normalizeForwardBundle(value = {}) {
+    const messages = (Array.isArray(value?.messages) ? value.messages : []).map(normalizeForwardBundleItem);
+    if (messages.length === 0) return null;
+    const sourceConversationName = cleanText(value?.sourceConversationName, 120) || '其他会话';
+    return {
+        sourceConversationName,
+        title: cleanText(value?.title, 160) || `${sourceConversationName}的聊天记录`,
+        messages,
+    };
+}
+
 export function normalizePhoneIdentity(value = {}) {
     const mode = PHONE_IDENTITY_MODES.includes(value?.mode) ? value.mode : 'unbound';
     return {
@@ -129,11 +157,13 @@ export function normalizePhoneMessage(value) {
         assetUrl: cleanText(value?.assetUrl, 4000),
         stickerName: cleanText(value?.stickerName ?? value?.sticker, 120),
         amount: Math.max(0, Number(value?.amount) || 0).toFixed(2),
+        recipient: cleanText(value?.recipient, 80),
         count: Math.max(0, Math.trunc(Number(value?.count) || 0)),
         duration: Math.max(1, Math.min(60, Math.trunc(Number(value?.duration) || 1))),
         claims: Array.isArray(value?.claims) ? value.claims.map(normalizeClaim).filter(item => item.name) : [],
         quote: normalizeMessageReference(value?.quote),
         forwardedFrom: normalizeMessageReference(value?.forwardedFrom),
+        forwardBundle: normalizeForwardBundle(value?.forwardBundle),
         editedAt: Number.isFinite(Number(value?.editedAt)) ? Number(value.editedAt) : 0,
         timestamp: Number.isFinite(Number(value?.timestamp)) ? Number(value.timestamp) : Date.now(),
         queued: value?.queued === true,
@@ -291,19 +321,26 @@ export async function loadPhoneStore(context = globalThis.SillyTavern?.getContex
 }
 
 export async function savePhoneStore(store, context = globalThis.SillyTavern?.getContext?.()) {
-    const chatId = getPhoneChatId(context) || cleanText(store?.chatId, 500);
+    const storeChatId = cleanText(store?.chatId, 500);
+    const contextChatId = getPhoneChatId(context);
+    if (storeChatId && contextChatId && storeChatId !== contextChatId) {
+        throw new Error('当前手机数据属于另一个聊天，已阻止跨聊天覆盖。请重新打开手机后再操作。');
+    }
+    const chatId = storeChatId || contextChatId;
     const scope = getPhoneScope(chatId);
     if (!scope) throw new Error('请先在酒馆中打开一个角色卡聊天，再创建手机联系人、群聊或消息。');
     const previous = writeLocks.get(chatId) ?? Promise.resolve();
     const current = previous.catch(() => undefined).then(async () => {
         const normalized = normalizePhoneStore(store, chatId);
         normalized.updatedAt = Date.now();
+        const persisted = { ...normalized };
+        delete persisted.profile;
         const response = await fetch('/api/files/upload', {
             method: 'POST',
             headers: getRequestHeaders(),
             body: JSON.stringify({
                 name: scope.fileName,
-                data: encodeBase64Utf8(`${JSON.stringify(normalized)}\n`),
+                data: encodeBase64Utf8(`${JSON.stringify(persisted)}\n`),
             }),
         });
         if (!response.ok) throw new Error(`保存手机数据失败（${response.status}）。`);
@@ -326,6 +363,13 @@ export function createPhoneConversation(store, input = {}) {
         createdAt: Date.now(),
         messages: [],
     });
+    if (conversation.type === 'group' && conversation.members.length < 2) {
+        throw new Error('创建群聊至少需要2名不同的群成员。');
+    }
+    if (conversation.type === 'group'
+        && conversation.members.includes(cleanText(store?.profile?.nickname, 80))) {
+        throw new Error('群成员不需要重复填写玩家本人。');
+    }
     store.conversations.push(conversation);
     return conversation;
 }
@@ -415,9 +459,34 @@ export function forwardPhoneMessages(store, sourceConversationId, targetConversa
     const selected = new Set((Array.isArray(messageIds) ? messageIds : []).map(String));
     if (!source || !target || selected.size === 0) return [];
     const roundId = createPhoneRoundId();
-    return source.messages
-        .filter(message => selected.has(message.id))
-        .map(message => appendPhoneMessage(store, target.id, {
+    const messages = source.messages.filter(message => selected.has(message.id));
+    if (messages.length > 1) {
+        return [appendPhoneMessage(store, target.id, {
+            roundId,
+            sender: cleanText(sender, 80) || '我',
+            fromUser: true,
+            type: 'forward_bundle',
+            forwardBundle: {
+                sourceConversationName: source.name,
+                title: `${source.name}的聊天记录`,
+                messages: messages.map(message => ({
+                    messageId: message.id,
+                    sender: message.sender,
+                    type: message.type,
+                    content: message.content,
+                    assetUrl: message.assetUrl,
+                    stickerName: message.stickerName,
+                    amount: message.amount,
+                    recipient: message.recipient,
+                    count: message.count,
+                    duration: message.duration,
+                })),
+            },
+            queued: true,
+            storyPending: false,
+        })];
+    }
+    return messages.map(message => appendPhoneMessage(store, target.id, {
             ...message,
             roundId,
             sender: cleanText(sender, 80) || '我',
@@ -708,13 +777,71 @@ export function splitGroupRedPacket(total, names, requestedCount, seed = '') {
     }));
 }
 
+export function normalizePhoneStickerGroups(settings) {
+    settings.phone ??= {};
+    const groups = [{ id: PHONE_DEFAULT_STICKER_GROUP_ID, name: '默认' }];
+    const seenIds = new Set([PHONE_DEFAULT_STICKER_GROUP_ID]);
+    const seenNames = new Set(['默认']);
+    for (const value of Array.isArray(settings.phone.stickerGroups) ? settings.phone.stickerGroups : []) {
+        const name = cleanText(value?.name, 80);
+        if (!name || seenNames.has(name)) continue;
+        let id = cleanText(value?.id, 120);
+        if (!id || id === PHONE_DEFAULT_STICKER_GROUP_ID || seenIds.has(id)) id = makeId('sticker-group');
+        seenIds.add(id);
+        seenNames.add(name);
+        groups.push({ id, name });
+    }
+    settings.phone.stickerGroups = groups;
+    return groups;
+}
+
+export function createPhoneStickerGroup(settings, name) {
+    const groups = normalizePhoneStickerGroups(settings);
+    const normalizedName = cleanText(name, 80);
+    if (!normalizedName) throw new Error('请填写分组名称。');
+    if (groups.some(group => group.name === normalizedName)) throw new Error('已经有同名分组了。');
+    const group = { id: makeId('sticker-group'), name: normalizedName };
+    groups.push(group);
+    return group;
+}
+
+export function renamePhoneStickerGroup(settings, groupId, name) {
+    if (groupId === PHONE_DEFAULT_STICKER_GROUP_ID) throw new Error('默认组不能重命名。');
+    const groups = normalizePhoneStickerGroups(settings);
+    const group = groups.find(item => item.id === groupId);
+    if (!group) throw new Error('没有找到这个分组。');
+    const normalizedName = cleanText(name, 80);
+    if (!normalizedName) throw new Error('请填写分组名称。');
+    if (groups.some(item => item.id !== groupId && item.name === normalizedName)) {
+        throw new Error('已经有同名分组了。');
+    }
+    group.name = normalizedName;
+    return group;
+}
+
+export function removePhoneStickerGroup(settings, groupId) {
+    if (groupId === PHONE_DEFAULT_STICKER_GROUP_ID) return false;
+    const groups = normalizePhoneStickerGroups(settings);
+    const index = groups.findIndex(group => group.id === groupId);
+    if (index < 0) return false;
+    groups.splice(index, 1);
+    for (const sticker of Array.isArray(settings.phone.stickers) ? settings.phone.stickers : []) {
+        if (sticker?.groupId === groupId) sticker.groupId = PHONE_DEFAULT_STICKER_GROUP_ID;
+    }
+    return true;
+}
+
 export function normalizePhoneStickers(settings) {
     settings.phone ??= {};
+    const validGroupIds = new Set(normalizePhoneStickerGroups(settings).map(group => group.id));
     settings.phone.stickers = (Array.isArray(settings.phone.stickers) ? settings.phone.stickers : [])
         .map(value => ({
             id: cleanText(value?.id, 120) || makeId('sticker'),
             name: cleanText(value?.name, 120),
             url: cleanText(value?.url, 4000),
+            groupId: validGroupIds.has(cleanText(value?.groupId, 120))
+                ? cleanText(value.groupId, 120)
+                : PHONE_DEFAULT_STICKER_GROUP_ID,
         }))
         .filter(value => value.name && value.url);
     return settings.phone.stickers;
@@ -724,15 +851,69 @@ export function addPhoneSticker(settings, input = {}) {
     const stickers = normalizePhoneStickers(settings);
     const name = cleanText(input?.name, 120);
     const url = cleanText(input?.url, 4000);
+    const groups = normalizePhoneStickerGroups(settings);
+    const groupId = groups.some(group => group.id === input?.groupId)
+        ? input.groupId
+        : PHONE_DEFAULT_STICKER_GROUP_ID;
     if (!name || !url) throw new Error('表情包需要名称和图片。');
     const existing = stickers.find(item => item.name === name);
     if (existing) {
         existing.url = url;
+        existing.groupId = groupId;
         return existing;
     }
-    const sticker = { id: makeId('sticker'), name, url };
+    const sticker = { id: makeId('sticker'), name, url, groupId };
     stickers.push(sticker);
     return sticker;
+}
+
+function getStickerNameFromUrl(url, lineNumber) {
+    try {
+        const parsed = new URL(url);
+        const fileName = decodeURIComponent(parsed.pathname.split('/').filter(Boolean).at(-1) ?? '')
+            .replace(/\.[a-z0-9]{2,6}$/i, '')
+            .replace(/[+_-]+/g, ' ')
+            .trim();
+        return cleanText(fileName, 120) || `表情包 ${lineNumber}`;
+    } catch {
+        return `表情包 ${lineNumber}`;
+    }
+}
+
+export function parsePhoneStickerLinkBatch(raw, groupId = PHONE_DEFAULT_STICKER_GROUP_ID) {
+    const items = [];
+    const errors = [];
+    String(raw ?? '').split(/\r?\n/).forEach((source, index) => {
+        const lineNumber = index + 1;
+        const line = source.trim();
+        if (!line) return;
+        const match = line.match(/https?:\/\/\S+/i);
+        if (!match) {
+            errors.push({ line: lineNumber, message: '没有找到 http 或 https 图片链接。' });
+            return;
+        }
+        const url = match[0];
+        try {
+            const parsed = new URL(url);
+            if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error();
+        } catch {
+            errors.push({ line: lineNumber, message: '图片链接格式不正确。' });
+            return;
+        }
+        const suffix = line.slice((match.index ?? 0) + url.length).trim();
+        if (suffix) {
+            errors.push({ line: lineNumber, message: '链接后面还有无法识别的内容。' });
+            return;
+        }
+        const prefix = line.slice(0, match.index ?? 0).trim().replace(/[-–—]\s*$/, '').trim();
+        items.push({
+            line: lineNumber,
+            name: cleanText(prefix, 120) || getStickerNameFromUrl(url, lineNumber),
+            url,
+            groupId: cleanText(groupId, 120) || PHONE_DEFAULT_STICKER_GROUP_ID,
+        });
+    });
+    return { items, errors };
 }
 
 export function removePhoneSticker(settings, stickerId) {
@@ -781,16 +962,30 @@ export async function uploadPhoneImage(file, prefix = 'asset') {
 export function formatPhoneMessageForAi(message) {
     const typeLabels = {
         text: '文字', voice: '语音文字', image: '图片描述', redpacket: '红包',
-        group_redpacket: '群红包', location: '位置', sticker: '表情包',
+        group_redpacket: '群红包', location: '位置', sticker: '表情包', forward_bundle: '聊天记录',
     };
+    if (message.type === 'forward_bundle' && message.forwardBundle) {
+        const records = message.forwardBundle.messages.map(item => {
+            const detail = item.type === 'sticker'
+                ? item.stickerName
+                : ['redpacket', 'group_redpacket'].includes(item.type)
+                    ? `${item.recipient ? `给${item.recipient} ` : ''}${item.amount}元 ${item.content}`.trim()
+                    : item.type === 'forward_bundle' ? '[聊天记录]' : item.content;
+            return `${item.sender} [${typeLabels[item.type] ?? '文字'}]: ${detail}`;
+        });
+        return `${message.sender} [聊天记录]: ${message.forwardBundle.title}（共${records.length}条）\n${records.join('\n')}`;
+    }
     const details = message.type === 'sticker'
         ? message.stickerName
         : ['redpacket', 'group_redpacket'].includes(message.type)
-            ? `${message.amount}元 ${message.content}`.trim()
+            ? `${message.recipient ? `给${message.recipient} ` : ''}${message.amount}元 ${message.content}`.trim()
             : message.content;
     const references = [
         message.forwardedFrom
-            ? `【转发自${message.forwardedFrom.conversationName || '其他会话'} · ${message.forwardedFrom.sender || '未知'}】`
+            ? `【转发自${message.forwardedFrom.conversationName && message.forwardedFrom.sender
+                && message.forwardedFrom.conversationName !== message.forwardedFrom.sender
+                ? `${message.forwardedFrom.conversationName} · ${message.forwardedFrom.sender}`
+                : message.forwardedFrom.conversationName || message.forwardedFrom.sender || '其他会话'}】`
             : '',
         message.quote
             ? `【引用${message.quote.sender || '未知'}：${message.quote.content || '消息'}】`
@@ -865,12 +1060,10 @@ function getPhoneContextSelection(store, limit = 12, recalledEvents = []) {
         recentRoundKeys.push(key);
     }
     const recentRoundSet = new Set(recentRoundKeys);
-    const recent = allMessages.filter(item => (
-        recentRoundSet.has(`${item.conversation.id}:${item.message.roundId}`)
-        && !pendingIds.has(item.message.id)
+    const messages = allMessages.filter(item => (
+        pendingIds.has(item.message.id)
+        || recentRoundSet.has(`${item.conversation.id}:${item.message.roundId}`)
     ));
-    const messages = [...pendingMessages, ...recent]
-        .sort((left, right) => left.message.timestamp - right.message.timestamp);
     const automaticEvents = (store?.onlineMemory?.events ?? [])
         .filter(event => event.pending === true || event.status === 'active')
         .sort((left, right) => left.updatedAt - right.updatedAt);
@@ -901,30 +1094,44 @@ function formatPhoneMemoryEvent(event, store) {
     return `[${labels[event.type] ?? '线上事实'}${state}${conversation ? ` · ${conversation.name}` : ''}] ${event.summary}`;
 }
 
+function groupPhoneContextItems(items) {
+    const groups = [];
+    for (const item of items) {
+        const key = `${item.conversation.id}:${item.message.roundId}`;
+        let group = groups.at(-1);
+        if (group?.key !== key) group = null;
+        if (!group) {
+            group = {
+                key,
+                conversation: item.conversation,
+                roundId: item.message.roundId,
+                items: [],
+                pending: false,
+            };
+            groups.push(group);
+        }
+        group.items.push(item);
+        if (item.message.storyPending === true) group.pending = true;
+    }
+    return groups;
+}
+
+function formatPhoneTimelineBlock(group) {
+    const label = group.pending ? '本次新增线上轮次' : '此前线上轮次';
+    return [
+        `[${label} · ${group.conversation.type === 'group' ? '群聊' : '单聊'}·${group.conversation.name}]`,
+        ...group.items.map(({ message }) => formatPhoneMessageForAi(message)),
+    ].join('\n');
+}
+
 export function buildPhonePromptContext(store, limit = 12, recalledEvents = []) {
     const selection = getPhoneContextSelection(store, limit, recalledEvents);
     const { messages, events } = selection;
     if (messages.length === 0 && events.length === 0) return '';
-    const pendingItems = messages.filter(item => item.message.storyPending === true);
-    const recentItems = messages.filter(item => item.message.storyPending !== true);
-    const groupedPending = [];
-    const pendingByRound = new Map();
-    for (const item of pendingItems) {
-        const key = `${item.conversation.id}:${item.message.roundId}`;
-        let group = pendingByRound.get(key);
-        if (!group) {
-            group = { conversation: item.conversation, roundId: item.message.roundId, items: [] };
-            pendingByRound.set(key, group);
-            groupedPending.push(group);
-        }
-        group.items.push(item);
-    }
-    const rawBlocks = groupedPending.map(group => [
-        `[线上轮次 · ${group.conversation.type === 'group' ? '群聊' : '单聊'}·${group.conversation.name}]`,
-        ...group.items.map(({ message }) => formatPhoneMessageForAi(message)),
-    ].join('\n'));
-    let pendingText = rawBlocks.join('\n\n');
-    if (pendingText.length > PHONE_PENDING_RAW_CHAR_TARGET) {
+    const timelineGroups = groupPhoneContextItems(messages);
+    const rawBlocks = timelineGroups.map(formatPhoneTimelineBlock);
+    let timelineBody = rawBlocks.join('\n\n');
+    if (timelineBody.length > PHONE_PENDING_RAW_CHAR_TARGET) {
         const recentRaw = [];
         let recentLength = 0;
         let firstRawIndex = rawBlocks.length;
@@ -935,10 +1142,11 @@ export function buildPhonePromptContext(store, limit = 12, recalledEvents = []) 
             recentLength += blockLength;
             firstRawIndex = index;
         }
-        const olderSummaries = groupedPending.slice(0, firstRawIndex).map(group => {
+        const olderSummaries = timelineGroups.slice(0, firstRawIndex).map(group => {
             const stored = group.conversation.rounds?.find(round => round.id === group.roundId)?.summary;
             const fallback = group.items.map(({ message }) => formatPhoneMessageForAi(message)).join('；');
-            return `[${group.conversation.name}] ${cleanText(stored || fallback, 1200)}`;
+            const label = group.pending ? '本次新增' : '此前';
+            return `[${label}·${group.conversation.name}] ${cleanText(stored || fallback, 1200)}`;
         });
         const recentSection = recentRaw.length > 0
             ? `【最近线上轮次原文】\n${recentRaw.join('\n\n')}`
@@ -951,24 +1159,26 @@ export function buildPhonePromptContext(store, limit = 12, recalledEvents = []) 
             const lines = olderSummaries.map(summary => cleanText(summary, lineBudget));
             summarySection = `${heading}${lines.join('\n')}`.slice(0, summaryBudget);
         }
-        pendingText = [summarySection, recentSection].filter(Boolean).join('\n\n');
+        timelineBody = [summarySection, recentSection].filter(Boolean).join('\n\n');
     }
-    const eventText = events.map(event => formatPhoneMemoryEvent(event, store)).join('\n');
-    const recentText = recentItems.map(({ conversation, message }) => (
-        `[近期${conversation.type === 'group' ? '群聊' : '单聊'}·${conversation.name}] ${formatPhoneMessageForAi(message)}`
-    )).join('\n');
+    const timelineText = timelineBody
+        ? `【线上记录（按发生时间由旧到新，最后一轮为当前最新）】\n${timelineBody}`
+        : '';
+    const eventBody = events.map(event => formatPhoneMemoryEvent(event, store)).join('\n');
+    const eventText = eventBody ? `【持续有效的线上事实】\n${eventBody}` : '';
     const header = [
         '【线上通讯与手机内容】',
         '以下只记录手机中确实出现的内容、明确操作与有逐字证据的约定或反应。',
         '“已发送／已收到／平台上存在”不等于某人已经看见、理解、赞同或产生情绪；未明确发生的状态必须保持未知。',
     ].join('\n');
-    let remaining = Math.max(0, PHONE_MAIN_CONTEXT_CHAR_LIMIT - header.length - 8);
+    let remaining = Math.max(0, PHONE_MAIN_CONTEXT_CHAR_LIMIT - header.length - PHONE_CONTEXT_GUARD.length - 10);
     const sections = [];
-    for (const value of [pendingText, eventText, recentText]) {
-        if (!value || remaining <= 0) continue;
-        const part = value.slice(0, remaining);
-        sections.push(part);
-        remaining -= part.length + 2;
+    if (timelineText) {
+        const eventBudget = Math.max(0, remaining - timelineText.length - 2);
+        if (eventText && eventBudget > 0) sections.push(eventText.slice(0, eventBudget));
+        sections.push(timelineText.slice(0, remaining - (sections[0]?.length ?? 0) - (sections.length ? 2 : 0)));
+    } else if (eventText) {
+        sections.push(eventText.slice(0, remaining));
     }
     return [header, ...sections].join('\n\n');
 }
@@ -977,9 +1187,8 @@ export function formatPhoneContextMessage(store, limit = 12, recalledEvents = []
     const content = buildPhonePromptContext(store, limit, recalledEvents);
     if (!content) return null;
     const selection = getPhoneContextSelection(store, limit, recalledEvents);
-    const guard = '这些内容属于正文世界已经发生的线上部分；涉及约定、承诺与冲突时应保持连续性。如与最新用户回复冲突，以最新用户回复为最高准则。不得推测任何未明确的查看状态或人物反应，也不得把模拟媒体形式误认为真实转账、定位或图片识别。';
-    const boundedContent = content.slice(0, Math.max(0, PHONE_MAIN_CONTEXT_CHAR_LIMIT - guard.length - 1));
-    const fullContent = `${boundedContent}\n${guard}`;
+    const boundedContent = content.slice(0, Math.max(0, PHONE_MAIN_CONTEXT_CHAR_LIMIT - PHONE_CONTEXT_GUARD.length - 1));
+    const fullContent = `${boundedContent}\n${PHONE_CONTEXT_GUARD}`;
     return {
         role: 'system',
         content: fullContent,
@@ -1023,12 +1232,14 @@ export async function consumePreparedPhoneContext(context = globalThis.SillyTave
     const chatId = getPhoneChatId(context);
     const prepared = preparedStoryInjections.get(chatId);
     if (!chatId || !prepared) return false;
-    preparedStoryInjections.delete(chatId);
     const store = await loadPhoneStore(context);
     let changed = false;
+    const changedMessages = [];
+    const changedEvents = [];
     for (const conversation of store.conversations) {
         for (const message of conversation.messages) {
             if (!prepared.messageIds.has(message.id) || message.storyPending !== true) continue;
+            changedMessages.push(message);
             message.storyPending = false;
             changed = true;
         }
@@ -1036,11 +1247,22 @@ export async function consumePreparedPhoneContext(context = globalThis.SillyTave
     const consumedAt = Date.now();
     for (const event of store.onlineMemory?.events ?? []) {
         if (!prepared.eventIds.has(event.id) || event.pending !== true) continue;
+        changedEvents.push({ event, consumedAt: event.consumedAt });
         event.pending = false;
         event.consumedAt = consumedAt;
         changed = true;
     }
-    if (changed) await savePhoneStore(store, context);
+    try {
+        if (changed) await savePhoneStore(store, context);
+    } catch (error) {
+        for (const message of changedMessages) message.storyPending = true;
+        for (const { event, consumedAt: previousConsumedAt } of changedEvents) {
+            event.pending = true;
+            event.consumedAt = previousConsumedAt;
+        }
+        throw error;
+    }
+    preparedStoryInjections.delete(chatId);
     return changed;
 }
 

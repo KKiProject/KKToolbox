@@ -5,11 +5,13 @@ import {
     appendPhoneMessage,
     buildPhoneAiSnapshot,
     buildPhonePromptContext,
+    clearPreparedPhoneContext,
     commitQueuedPhoneMessages,
     consumePreparedPhoneContext,
     createEmptyPhoneStore,
     createPhoneConversation,
     createPhoneRoundId,
+    createPhoneStickerGroup,
     formatPhoneContextMessage,
     formatPhoneMessageForAi,
     forwardPhoneMessages,
@@ -19,11 +21,16 @@ import {
     normalizePhoneStore,
     normalizePhoneIdentity,
     normalizePhoneProfile,
+    normalizePhoneStickerGroups,
+    normalizePhoneStickers,
+    parsePhoneStickerLinkBatch,
     recordPhoneMemoryEvents,
     removePhoneConversation,
     removeLatestPhoneReply,
     removePhoneMessage,
+    removePhoneStickerGroup,
     renamePhoneConversation,
+    renamePhoneStickerGroup,
     savePhoneStore,
     setPhoneRoundSummary,
     splitGroupRedPacket,
@@ -57,7 +64,7 @@ test('phone conversations keep display names separate from real identities', () 
     assert.equal(normalizePhoneIdentity().mode, 'unbound');
 });
 
-test('phone conversation file persists with the current chat only', async (context) => {
+test('phone conversation file stays chat-scoped and does not duplicate the standalone profile', async (context) => {
     const originalFetch = globalThis.fetch;
     const originalSillyTavern = globalThis.SillyTavern;
     context.after(() => {
@@ -75,9 +82,31 @@ test('phone conversation file persists with the current chat only', async (conte
     await savePhoneStore(store, chatContext);
     const restored = await loadPhoneStore(chatContext, { force: true });
 
-    assert.equal(restored.profile.nickname, '夜酱');
+    assert.equal(restored.profile.nickname, '我');
     assert.equal(restored.conversations[0].name, '经纪人');
     assert.equal(fixture.files.size, 1);
+    assert.equal(Object.hasOwn([...fixture.files.values()][0], 'profile'), false);
+});
+
+test('phone store refuses to overwrite a different current chat', async (context) => {
+    const originalFetch = globalThis.fetch;
+    const originalSillyTavern = globalThis.SillyTavern;
+    context.after(() => {
+        globalThis.fetch = originalFetch;
+        globalThis.SillyTavern = originalSillyTavern;
+    });
+    const fixture = installNativeFetch();
+    globalThis.fetch = fixture.fetch;
+    globalThis.SillyTavern = { getContext: () => ({ getRequestHeaders: () => ({}) }) };
+    const store = createEmptyPhoneStore('chat-a');
+    createPhoneConversation(store, { type: 'direct', name: '只属于聊天A' });
+
+    await assert.rejects(
+        () => savePhoneStore(store, { getCurrentChatId: () => 'chat-b' }),
+        /已阻止跨聊天覆盖/,
+    );
+    assert.equal(store.chatId, 'chat-a');
+    assert.equal(fixture.files.size, 0);
 });
 
 test('phone store keeps direct and group chats in one lightweight list', () => {
@@ -89,6 +118,21 @@ test('phone store keeps direct and group chats in one lightweight list', () => {
     assert.equal(store.conversations.length, 2);
     assert.equal(direct.messages[0].type, 'voice');
     assert.deepEqual(group.members, ['导演', '主演']);
+});
+
+test('creating a group requires two distinct members besides the player', () => {
+    const store = createEmptyPhoneStore('group-member-minimum');
+    store.profile.nickname = '玩家';
+    assert.throws(
+        () => createPhoneConversation(store, { type: 'group', name: '不完整群聊', members: ['姐姐', '姐姐'] }),
+        /至少需要2名不同的群成员/,
+    );
+    assert.equal(store.conversations.length, 0);
+    assert.throws(
+        () => createPhoneConversation(store, { type: 'group', name: '重复玩家', members: ['玩家', '姐姐', '弟弟'] }),
+        /不需要重复填写玩家本人/,
+    );
+    assert.equal(store.conversations.length, 0);
 });
 
 test('phone conversations can be renamed and deleted with their online memories', () => {
@@ -152,22 +196,42 @@ test('editing a phone message reopens it for the story and invalidates old deriv
     assert.equal(direct.rounds[0].summary, '');
 });
 
-test('multiple phone messages can be forwarded together with their source labels', () => {
+test('multiple phone messages become one independent chat-record snapshot', () => {
     const store = createEmptyPhoneStore('forward-messages');
     store.profile.nickname = '玩家';
     const source = createPhoneConversation(store, { type: 'direct', name: '经纪人' });
-    const target = createPhoneConversation(store, { type: 'group', name: '剧组群', members: ['导演'] });
+    const target = createPhoneConversation(store, { type: 'group', name: '剧组群', members: ['导演', '主演'] });
     const first = appendPhoneMessage(store, source.id, { sender: '经纪人', content: '通告改到下午。' });
     const second = appendPhoneMessage(store, source.id, { sender: '玩家', fromUser: true, content: '收到。' });
 
     const forwarded = forwardPhoneMessages(store, source.id, target.id, [first.id, second.id], '玩家');
-    assert.equal(forwarded.length, 2);
-    assert.equal(forwarded[0].roundId, forwarded[1].roundId);
-    assert.equal(forwarded[0].forwardedFrom.conversationName, '经纪人');
+    assert.equal(forwarded.length, 1);
+    assert.equal(forwarded[0].type, 'forward_bundle');
+    assert.equal(forwarded[0].forwardBundle.title, '经纪人的聊天记录');
+    assert.equal(forwarded[0].forwardBundle.messages.length, 2);
     assert.equal(forwarded[0].fromUser, true);
     assert.equal(forwarded[0].queued, true);
     assert.equal(forwarded[0].storyPending, false);
-    assert.match(formatPhoneMessageForAi(forwarded[0]), /转发自经纪人/);
+    assert.match(formatPhoneMessageForAi(forwarded[0]), /通告改到下午/);
+    assert.match(formatPhoneMessageForAi(forwarded[0]), /收到/);
+
+    first.content = '后来改掉的源消息';
+    source.messages.splice(1, 1);
+    assert.equal(forwarded[0].forwardBundle.messages[0].content, '通告改到下午。');
+    assert.equal(forwarded[0].forwardBundle.messages.length, 2);
+});
+
+test('a single forwarded direct-chat message keeps one non-duplicated source name', () => {
+    const store = createEmptyPhoneStore('forward-one-message');
+    const source = createPhoneConversation(store, { type: 'direct', name: '罗莎姐姐' });
+    const target = createPhoneConversation(store, { type: 'direct', name: '好友' });
+    const message = appendPhoneMessage(store, source.id, { sender: '罗莎姐姐', content: '会议还有十分钟收尾。' });
+
+    const [forwarded] = forwardPhoneMessages(store, source.id, target.id, [message.id], '玩家');
+    assert.equal(forwarded.type, 'text');
+    assert.equal(forwarded.forwardedFrom.conversationName, '罗莎姐姐');
+    assert.match(formatPhoneMessageForAi(forwarded), /转发自罗莎姐姐】/);
+    assert.doesNotMatch(formatPhoneMessageForAi(forwarded), /罗莎姐姐 · 罗莎姐姐/);
 });
 
 test('fragmented player bubbles stay queued until the whole batch is sent', () => {
@@ -196,6 +260,41 @@ test('fragmented player bubbles stay queued until the whole batch is sent', () =
     assert.equal(second.storyPending, true);
     assert.equal(buildPhoneAiSnapshot(store, direct.id).messages.length, 2);
     assert.match(buildPhonePromptContext(store), /我有件事想跟你说/);
+});
+
+test('story context places earlier phone history before the newly added latest round', () => {
+    const store = createEmptyPhoneStore('phone-context-order');
+    const direct = createPhoneConversation(store, { type: 'direct', name: '姐姐' });
+    const earlierRound = createPhoneRoundId();
+    appendPhoneMessage(store, direct.id, {
+        sender: '姐姐', content: '上来书房。', roundId: earlierRound,
+        timestamp: 100, storyPending: false,
+    });
+    appendPhoneMessage(store, direct.id, {
+        sender: '我', fromUser: true, content: '但是姐姐在开会。', roundId: earlierRound,
+        timestamp: 110, storyPending: false,
+    });
+    const latestRound = createPhoneRoundId();
+    appendPhoneMessage(store, direct.id, {
+        sender: '我', fromUser: true, content: '为什么姐姐冷冰冰的。', roundId: latestRound,
+        timestamp: 200, storyPending: true,
+    });
+    appendPhoneMessage(store, direct.id, {
+        sender: '姐姐', content: '等我过去，当面纠正你的错误认知。', roundId: latestRound,
+        timestamp: 210, storyPending: true,
+    });
+
+    const context = buildPhonePromptContext(store);
+    assert.match(context, /按发生时间由旧到新，最后一轮为当前最新/);
+    assert.match(context, /此前线上轮次 · 单聊·姐姐/);
+    assert.match(context, /本次新增线上轮次 · 单聊·姐姐/);
+    assert.doesNotMatch(context, /近期单聊/);
+    assert.ok(context.indexOf('上来书房') < context.indexOf('为什么姐姐冷冰冰'));
+    assert.ok(context.indexOf('为什么姐姐冷冰冰') < context.indexOf('当面纠正你的错误认知'));
+
+    const injected = formatPhoneContextMessage(store).content;
+    assert.ok(injected.indexOf('当面纠正你的错误认知') < injected.indexOf('最后一个线上轮次代表手机当前最新状态'));
+    assert.match(injected, /正文应优先承接/);
 });
 
 test('editing an unsent phone bubble keeps it out of story context', () => {
@@ -256,6 +355,22 @@ test('group red packet allocation is stable, random-looking, and exact', () => {
     assert.equal(first.length, 4);
     assert.equal(first.reduce((sum, item) => sum + Math.round(Number(item.amount) * 100), 0), 8888);
     assert.equal(new Set(first.map(item => item.name)).size, 4);
+    assert.deepEqual(new Set(first.map(item => item.name)), new Set(names));
+});
+
+test('a direct red packet inside a group keeps its named recipient', () => {
+    const store = createEmptyPhoneStore('group-direct-packet');
+    const group = createPhoneConversation(store, { type: 'group', name: '剧组群', members: ['导演', '主演'] });
+    const packet = appendPhoneMessage(store, group.id, {
+        sender: '我',
+        fromUser: true,
+        type: 'redpacket',
+        recipient: '导演',
+        amount: 8.88,
+        content: '辛苦了',
+    });
+    assert.equal(packet.recipient, '导演');
+    assert.match(formatPhoneMessageForAi(packet), /给导演 8\.88元/);
 });
 
 test('sticker names and phone events are exposed to AI without image reading', () => {
@@ -275,6 +390,31 @@ test('sticker names and phone events are exposed to AI without image reading', (
     assert.equal(injectPhoneContext(generation, store), true);
     assert.equal(generation[1].name, 'KKToolbox Phone Activity');
     assert.equal(generation[2].content, '玩家最新回复');
+});
+
+test('legacy stickers migrate into the default group and custom groups remain reversible', () => {
+    const settings = { phone: { stickers: [{ name: '旧表情', url: 'https://example.com/old.gif' }] } };
+    assert.deepEqual(normalizePhoneStickerGroups(settings), [{ id: 'default', name: '默认' }]);
+    assert.equal(normalizePhoneStickers(settings)[0].groupId, 'default');
+
+    const group = createPhoneStickerGroup(settings, '猫猫');
+    addPhoneSticker(settings, { name: '猫猫震惊', url: 'https://example.com/cat.gif', groupId: group.id });
+    assert.equal(normalizePhoneStickers(settings).find(item => item.name === '猫猫震惊').groupId, group.id);
+    assert.equal(renamePhoneStickerGroup(settings, group.id, '猫猫系列').name, '猫猫系列');
+    assert.equal(removePhoneStickerGroup(settings, group.id), true);
+    assert.equal(normalizePhoneStickers(settings).find(item => item.name === '猫猫震惊').groupId, 'default');
+});
+
+test('batch sticker links accept spaces, hyphens, and bare URLs without a pipe character', () => {
+    const result = parsePhoneStickerLinkBatch(`
+猫猫震惊 https://img.example/cat.gif
+狗狗开心-https://img.example/dog.webp
+https://img.example/party_cat.png
+这行没有链接
+`, 'animals');
+    assert.deepEqual(result.items.map(item => item.name), ['猫猫震惊', '狗狗开心', 'party cat']);
+    assert.ok(result.items.every(item => item.groupId === 'animals'));
+    assert.deepEqual(result.errors, [{ line: 5, message: '没有找到 http 或 https 图片链接。' }]);
 });
 
 test('online memory accepts only verbatim evidence and keeps unconfirmed reactions unknown', () => {
@@ -324,6 +464,59 @@ test('pending phone facts are consumed only after a prepared story generation su
 
     const generation = [{ role: 'user', content: '继续剧情' }];
     assert.equal(injectPhoneContext(generation, store), true);
+    assert.equal(message.storyPending, true);
+    assert.equal(await consumePreparedPhoneContext(chatContext), true);
+    assert.equal(store.conversations[0].messages[0].storyPending, false);
+});
+
+test('cancelled story generation discards its prepared phone context without consuming facts', async (context) => {
+    const originalFetch = globalThis.fetch;
+    const originalSillyTavern = globalThis.SillyTavern;
+    context.after(() => {
+        globalThis.fetch = originalFetch;
+        globalThis.SillyTavern = originalSillyTavern;
+    });
+    const fixture = installNativeFetch();
+    globalThis.fetch = fixture.fetch;
+    globalThis.SillyTavern = { getContext: () => ({ getRequestHeaders: () => ({}) }) };
+    const chatContext = { getCurrentChatId: () => 'cancelled-phone-memory' };
+    const store = createEmptyPhoneStore('cancelled-phone-memory');
+    const direct = createPhoneConversation(store, { type: 'direct', name: '朋友' });
+    const message = appendPhoneMessage(store, direct.id, { sender: '我', fromUser: true, content: '稍后见。' });
+    await savePhoneStore(store, chatContext);
+
+    assert.equal(injectPhoneContext([{ role: 'user', content: '继续剧情' }], store), true);
+    assert.equal(clearPreparedPhoneContext(store.chatId), true);
+    assert.equal(await consumePreparedPhoneContext(chatContext), false);
+    assert.equal(message.storyPending, true);
+});
+
+test('failed phone-context consumption rolls back and remains retryable', async (context) => {
+    const originalFetch = globalThis.fetch;
+    const originalSillyTavern = globalThis.SillyTavern;
+    context.after(() => {
+        globalThis.fetch = originalFetch;
+        globalThis.SillyTavern = originalSillyTavern;
+    });
+    const fixture = installNativeFetch();
+    globalThis.fetch = fixture.fetch;
+    globalThis.SillyTavern = { getContext: () => ({ getRequestHeaders: () => ({}) }) };
+    const chatContext = { getCurrentChatId: () => 'retry-phone-memory' };
+    const store = createEmptyPhoneStore('retry-phone-memory');
+    const direct = createPhoneConversation(store, { type: 'direct', name: '朋友' });
+    const message = appendPhoneMessage(store, direct.id, { sender: '我', fromUser: true, content: '记得回信。' });
+    await savePhoneStore(store, chatContext);
+    assert.equal(injectPhoneContext([{ role: 'user', content: '继续剧情' }], store), true);
+
+    let rejectNextUpload = true;
+    globalThis.fetch = async (url, options) => {
+        if (rejectNextUpload && String(url) === '/api/files/upload') {
+            rejectNextUpload = false;
+            return { ok: false, status: 500 };
+        }
+        return fixture.fetch(url, options);
+    };
+    await assert.rejects(() => consumePreparedPhoneContext(chatContext), /保存手机数据失败/);
     assert.equal(message.storyPending, true);
     assert.equal(await consumePreparedPhoneContext(chatContext), true);
     assert.equal(store.conversations[0].messages[0].storyPending, false);

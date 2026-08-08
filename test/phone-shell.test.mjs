@@ -23,10 +23,21 @@ test('phone shell delegates message data and API work to the message controller'
     assert.doesNotMatch(source, /fetch\s*\(/);
     assert.doesNotMatch(source, /generatePhoneCompletion|loadPhoneStore|savePhoneStore/);
     assert.match(source, /createPhoneMessagesController/);
+    assert.match(source, /CHAT_CHANGED/);
+    assert.match(source, /messagesController\.open\(content\)/);
 });
 
 test('the empty phone list clearly asks for a SillyTavern character chat', async () => {
     const source = await readFile(new URL('../phone-messages.js', import.meta.url), 'utf8');
     assert.match(source, /请先在酒馆中打开一个角色卡聊天/);
     assert.match(source, /add\.disabled = !store\.chatId/);
+});
+
+test('phone story context is cleared on failed, stopped, and abandoned generations', async () => {
+    const source = await readFile(new URL('../index.js', import.meta.url), 'utf8');
+    assert.match(source, /GENERATION_STOPPED/);
+    assert.match(source, /GENERATION_ENDED/);
+    assert.match(source, /CHAT_CHANGED/);
+    assert.match(source, /clearPreparedPhoneContext/);
+    assert.doesNotMatch(source, /setTimeout\(\(\) => \{\s*void consumePreparedPhoneContext/);
 });

@@ -1,9 +1,7 @@
 import {
     rerankMemory,
     searchMemory,
-    searchPhoneMemory,
     searchSummaryMemory,
-    syncPhoneMemory,
     syncSummaryMemory,
 } from './rag-client.js';
 import { normalizeBaseUrl } from './api-utils.js';
@@ -13,6 +11,7 @@ import { injectMapAtlasContext } from './map-atlas.js';
 import { injectCharacterDevelopment } from './character-development.js';
 import { getSummaries } from './summary-manager.js';
 import { injectPhoneContext, loadPhoneStore, normalizePhoneProfile } from './phone-store.js';
+import { recallPhoneMemoryEvents } from './phone-memory-recall.js';
 
 const EXTENSION_KEY = 'st-memory-augment';
 const MEMORY_MARKER = 'memory_augment_rag';
@@ -539,30 +538,14 @@ export async function memoryAugmentInterceptor(chat, contextSize, abort, type) {
         phoneStore.profile = normalizePhoneProfile(settings.phone?.profile ?? phoneStore.profile);
         let recalledPhoneEvents = [];
         const embedding = completeApiConfig(settings?.apis?.embedding);
-        const phoneEvents = phoneStore.onlineMemory?.events ?? [];
-        if (embedding && phoneEvents.length > 0) {
+        if (embedding) {
             try {
-                await syncPhoneMemory({
-                    chatId: phoneStore.chatId,
-                    entries: phoneEvents.map(event => ({
-                        id: event.id,
-                        text: event.summary,
-                        type: event.type,
-                        status: event.status,
-                        conversationId: event.conversationId,
-                    })),
-                    embedding,
-                });
-                const phoneSearch = await searchPhoneMemory({
-                    chatId: phoneStore.chatId,
+                recalledPhoneEvents = await recallPhoneMemoryEvents({
+                    store: phoneStore,
                     query: buildRagQuery(Array.isArray(context?.chat) ? context.chat : generationChat, 3),
-                    topK: 3,
                     embedding,
+                    topK: 3,
                 });
-                const eventById = new Map(phoneEvents.map(event => [event.id, event]));
-                recalledPhoneEvents = (phoneSearch?.results ?? [])
-                    .map(result => eventById.get(String(result?.memory_event_id ?? result?.id ?? '')))
-                    .filter(Boolean);
             } catch (error) {
                 console.warn('[Memory Augment] Online phone memory retrieval failed; pending and active phone facts remain available.', error);
             }

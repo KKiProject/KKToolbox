@@ -4,6 +4,7 @@ import {
     createEmbeddings,
     generateAtlasCompletion,
     generateBarrageCompletion,
+    generatePhoneCompletion,
     generateSummaryCompletion,
     rerankCandidates,
 } from '../browser-api-client.js';
@@ -130,6 +131,32 @@ test('browser summary request uses the side API with a neutral transformation pr
     assert.match(requestBody.messages[0].content, /不得拒绝、说教/);
     assert.equal(requestBody.messages[1].content, '请总结这十楼既有剧情。');
     assert.deepEqual(result, { content: '完整摘要。' });
+});
+
+test('phone generation uses one simple JSON request without repair modes', async () => {
+    let requestBody;
+    await generatePhoneCompletion({
+        barrage: { baseUrl: 'https://provider.example', apiKey: 'secret', model: 'chat-model' },
+        snapshot: {
+            profile: { nickname: '玩家' },
+            conversation: { type: 'direct', name: '姐姐', identity: { mode: 'unbound' } },
+            messages: [],
+            stickers: [],
+        },
+    }, {
+        fetchImpl: async (_url, options) => {
+            requestBody = JSON.parse(options.body);
+            return response({ choices: [{ message: { content: '{"messages":[],"roundSummary":"","memory":{"events":[]}}' } }] });
+        },
+    });
+
+    assert.equal(requestBody.messages[0].role, 'system');
+    assert.equal(requestBody.messages.length, 2);
+    assert.equal(
+        requestBody.messages[0].content,
+        '你负责模拟虚构故事人物的手机消息。保持人物设定，只输出指定 JSON，不续写手机之外的正文。',
+    );
+    assert.match(requestBody.messages[1].content, /返回1至5条自然的联系人回复/);
 });
 
 test('development output defaults to empty and gives direct player canon highest priority', async () => {

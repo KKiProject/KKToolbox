@@ -32,6 +32,17 @@
                 messages: [
                     { id: 'm1', roundId: 'r1', sender: '玩家', fromUser: true, type: 'text', content: '明天下午三点见。', timestamp: now, storyPending: true },
                     { id: 'm2', roundId: 'r1', sender: '死狐狸（备注）', fromUser: false, type: 'text', content: '好，我会带合同。', timestamp: now + 1, storyPending: true },
+                    { id: 'm3', roundId: 'r2', sender: '玩家', fromUser: true, type: 'redpacket', content: '今晚辛苦了', amount: '8.88', timestamp: now + 2, storyPending: true },
+                    ...Array.from({ length: 12 }, (_, index) => ({
+                        id: `scroll-${index}`,
+                        roundId: `scroll-round-${index}`,
+                        sender: index % 2 === 0 ? '死狐狸（备注）' : '玩家',
+                        fromUser: index % 2 === 1,
+                        type: 'text',
+                        content: `用于检查长消息列表滚动位置的第 ${index + 1} 条对话。`,
+                        timestamp: now + 10 + index,
+                        storyPending: true,
+                    })),
                 ],
                 rounds: [{ id: 'r1', summary: '双方约定见面。', createdAt: now, updatedAt: now }],
             }, {
@@ -43,7 +54,44 @@
                 members: ['导演', '主演'],
                 memberIdentities: {},
                 createdAt: now - 1,
-                messages: [],
+                messages: [
+                    { id: 'g1', roundId: 'gr1', sender: '玩家', fromUser: true, type: 'redpacket', recipient: '导演', content: '单独辛苦费', amount: '8.88', timestamp: now + 3, storyPending: true },
+                    { id: 'g2', roundId: 'gr2', sender: '玩家', fromUser: true, type: 'group_redpacket', content: '大家一起抢', amount: '88.88', count: 3, claims: [{ name: '玩家', amount: '18.88' }, { name: '导演', amount: '50.00' }, { name: '主演', amount: '20.00' }], timestamp: now + 4, storyPending: true },
+                ],
+                rounds: [],
+            }, {
+                id: 'friend-demo',
+                type: 'direct',
+                name: '姐姐',
+                avatar: '',
+                identity: { mode: 'unbound' },
+                members: [],
+                memberIdentities: {},
+                createdAt: now - 2,
+                messages: [{
+                    id: 'f1', roundId: 'fr1', sender: '玩家', fromUser: true, type: 'text',
+                    content: '会议还有十分钟收尾。',
+                    forwardedFrom: { messageId: 'old-1', sender: '罗莎姐姐', conversationName: '罗莎姐姐', content: '会议还有十分钟收尾。' },
+                    timestamp: now + 30, storyPending: true,
+                }, {
+                    id: 'f-voice', roundId: 'fr2', sender: '玩家', fromUser: true, type: 'voice',
+                    content: '嗯', duration: 3, timestamp: now + 31, storyPending: true,
+                }, {
+                    id: 'f-image', roundId: 'fr2', sender: '玩家', fromUser: true, type: 'image',
+                    content: '一个喝了一半的温水', timestamp: now + 32, storyPending: true,
+                }, {
+                    id: 'f2', roundId: 'fr3', sender: '玩家', fromUser: true, type: 'forward_bundle',
+                    forwardBundle: {
+                        sourceConversationName: '罗莎姐姐',
+                        title: '罗莎姐姐的聊天记录',
+                        messages: [
+                            { messageId: 'old-2', sender: '罗莎姐姐', type: 'text', content: '我暂时找不到会存那种评分东西的人吗，小娇气包。' },
+                            { messageId: 'old-3', sender: '玩家', type: 'voice', content: '有力气在这里发哭脸，看来星期书房里的冷气还是没把你冻清醒啊。', duration: 8 },
+                            { messageId: 'old-4', sender: '罗莎姐姐', type: 'redpacket', content: '早点回家', amount: '8.88' },
+                        ],
+                    },
+                    timestamp: now + 33, storyPending: true,
+                }],
                 rounds: [],
             }],
             onlineMemory: { events: [] },
@@ -72,7 +120,16 @@
         const controller = createPhoneMessagesController({
             document,
             settings: {
-                phone: { profile: seed.profile, stickers: [] },
+                phone: {
+                    profile: seed.profile,
+                    stickerGroups: [{ id: 'default', name: '默认' }, { id: 'cats', name: '猫猫' }],
+                    stickers: [{
+                        id: 'sticker-cat',
+                        name: '猫猫震惊',
+                        groupId: 'cats',
+                        url: 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120"%3E%3Crect width="120" height="120" rx="24" fill="%23ffe7a8"/%3E%3Ctext x="60" y="78" text-anchor="middle" font-size="62"%3E%F0%9F%90%B1%3C/text%3E%3C/svg%3E',
+                    }],
+                },
                 apis: { barrage: { url: 'https://example.invalid/v1', apiKey: 'test-only', model: 'test-model' } },
             },
             contextGetter: () => context,
@@ -89,7 +146,10 @@
             },
         });
         await controller.open(document.querySelector('#phone-test-root'));
-        document.querySelector('.memory-augment-phone-conversation-row')?.click();
+        const requestedConversation = new URLSearchParams(location.search).get('conversation');
+        const initialRow = [...document.querySelectorAll('.memory-augment-phone-conversation-row')]
+            .find(row => !requestedConversation || row.querySelector('strong')?.textContent === requestedConversation);
+        (initialRow ?? document.querySelector('.memory-augment-phone-conversation-row'))?.click();
     </script>
 </body>
 </html>

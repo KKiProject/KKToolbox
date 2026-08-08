@@ -7,14 +7,11 @@ import {
 } from './story-status.js';
 import { formatCharacterDevelopmentMessage } from './character-development.js';
 import { buildRelevantMapText, getMapAtlas } from './map-atlas.js';
-import { searchPhoneMemory, syncPhoneMemory } from './rag-client.js';
 import { normalizeBaseUrl } from './api-utils.js';
+import { recallPhoneMemoryEvents } from './phone-memory-recall.js';
+import { cleanPhoneText as cleanText } from './phone-utils.js';
 
 const RECALL_MARKER = 'memory_augment_recall_type';
-
-function cleanText(value, maximum = 4000) {
-    return String(value ?? '').trim().slice(0, maximum);
-}
 
 function uniqueText(values, maximum = 32000) {
     const seen = new Set();
@@ -176,34 +173,19 @@ async function collectWorldInfoContext({ context, snapshot, recentStory, query, 
 
 async function collectRecalledPhoneMemory({ settings, store, snapshot, query, clients }) {
     const embedding = getEmbeddingConfig(settings);
-    const events = Array.isArray(store?.onlineMemory?.events) ? store.onlineMemory.events : [];
-    const chatId = cleanText(store?.chatId, 500);
-    if (!embedding || !chatId || !query || events.length === 0) return '';
-    const sync = clients.syncPhoneMemory ?? syncPhoneMemory;
-    const search = clients.searchPhoneMemory ?? searchPhoneMemory;
-    await sync({
-        chatId,
+    const events = await recallPhoneMemoryEvents({
+        store,
+        query,
         embedding,
-        entries: events.map(event => ({
-            id: event.id,
-            text: event.summary,
-            type: event.type,
-            status: event.status,
-            conversationId: event.conversationId,
-        })),
+        topK: 5,
+        excludeIds: (snapshot?.activeMemory ?? []).map(item => item?.id),
+        sync: clients.syncPhoneMemory,
+        search: clients.searchPhoneMemory,
     });
-    const response = await search({ chatId, query, topK: 5, embedding });
-    const currentIds = new Set((snapshot?.activeMemory ?? []).map(item => String(item?.id ?? '')));
-    const byId = new Map(events.map(event => [String(event?.id ?? ''), event]));
-    const lines = [];
-    for (const result of response?.results ?? []) {
-        const id = String(result?.memory_event_id ?? result?.id ?? '');
-        const event = byId.get(id);
-        if (!event || currentIds.has(id)) continue;
+    return uniqueText(events.map(event => {
         const state = event.status === 'resolved' ? '已解决' : event.status === 'active' ? '仍有效' : '历史事实';
-        lines.push(`[${state}] ${cleanText(event.summary, 1000)}`);
-    }
-    return uniqueText(lines, 8000);
+        return `[${state}] ${cleanText(event.summary, 1000)}`;
+    }), 8000);
 }
 
 function collectDerivedStoryContext(settings, context) {

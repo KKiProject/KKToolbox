@@ -1597,6 +1597,10 @@
     right: -1.3rem;
 }
 
+.memory-augment-phone-conversation.is-selecting .memory-augment-phone-message-bubble * {
+    pointer-events: none;
+}
+
 .memory-augment-phone-message-bubble-wrap {
     display: flex;
     flex-direction: column;
@@ -1650,13 +1654,62 @@
     border-radius: 0.85rem 0.18rem 0.85rem 0.85rem;
 }
 
-.memory-augment-phone-message-bubble.is-sticker,
-.memory-augment-phone-message-bubble.is-redpacket,
-.memory-augment-phone-message-bubble.is-group_redpacket {
+.memory-augment-phone-message-row .memory-augment-phone-message-bubble.is-image,
+.memory-augment-phone-message-row .memory-augment-phone-message-bubble.is-location,
+.memory-augment-phone-message-row .memory-augment-phone-message-bubble.is-sticker,
+.memory-augment-phone-message-row .memory-augment-phone-message-bubble.is-redpacket,
+.memory-augment-phone-message-row .memory-augment-phone-message-bubble.is-group_redpacket,
+.memory-augment-phone-message-row .memory-augment-phone-message-bubble.is-forward_bundle {
     background: transparent;
     border: 0;
     box-shadow: none;
     padding: 0;
+}
+
+.memory-augment-phone-forward-bundle {
+    appearance: none;
+    background: #fff;
+    border: 1px solid rgb(102 97 121 / 13%);
+    border-radius: 0.78rem;
+    box-shadow: 0 0.28rem 0.65rem rgb(63 57 82 / 8%);
+    color: #292631;
+    display: flex;
+    flex-direction: column;
+    gap: 0.42rem;
+    max-width: min(15rem, 100%);
+    min-width: min(12.5rem, 100%);
+    padding: 0.68rem 0.72rem 0.55rem;
+    text-align: left;
+}
+
+.memory-augment-phone-forward-bundle > strong {
+    border-bottom: 1px solid rgb(102 97 121 / 10%);
+    font-size: 0.72rem;
+    overflow: hidden;
+    padding-bottom: 0.42rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    width: 100%;
+}
+
+.memory-augment-phone-forward-bundle-preview {
+    display: grid;
+    font-size: 0.59rem;
+    gap: 0.2rem;
+    opacity: 0.7;
+    width: 100%;
+}
+
+.memory-augment-phone-forward-bundle-preview > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.memory-augment-phone-forward-bundle > small {
+    align-self: flex-end;
+    font-size: 0.52rem;
+    opacity: 0.45;
 }
 
 .memory-augment-phone-sticker-message img {
@@ -1714,36 +1767,118 @@
     width: 2.6rem;
 }
 
+.memory-augment-phone-message-bubble.is-image .memory-augment-phone-sim-card {
+    background: rgb(250 250 253 / 96%);
+    border: 1px solid rgb(102 97 121 / 14%);
+    border-radius: 0.78rem;
+    box-shadow: 0 0.24rem 0.58rem rgb(63 57 82 / 8%);
+    max-width: min(15rem, 100%);
+    padding: 0.52rem 0.58rem;
+}
+
 .memory-augment-phone-redpacket {
     align-items: center;
     appearance: none;
-    background: linear-gradient(145deg, #e66a4f, #c54b3d);
-    border: 0;
-    border-radius: 0.7rem;
-    color: #fff;
-    display: flex;
-    gap: 0.55rem;
-    min-width: 10.5rem;
-    padding: 0.7rem;
+    background: linear-gradient(135deg, #f9d36c 0%, #f5bc4d 52%, #eea33b 100%);
+    border: 1px solid rgb(255 255 255 / 24%);
+    border-radius: 0.85rem;
+    box-shadow: 0 0.38rem 0.8rem rgb(185 119 36 / 20%), inset 0 1px rgb(255 255 255 / 34%);
+    color: #623b16;
+    display: grid;
+    gap: 0.75rem;
+    grid-template-columns: 2.8rem minmax(0, 1fr);
+    max-width: min(15rem, 100%);
+    min-width: 11.5rem;
+    overflow: hidden;
+    padding: 0.72rem 0.9rem 0.72rem 0.7rem;
+    position: relative;
     text-align: left;
+}
+
+.memory-augment-phone-redpacket.is-group {
+    background: linear-gradient(135deg, #ffdc78 0%, #f7bf50 50%, #efa13a 100%);
 }
 
 .memory-augment-phone-redpacket:disabled {
     opacity: 1;
 }
 
-.memory-augment-phone-redpacket > i {
-    font-size: 1.45rem;
+.memory-augment-phone-redpacket::after {
+    background: radial-gradient(circle, rgb(255 249 213 / 42%) 0%, transparent 68%);
+    content: '';
+    height: 5.5rem;
+    pointer-events: none;
+    position: absolute;
+    right: -2rem;
+    top: -2.4rem;
+    width: 5.5rem;
 }
 
-.memory-augment-phone-redpacket > span {
+.memory-augment-phone-redpacket-icon {
+    align-items: center;
+    background: linear-gradient(155deg, #f4ad35, #df8628);
+    border: 1px solid rgb(255 244 196 / 78%);
+    border-radius: 0.38rem 0.38rem 0.62rem 0.62rem;
+    box-shadow: 0 0.22rem 0.38rem rgb(139 84 25 / 22%);
+    display: flex;
+    height: 3.15rem;
+    justify-content: center;
+    position: relative;
+    width: 2.65rem;
+}
+
+.memory-augment-phone-redpacket-icon::before {
+    border-bottom: 1px solid rgb(255 244 196 / 68%);
+    border-radius: 0 0 50% 50%;
+    content: '';
+    height: 1.18rem;
+    left: 0;
+    position: absolute;
+    right: 0;
+    top: 0;
+}
+
+.memory-augment-phone-redpacket-seal {
+    align-items: center;
+    background: linear-gradient(145deg, #fff5c9, #ffe090);
+    border-radius: 50%;
+    box-shadow: 0 1px 0 rgb(125 72 14 / 25%);
+    color: #a85d17;
+    display: flex;
+    font-size: 0.72rem;
+    font-weight: 800;
+    height: 1.35rem;
+    justify-content: center;
+    position: relative;
+    width: 1.35rem;
+    z-index: 1;
+}
+
+.memory-augment-phone-redpacket-copy {
     display: flex;
     flex-direction: column;
+    justify-content: center;
+    min-width: 0;
+    position: relative;
+    z-index: 1;
 }
 
-.memory-augment-phone-redpacket small {
-    font-size: 0.58rem;
-    opacity: 0.84;
+.memory-augment-phone-redpacket-copy strong {
+    font-size: 1.03rem;
+    letter-spacing: 0.01em;
+    line-height: 1.25;
+}
+
+.memory-augment-phone-redpacket-copy small {
+    font-size: 0.66rem;
+    line-height: 1.45;
+    margin-top: 0.2rem;
+    opacity: 0.96;
+    overflow-wrap: anywhere;
+}
+
+.memory-augment-phone-redpacket-recipient {
+    font-weight: 700;
 }
 
 .memory-augment-phone-message-status {
@@ -2058,7 +2193,9 @@
 }
 
 .memory-augment-phone-sheet-actions > button,
-.memory-augment-phone-sticker-heading > button {
+.memory-augment-phone-sticker-toolbar > button,
+.memory-augment-phone-sticker-groups > button,
+.memory-augment-phone-sticker-group-actions > button {
     background: rgb(92 86 116 / 10%);
     border-radius: 0.6rem;
     color: inherit;
@@ -2066,13 +2203,13 @@
     padding: 0 0.75rem;
 }
 
-.memory-augment-phone-sheet-actions > button:last-child,
-.memory-augment-phone-sticker-heading > button {
+.memory-augment-phone-sheet-actions > button:last-child {
     background: #69617f;
     color: #fff;
 }
 
-.memory-augment-phone-sheet-actions > button.is-danger {
+.memory-augment-phone-sheet-actions > button.is-danger,
+.memory-augment-phone-sticker-group-actions > button.is-danger {
     background: #b74d5c;
     color: #fff;
 }
@@ -2085,10 +2222,52 @@
 .memory-augment-phone-message-home,
 .memory-augment-phone-message-list,
 .memory-augment-phone-sheet,
+.memory-augment-phone-forward-bundle-list,
 .memory-augment-phone-memory-list {
     -webkit-overflow-scrolling: touch;
     overscroll-behavior-y: contain;
     touch-action: pan-y;
+}
+
+.memory-augment-phone-forward-bundle-sheet {
+    display: flex;
+    flex-direction: column;
+}
+
+.memory-augment-phone-forward-bundle-summary {
+    font-size: 0.58rem;
+    margin: -0.38rem 0 0.65rem;
+    opacity: 0.52;
+    text-align: center;
+}
+
+.memory-augment-phone-forward-bundle-list {
+    display: grid;
+    gap: 0.5rem;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 0.05rem 0.05rem 0.7rem;
+}
+
+.memory-augment-phone-forward-bundle-item {
+    background: #fff;
+    border: 1px solid rgb(102 97 121 / 11%);
+    border-radius: 0.72rem;
+    display: grid;
+    font-size: 0.67rem;
+    gap: 0.24rem;
+    line-height: 1.5;
+    padding: 0.55rem 0.62rem;
+}
+
+.memory-augment-phone-forward-bundle-item > strong {
+    color: #665d80;
+    font-size: 0.58rem;
+}
+
+.memory-augment-phone-forward-bundle-item > span {
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
 }
 
 .memory-augment-phone-create-choices {
@@ -2122,11 +2301,68 @@
     margin: 0;
 }
 
+.memory-augment-phone-sticker-toolbar {
+    display: flex;
+    gap: 0.4rem;
+    margin-top: 0.65rem;
+    overflow-x: auto;
+    padding-bottom: 0.1rem;
+    scrollbar-width: thin;
+}
+
+.memory-augment-phone-sticker-toolbar > button {
+    background: #69617f;
+    color: #fff;
+    flex: 0 0 auto;
+    min-inline-size: max-content;
+    padding: 0 0.65rem;
+    white-space: nowrap;
+    writing-mode: horizontal-tb;
+}
+
+.memory-augment-phone-sticker-groups {
+    display: flex;
+    gap: 0.35rem;
+    margin-top: 0.6rem;
+    overflow-x: auto;
+    padding: 0.05rem 0 0.2rem;
+    scrollbar-width: thin;
+}
+
+.memory-augment-phone-sticker-groups > button {
+    border-radius: 999px;
+    flex: 0 0 auto;
+    min-height: 1.75rem;
+    min-inline-size: max-content;
+    padding: 0 0.7rem;
+    white-space: nowrap;
+    writing-mode: horizontal-tb;
+}
+
+.memory-augment-phone-sticker-groups > button.is-active {
+    background: #69617f;
+    color: #fff;
+}
+
+.memory-augment-phone-sticker-notice,
+.memory-augment-phone-sticker-import-summary {
+    background: rgb(105 97 127 / 8%);
+    border-radius: 0.55rem;
+    font-size: 0.64rem;
+    line-height: 1.5;
+    margin-top: 0.55rem;
+    padding: 0.45rem 0.55rem;
+}
+
 .memory-augment-phone-sticker-grid {
     display: grid;
     gap: 0.45rem;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    margin: 0.7rem 0;
+    margin: 0.55rem 0 0.7rem;
+}
+
+.memory-augment-phone-sticker-grid > .memory-augment-phone-message-empty {
+    grid-column: 1 / -1;
 }
 
 .memory-augment-phone-sticker-item {
@@ -2171,6 +2407,89 @@
     width: 1.25rem;
 }
 
+.memory-augment-phone-sticker-group-list,
+.memory-augment-phone-sticker-import-list {
+    display: grid;
+    gap: 0.45rem;
+    margin-bottom: 0.75rem;
+}
+
+.memory-augment-phone-sticker-group-list > div {
+    align-items: center;
+    background: #fff;
+    border: 1px solid rgb(102 97 121 / 11%);
+    border-radius: 0.68rem;
+    display: flex;
+    gap: 0.55rem;
+    justify-content: space-between;
+    padding: 0.48rem 0.55rem;
+}
+
+.memory-augment-phone-sticker-group-list > div > div:first-child {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.memory-augment-phone-sticker-group-list span {
+    font-size: 0.58rem;
+    opacity: 0.55;
+}
+
+.memory-augment-phone-sticker-group-actions {
+    display: flex;
+    flex: 0 0 auto;
+    gap: 0.3rem;
+}
+
+.memory-augment-phone-sticker-group-actions > button {
+    min-height: 1.8rem;
+    padding: 0 0.55rem;
+}
+
+.memory-augment-phone-sticker-default-label {
+    padding: 0 0.35rem;
+}
+
+.memory-augment-phone-sticker-import-row {
+    background: #fff;
+    border: 1px solid rgb(102 97 121 / 12%);
+    border-radius: 0.65rem;
+    display: grid;
+    gap: 0.22rem;
+    padding: 0.42rem;
+}
+
+.memory-augment-phone-sticker-import-row > input {
+    border: 0;
+    border-bottom: 1px solid rgb(102 97 121 / 13%);
+    color: inherit;
+    font: inherit;
+    min-width: 0;
+    outline: none;
+    padding: 0.25rem 0.15rem;
+    width: 100%;
+}
+
+.memory-augment-phone-sticker-import-row > small {
+    font-size: 0.55rem;
+    opacity: 0.58;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.memory-augment-phone-sticker-import-errors {
+    background: rgb(181 60 69 / 8%);
+    border-radius: 0.6rem;
+    color: #a43640;
+    display: grid;
+    font-size: 0.6rem;
+    gap: 0.18rem;
+    line-height: 1.45;
+    padding: 0.5rem;
+}
+
 .memory-augment-phone-claim-list {
     display: grid;
     gap: 0.25rem;
@@ -2185,6 +2504,93 @@
     font-size: 0.68rem;
     justify-content: space-between;
     padding: 0.45rem 0.55rem;
+}
+
+.memory-augment-phone-claim-recipient {
+    align-items: center;
+    display: flex;
+    gap: 0.35rem;
+    min-width: 0;
+}
+
+.memory-augment-phone-lucky-king {
+    background: #f7c85a;
+    border-radius: 999px;
+    color: #744514;
+    flex: 0 0 auto;
+    font-size: 0.52rem;
+    font-weight: 700;
+    padding: 0.12rem 0.38rem;
+    white-space: nowrap;
+}
+
+.memory-augment-phone-forward-toolbar {
+    align-items: center;
+    display: flex;
+    font-size: 0.65rem;
+    justify-content: space-between;
+    margin-bottom: 0.55rem;
+}
+
+.memory-augment-phone-forward-toolbar > button {
+    background: rgb(92 86 116 / 10%);
+    border-radius: 0.55rem;
+    color: inherit;
+    min-height: 1.8rem;
+    padding: 0 0.6rem;
+}
+
+.memory-augment-phone-forward-targets {
+    display: grid;
+    gap: 0.4rem;
+    margin-bottom: 0.75rem;
+}
+
+.memory-augment-phone-forward-target {
+    align-items: center;
+    background: #fff;
+    border: 1px solid rgb(102 97 121 / 12%) !important;
+    border-radius: 0.7rem;
+    color: inherit;
+    display: grid !important;
+    gap: 0.55rem;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    justify-content: stretch !important;
+    padding: 0.45rem 0.55rem;
+    text-align: left;
+    width: 100%;
+}
+
+.memory-augment-phone-forward-target > span:nth-child(2) {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.memory-augment-phone-forward-target small {
+    font-size: 0.56rem;
+    opacity: 0.52;
+}
+
+.memory-augment-phone-forward-target > i {
+    align-items: center;
+    background: rgb(105 97 127 / 12%);
+    border-radius: 50%;
+    color: transparent;
+    display: flex;
+    height: 1.35rem;
+    justify-content: center;
+    width: 1.35rem;
+}
+
+.memory-augment-phone-forward-target.is-selected {
+    background: rgb(105 97 127 / 8%);
+    border-color: rgb(105 97 127 / 40%) !important;
+}
+
+.memory-augment-phone-forward-target.is-selected > i {
+    background: #69617f;
+    color: #fff;
 }
 
 .memory-augment-phone-placeholder-heading,

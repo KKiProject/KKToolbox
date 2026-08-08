@@ -118,6 +118,14 @@ export function initializePhoneShellUi(settings = {}, context = globalThis.Silly
         activeApp = '';
         setPhoneScreen(root, 'home');
     });
+    const chatChanged = context?.eventTypes?.CHAT_CHANGED ?? context?.event_types?.CHAT_CHANGED;
+    if (chatChanged && context?.eventSource?.on) {
+        context.eventSource.on(chatChanged, () => setTimeout(() => {
+            if (activeApp !== 'messages') return;
+            const content = root.querySelector('.memory-augment-phone-app-content');
+            if (content) void messagesController.open(content);
+        }, 0));
+    }
     phoneShellBound = true;
     return true;
 }

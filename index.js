@@ -26,7 +26,11 @@ import { clearAllSummaries, getSummaryStatus, initializeSummaryManager, repairMa
 import { initializeWorldInfoManager, rebuildAllCurrentWorldInfo } from './world-info-manager.js';
 import { initializeHtmlRenderer, refreshHtmlRenderer } from './html-renderer.js';
 import { initializePhoneShellUi } from './phone-shell.js';
-import { consumePreparedPhoneContext } from './phone-store.js';
+import {
+    clearPreparedPhoneContext,
+    consumePreparedPhoneContext,
+    getPhoneChatId,
+} from './phone-store.js';
 import { initializeSwipeCleanup } from './swipe-cleanup.js';
 
 const EXTENSION_KEY = 'st-memory-augment';
@@ -104,6 +108,7 @@ export const defaultSettings = Object.freeze({
     phone: {
         maxTokens: 2048,
         stickers: [],
+        stickerGroups: [{ id: 'default', name: '默认' }],
         profile: { nickname: '我', avatar: '' },
     },
 });
@@ -771,22 +776,44 @@ function bindMessageIngestion(settings, context) {
 }
 
 function bindPhoneMemoryLifecycle(context) {
-    const messageRendered = context.eventTypes?.CHARACTER_MESSAGE_RENDERED
-        ?? context.event_types?.CHARACTER_MESSAGE_RENDERED;
+    const eventTypes = {
+        ...(context.event_types ?? {}),
+        ...(context.eventTypes ?? {}),
+    };
+    const messageRendered = eventTypes.CHARACTER_MESSAGE_RENDERED;
     if (!messageRendered) {
         console.warn('[Memory Augment] CHARACTER_MESSAGE_RENDERED is unavailable; pending phone facts will remain pending.');
-        return;
-    }
-    context.eventSource.on(messageRendered, (messageId) => {
-        const current = SillyTavern.getContext();
-        const message = current.chat?.[Number(messageId)];
-        if (!message || message.is_user || message.is_system) return;
-        setTimeout(() => {
-            void consumePreparedPhoneContext(SillyTavern.getContext()).catch(error => {
+    } else {
+        context.eventSource.on(messageRendered, async (messageId) => {
+            const current = SillyTavern.getContext();
+            const message = current.chat?.[Number(messageId)];
+            if (!message || message.is_user || message.is_system) return;
+            const chatId = getPhoneChatId(current);
+            try {
+                await consumePreparedPhoneContext({ getCurrentChatId: () => chatId });
+            } catch (error) {
                 console.warn('[Memory Augment] Phone-to-story memory consumption failed.', error);
-            });
-        }, 0);
-    });
+            }
+        });
+    }
+
+    const clearCurrentPreparedContext = () => {
+        clearPreparedPhoneContext(getPhoneChatId(SillyTavern.getContext()));
+    };
+    if (eventTypes.GENERATION_STOPPED) {
+        context.eventSource.on(eventTypes.GENERATION_STOPPED, clearCurrentPreparedContext);
+    }
+    if (eventTypes.GENERATION_ENDED) {
+        context.eventSource.on(eventTypes.GENERATION_ENDED, clearCurrentPreparedContext);
+    }
+
+    let previousChatId = getPhoneChatId(context);
+    if (eventTypes.CHAT_CHANGED) {
+        context.eventSource.on(eventTypes.CHAT_CHANGED, (nextChatId) => {
+            clearPreparedPhoneContext(previousChatId);
+            previousChatId = String(nextChatId ?? getPhoneChatId(SillyTavern.getContext()) ?? '').trim();
+        });
+    }
 }
 
 function bindActions(settings) {
