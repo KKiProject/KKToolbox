@@ -355,7 +355,7 @@ export function createPhoneMessagesController(options = {}) {
                     label: '自定义人物设定／绑定后的补充说明',
                     type: 'textarea',
                     value: details,
-                    placeholder: '例如：这是手机备注名；本人是经纪人沈越。只写需要补充或覆盖的部分。',
+                    placeholder: '补充人物设定',
                 },
             ],
             onSubmit: values => identityFromInput(values.source, values.details, sources),
@@ -386,7 +386,6 @@ export function createPhoneMessagesController(options = {}) {
         sheet.className = 'memory-augment-phone-sheet';
         const heading = documentRef.createElement('h3');
         heading.textContent = '群成员真实身份';
-        const note = messageText(documentRef, 'memory-augment-phone-identity-note', '手机群昵称只是显示名；点成员可绑定角色卡、世界书人物或填写自定义设定。');
         const list = documentRef.createElement('div');
         list.className = 'memory-augment-phone-identity-list';
         for (const member of conversation.members) {
@@ -414,7 +413,7 @@ export function createPhoneMessagesController(options = {}) {
         close.textContent = '关闭';
         close.addEventListener('click', () => overlay.remove());
         actions.append(close);
-        sheet.append(heading, note, list, actions);
+        sheet.append(heading, list, actions);
         overlay.append(sheet);
         root.append(overlay);
     }
@@ -622,7 +621,6 @@ export function createPhoneMessagesController(options = {}) {
             title.textContent = `转发 ${messageCount} 条消息`;
             const toolbar = documentRef.createElement('div');
             toolbar.className = 'memory-augment-phone-forward-toolbar';
-            const hint = messageText(documentRef, '', '选择一个或多个接收聊天');
             const selectAll = documentRef.createElement('button');
             selectAll.type = 'button';
             const list = documentRef.createElement('div');
@@ -689,7 +687,7 @@ export function createPhoneMessagesController(options = {}) {
             overlay.addEventListener('click', event => {
                 if (event.target === overlay) close([]);
             });
-            toolbar.append(hint, selectAll);
+            toolbar.append(selectAll);
             actions.append(cancel, submit);
             sheet.append(title, toolbar, list, actions);
             overlay.append(sheet);
@@ -904,7 +902,7 @@ export function createPhoneMessagesController(options = {}) {
         messageList.className = 'memory-augment-phone-message-list';
         const currentStickers = stickers();
         if (conversation.messages.length === 0) {
-            const empty = messageText(documentRef, 'memory-augment-phone-message-empty', '还没有消息，先说点什么吧。');
+            const empty = messageText(documentRef, 'memory-augment-phone-message-empty', '暂无消息');
             messageList.append(empty);
         }
         conversation.messages.forEach(message => {
@@ -1242,7 +1240,7 @@ export function createPhoneMessagesController(options = {}) {
             submitLabel: '保存',
             fields: [
                 { name: 'groupId', label: '保存到分组', type: 'select', value: activeStickerGroupId, options: stickerGroupOptions() },
-                { name: 'name', label: '名称（AI 将通过名称选择）', required: true, placeholder: '例如：猫猫震惊' },
+                { name: 'name', label: '名称', required: true, placeholder: '例如：猫猫震惊' },
                 { name: 'file', label: '本地图片', type: 'file', accept: 'image/png,image/jpeg,image/webp,image/gif', required: true },
             ],
             onSubmit: async values => addPhoneSticker(settings, {
@@ -1564,7 +1562,7 @@ export function createPhoneMessagesController(options = {}) {
         if (type === 'sticker') return openStickerPicker();
         const definitions = {
             voice: {
-                title: '发送模拟语音',
+                title: '发送语音',
                 fields: [
                     { name: 'content', label: '语音文字', type: 'textarea', required: true },
                     { name: 'duration', label: '时长（秒）', type: 'number', min: 1, max: 60, value: 3 },
@@ -1572,12 +1570,12 @@ export function createPhoneMessagesController(options = {}) {
                 build: values => ({ type, content: values.content, duration: values.duration }),
             },
             image: {
-                title: '发送模拟图片',
+                title: '发送图片',
                 fields: [{ name: 'content', label: '图片内容描述', type: 'textarea', required: true }],
                 build: values => ({ type, content: values.content }),
             },
             redpacket: {
-                title: '发送模拟红包',
+                title: '发送红包',
                 fields: [
                     ...(getConversation()?.type === 'group' ? [{
                         name: 'recipient',
@@ -1593,7 +1591,7 @@ export function createPhoneMessagesController(options = {}) {
                 build: values => ({ type, amount: values.amount, recipient: values.recipient, content: values.content }),
             },
             group_redpacket: {
-                title: '发送模拟群红包',
+                title: '发送群红包',
                 fields: [
                     { name: 'amount', label: '总金额', type: 'number', min: 0.01, step: 0.01, value: 88.88, required: true },
                     { name: 'count', label: '红包份数', type: 'number', min: 1, value: getConversation()?.members.length + 1 || 1 },
@@ -1602,7 +1600,7 @@ export function createPhoneMessagesController(options = {}) {
                 build: values => ({ type, amount: values.amount, count: values.count, content: values.content }),
             },
             location: {
-                title: '发送模拟位置',
+                title: '发送位置',
                 fields: [{ name: 'content', label: '地点与备注', type: 'textarea', required: true, placeholder: '例如：星光影视城 · A3摄影棚' }],
                 build: values => ({ type, content: values.content }),
             },
@@ -1630,7 +1628,7 @@ export function createPhoneMessagesController(options = {}) {
             }),
         });
         if (!values) return;
-        store.profile = normalizePhoneProfile(values);
+        store.profile = normalizePhoneProfile({ ...store.profile, ...values });
         settings.phone ??= {};
         settings.phone.profile = { ...store.profile };
         saveSettings();
@@ -1665,7 +1663,7 @@ export function createPhoneMessagesController(options = {}) {
                         name: 'identityDetails',
                         label: '自定义人物设定／绑定后的补充说明',
                         type: 'textarea',
-                        placeholder: '选择自定义人物时必须填写；绑定已有角色时可留空。',
+                        placeholder: '补充人物设定',
                     },
                 ] : []),
                 { name: 'url', label: '头像链接（可选）', type: 'url' },
@@ -1749,11 +1747,6 @@ export function createPhoneMessagesController(options = {}) {
         sheet.className = 'memory-augment-phone-sheet memory-augment-phone-memory-sheet';
         const heading = documentRef.createElement('h3');
         heading.textContent = '线上记忆';
-        const note = messageText(
-            documentRef,
-            'memory-augment-phone-identity-note',
-            '这里只保留有原话依据的线上事实。发送或收到不等于看过，更不等于角色产生了某种反应。人工修改优先。',
-        );
         const noticeElement = notice
             ? messageText(documentRef, `memory-augment-phone-message-status${noticeIsError ? ' is-error' : ''}`, notice)
             : null;
@@ -1766,7 +1759,7 @@ export function createPhoneMessagesController(options = {}) {
         const events = [...(store.onlineMemory?.events ?? [])]
             .sort((left, right) => right.updatedAt - left.updatedAt);
         if (events.length === 0) {
-            list.append(messageText(documentRef, 'memory-augment-phone-message-empty', '还没有值得长期保存的线上事件。原始聊天记录仍然完整保留。'));
+            list.append(messageText(documentRef, 'memory-augment-phone-message-empty', '暂无线上记忆'));
         }
         for (const memory of events) {
             const item = documentRef.createElement('article');
@@ -1861,7 +1854,7 @@ export function createPhoneMessagesController(options = {}) {
         close.textContent = '关闭';
         close.addEventListener('click', () => overlay.remove());
         closeActions.append(close);
-        sheet.append(heading, note);
+        sheet.append(heading);
         if (noticeElement) sheet.append(noticeElement);
         sheet.append(list, closeActions);
         overlay.append(sheet);
@@ -1883,9 +1876,7 @@ export function createPhoneMessagesController(options = {}) {
         const info = documentRef.createElement('span');
         const name = documentRef.createElement('strong');
         name.textContent = store.profile.nickname;
-        const hint = documentRef.createElement('small');
-        hint.textContent = '点击设置昵称和头像';
-        info.append(name, hint);
+        info.append(name);
         profile.append(info, messageText(documentRef, 'memory-augment-phone-profile-edit', '编辑'));
         profile.addEventListener('click', () => void editProfile());
         const toolbar = documentRef.createElement('div');
@@ -1906,9 +1897,7 @@ export function createPhoneMessagesController(options = {}) {
         add.setAttribute('aria-label', '添加好友或群聊');
         add.innerHTML = '<i class="fa-solid fa-plus"></i>';
         add.disabled = !store.chatId;
-        add.title = store.chatId
-            ? '添加好友或群聊'
-            : '请先在酒馆中打开一个角色卡聊天';
+        add.title = store.chatId ? '添加好友或群聊' : '';
         if (store.chatId) add.addEventListener('click', showAddChoices);
         toolbarActions.append(memory, add);
         toolbar.append(heading, toolbarActions);
@@ -1920,9 +1909,7 @@ export function createPhoneMessagesController(options = {}) {
             return rightTime - leftTime;
         });
         if (ordered.length === 0) {
-            const emptyText = store.chatId
-                ? '还没有好友或群聊，点右上角 ＋ 创建一个。'
-                : '请先在酒馆中打开一个角色卡聊天，再创建这段剧情专属的好友和群聊。昵称与头像仍可在上方设置。';
+            const emptyText = store.chatId ? '暂无好友或群聊' : '暂无可用会话';
             list.append(messageText(documentRef, 'memory-augment-phone-message-empty', emptyText));
         }
         ordered.forEach(conversation => {
@@ -1951,6 +1938,12 @@ export function createPhoneMessagesController(options = {}) {
         wrapper.append(profile, toolbar, list);
         root.append(wrapper);
     }
+
+    globalThis.addEventListener?.('memory-augment-phone-world-updated', event => {
+        if (!event?.detail?.modules?.includes?.('messages') || !root || !store) return;
+        if (currentConversationId) renderConversation();
+        else renderList();
+    });
 
     return {
         async open(contentRoot) {

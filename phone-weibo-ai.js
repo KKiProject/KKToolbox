@@ -7,9 +7,6 @@ export const PHONE_WEIBO_FEED_LIMIT = 30;
 export const PHONE_WEIBO_STORY_POST_MIN = 5;
 export const PHONE_WEIBO_STORY_POST_MAX = 8;
 
-let lifecycleBound = false;
-let storyQueue = Promise.resolve();
-
 function makeId(prefix) {
     const value = globalThis.crypto?.randomUUID?.()
         ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
@@ -312,6 +309,7 @@ export function buildPhoneWeiboAiRequest(settings, context, options = {}) {
         messageId,
         swipeIndex,
         storyText: text(options.storyText, 20_000),
+        storyContext: clone(options.storyContext ?? {}),
         operation: clone(options.operation ?? {}),
         interests: [...state.interests],
         profile: clone(state.profile),
@@ -319,7 +317,7 @@ export function buildPhoneWeiboAiRequest(settings, context, options = {}) {
         roleAccounts: state.roleAccounts.map(account => clone(account)),
         recentPosts: state.posts.slice(0, 30).map(summarizePost),
         hotTopics: state.hotTopics.slice(0, 20).map(topic => `${topic.title}（${topic.heat}）`),
-        userPersona: text(context?.powerUser?.persona_description
+        userPersona: text(settings.phone?.weibo?.profile?.persona, 12_000) || text(context?.powerUser?.persona_description
             ?? context?.power_user?.persona_description
             ?? globalThis.power_user?.persona_description, 12_000),
         now: Number(options.now) || Date.now(),
@@ -352,20 +350,20 @@ export async function requestPhoneWeiboBootstrap(settings, context, options = {}
     if (state.initialized) return { state, duplicate: true };
     state.initializing = true;
     state.lastError = '';
-    options.saveSettings?.();
+    await options.saveSettings?.();
     try {
         const result = await executeRequest(settings, context, {
             ...options,
             mode: 'bootstrap',
             sourceKey: `${getPhoneChatId(context)}:weibo-bootstrap`,
         });
-        options.saveSettings?.();
+        await options.saveSettings?.();
         notifyUpdated({ mode: 'bootstrap' });
         return result;
     } catch (error) {
         state.initializing = false;
         state.lastError = text(error?.message, 500);
-        options.saveSettings?.();
+        await options.saveSettings?.();
         notifyUpdated({ mode: 'bootstrap', error: state.lastError });
         throw error;
     }
@@ -384,77 +382,7 @@ export async function requestPhoneWeiboOperation(settings, context, operation, o
         storyText: text(latestStory?.mes ?? latestStory?.content, 20_000),
         sourceKey: `${getPhoneChatId(context)}:${mode}:${makeId('operation')}`,
     });
-    options.saveSettings?.();
+    await options.saveSettings?.();
     notifyUpdated({ mode });
     return result;
-}
-
-export async function requestPhoneWeiboStoryUpdate(settings, context, messageId, options = {}) {
-    const message = context?.chat?.[Number(messageId)];
-    if (!message || message.is_user || message.is_system) return { skipped: true };
-    const storyText = text(message.mes ?? message.content, 20_000);
-    if (!storyText || !isPhoneWeiboAiReady(settings)) return { skipped: true };
-    const swipeIndex = Math.max(0, Math.trunc(Number(message.swipe_id) || 0));
-    const chatId = getPhoneChatId(context);
-    const state = normalizePhoneWeiboState(settings);
-    const mode = state.initialized ? 'story' : 'bootstrap';
-    const result = await executeRequest(settings, context, {
-        ...options,
-        mode,
-        storyText,
-        messageId: String(messageId),
-        swipeIndex,
-        sourceKey: `${chatId}:${messageId}:${swipeIndex}:${mode}`,
-    });
-    options.saveSettings?.();
-    notifyUpdated({ mode, messageId, swipeIndex });
-    return result;
-}
-
-export function initializePhoneWeiboLifecycle(settings, context = globalThis.SillyTavern?.getContext?.()) {
-    if (lifecycleBound || !context?.eventSource) return false;
-    const eventTypes = { ...(context.event_types ?? {}), ...(context.eventTypes ?? {}) };
-    const rendered = eventTypes.CHARACTER_MESSAGE_RENDERED;
-    if (!rendered) return false;
-    const generationStarted = eventTypes.GENERATION_STARTED;
-    const generationEnded = eventTypes.GENERATION_ENDED;
-    const generationStopped = eventTypes.GENERATION_STOPPED;
-    const chatChanged = eventTypes.CHAT_CHANGED;
-    let generationActive = false;
-    let initialMessageCount = Array.isArray(context.chat) ? context.chat.length : 0;
-    const enqueueUpdate = messageId => {
-        storyQueue = storyQueue.catch(() => undefined).then(async () => {
-            const current = globalThis.SillyTavern?.getContext?.() ?? context;
-            try {
-                await requestPhoneWeiboStoryUpdate(settings, current, messageId, {
-                    saveSettings: () => current.saveSettingsDebounced?.(),
-                });
-            } catch (error) {
-                console.warn('[Memory Augment] 微博正文更新失败，旧数据保持不变。', error);
-            }
-        });
-    };
-    if (generationStarted) context.eventSource.on(generationStarted, () => { generationActive = true; });
-    if (generationEnded) context.eventSource.on(generationEnded, () => {
-        if (!generationActive) return;
-        generationActive = false;
-        const current = globalThis.SillyTavern?.getContext?.() ?? context;
-        const messageId = Math.max(0, (Array.isArray(current.chat) ? current.chat.length : 1) - 1);
-        enqueueUpdate(messageId);
-    });
-    if (generationStopped) context.eventSource.on(generationStopped, () => { generationActive = false; });
-    if (chatChanged) context.eventSource.on(chatChanged, () => {
-        generationActive = false;
-        initialMessageCount = Array.isArray(globalThis.SillyTavern?.getContext?.()?.chat)
-            ? globalThis.SillyTavern.getContext().chat.length
-            : 0;
-    });
-    context.eventSource.on(rendered, messageId => {
-        if (generationStarted && !generationActive) return;
-        if (!generationStarted && Number(messageId) < initialMessageCount) return;
-        generationActive = false;
-        enqueueUpdate(messageId);
-    });
-    lifecycleBound = true;
-    return true;
 }

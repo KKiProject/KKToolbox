@@ -21,6 +21,7 @@ const SUMMARY_MIGRATION_VERSION = 1;
 const MAX_AUTOMATIC_BACKFILL_BATCHES = 3;
 let summaryQueue = Promise.resolve();
 const summaryRuntimeByChat = new Map();
+let activeSummaryBinding = null;
 
 function clampInteger(value, fallback, minimum, maximum) {
     const number = Math.trunc(Number(value));
@@ -85,6 +86,7 @@ function getSummaryState(metadata, create = false) {
     state.lastSummarizedMessageIndex = Number.isFinite(lastSummarized) ? Math.trunc(lastSummarized) : -1;
     state.entries = Array.isArray(state.entries) ? state.entries : [];
     state.overviewGroups = Array.isArray(state.overviewGroups) ? state.overviewGroups : [];
+    state.bookName = String(state.bookName ?? '').trim();
     state.migrationVersion = Math.max(0, Math.trunc(Number(state.migrationVersion) || 0));
     delete state.aiRepliesSinceLastSummary;
     delete state.lastCountedReplySignature;
@@ -117,6 +119,97 @@ function getCharacterFileName(character) {
     return String(character?.avatar ?? '').trim().replace(/\.[^/.]+$/, '');
 }
 
+export function buildSummaryBookName(characterName, sequence) {
+    const name = String(characterName ?? '').trim();
+    const number = Math.trunc(Number(sequence));
+    return name && Number.isInteger(number) && number > 0
+        ? `${name}${SUMMARY_BOOK_SUFFIX}${number}`
+        : '';
+}
+
+function isSummaryBookForCharacter(bookName, characterName) {
+    const prefix = `${String(characterName ?? '').trim()}${SUMMARY_BOOK_SUFFIX}`;
+    const value = String(bookName ?? '').trim();
+    if (!prefix || value === prefix) return value === prefix;
+    return value.startsWith(prefix)
+        && /^[1-9]\d*$/.test(value.slice(prefix.length));
+}
+
+async function listWorldInfoBookNames(context) {
+    if (typeof context?.getWorldInfoBookNames === 'function') {
+        const names = await context.getWorldInfoBookNames();
+        if (Array.isArray(names)) return names.map(String);
+    }
+    try {
+        const worldModule = await import('../../../world-info.js');
+        return Array.isArray(worldModule.world_names) ? worldModule.world_names.map(String) : null;
+    } catch {
+        return null;
+    }
+}
+
+async function findNextSummaryBookName(context, characterName) {
+    const names = await listWorldInfoBookNames(context);
+    const prefix = `${characterName}${SUMMARY_BOOK_SUFFIX}`;
+    if (names) {
+        const maximum = names.reduce((current, name) => {
+            if (!String(name).startsWith(prefix)) return current;
+            const suffix = String(name).slice(prefix.length);
+            return /^[1-9]\d*$/.test(suffix) ? Math.max(current, Number(suffix)) : current;
+        }, 0);
+        return buildSummaryBookName(characterName, maximum + 1);
+    }
+    if (typeof context?.loadWorldInfo === 'function') {
+        for (let sequence = 1; sequence <= 100000; sequence++) {
+            const candidate = buildSummaryBookName(characterName, sequence);
+            if (!await context.loadWorldInfo(candidate)) return candidate;
+        }
+    }
+    throw new Error('无法为当前存档分配新的自动总结编号。');
+}
+
+async function syncSummaryBookBinding(context, character, characterName, bookName, bindCurrent = true) {
+    if (typeof context?.syncSummaryWorldInfoBook === 'function') {
+        await context.syncSummaryWorldInfoBook({ character, characterName, bookName, bindCurrent });
+        await refreshSummaryBookRuntime(context, bookName);
+        return;
+    }
+    if (typeof context?.bindAdditionalWorldInfoBook === 'function') {
+        if (bindCurrent) await context.bindAdditionalWorldInfoBook(bookName);
+        await refreshSummaryBookRuntime(context, bookName);
+        return;
+    }
+
+    const fileName = getCharacterFileName(character);
+    if (!fileName) {
+        if (bindCurrent) throw new Error('当前角色缺少头像文件名，无法绑定辅助世界书。');
+        return;
+    }
+    const worldModule = await import('../../../world-info.js');
+    const charLore = Array.isArray(worldModule.world_info?.charLore)
+        ? worldModule.world_info.charLore
+        : [];
+    let binding = charLore.find(item => item?.name === fileName);
+    const previousBooks = Array.isArray(binding?.extraBooks) ? binding.extraBooks : [];
+    const nextBooks = previousBooks.filter(name => (
+        name === bookName || !isSummaryBookForCharacter(name, characterName)
+    ));
+    if (bindCurrent && !nextBooks.includes(bookName)) nextBooks.push(bookName);
+    const changed = nextBooks.length !== previousBooks.length
+        || nextBooks.some((name, index) => name !== previousBooks[index]);
+    if (changed) {
+        if (!binding) {
+            binding = { name: fileName, extraBooks: nextBooks };
+            charLore.push(binding);
+        } else {
+            binding.extraBooks = nextBooks;
+        }
+        Object.assign(worldModule.world_info, { charLore });
+        context.saveSettingsDebounced?.();
+    }
+    await refreshSummaryBookRuntime(context, bookName, worldModule);
+}
+
 async function createSummaryBook(context, bookName) {
     if (typeof context?.createNewWorldInfo === 'function') {
         await context.createNewWorldInfo(bookName);
@@ -132,37 +225,8 @@ async function createSummaryBook(context, bookName) {
 }
 
 async function bindSummaryBookToCharacter(context, character, bookName) {
-    if (typeof context?.bindAdditionalWorldInfoBook === 'function') {
-        await context.bindAdditionalWorldInfoBook(bookName);
-        await refreshSummaryBookRuntime(context, bookName);
-        return;
-    }
-    const fileName = getCharacterFileName(character);
-    if (!fileName) {
-        throw new Error('当前角色缺少头像文件名，无法绑定辅助世界书。');
-    }
-    const worldModule = await import('../../../world-info.js');
-    const charLore = Array.isArray(worldModule.world_info?.charLore)
-        ? worldModule.world_info.charLore
-        : [];
-    let binding = charLore.find(item => item?.name === fileName);
-    const alreadyBound = binding?.extraBooks?.includes(bookName) === true;
-    if (alreadyBound && worldModule.world_names?.includes(bookName)) {
-        return;
-    }
-    if (!alreadyBound) {
-        if (!binding) {
-            binding = { name: fileName, extraBooks: [] };
-            charLore.push(binding);
-        }
-        binding.extraBooks = Array.isArray(binding.extraBooks) ? binding.extraBooks : [];
-        binding.extraBooks.push(bookName);
-        Object.assign(worldModule.world_info, { charLore });
-        context.saveSettingsDebounced?.();
-    }
-    // Even an already-bound book may be missing from ST's live world list or
-    // editor cache after being created in the background. Always reconcile it.
-    await refreshSummaryBookRuntime(context, bookName, worldModule);
+    const current = getCurrentCharacter(context);
+    await syncSummaryBookBinding(context, character, current?.name ?? '', bookName, true);
 }
 
 async function getSummaryBookName(context, create = false) {
@@ -171,15 +235,43 @@ async function getSummaryBookName(context, create = false) {
         if (create) throw new Error('当前没有可用于创建摘要世界书的角色。');
         return '';
     }
-    const bookName = `${current.name}${SUMMARY_BOOK_SUFFIX}`;
+    const state = getSummaryState(context?.chatMetadata, create);
+    const entryBookName = state?.entries
+        ?.map(entry => String(entry?.bookName ?? '').trim())
+        .find(Boolean);
+    const hasLegacySummaryState = Boolean(entryBookName
+        || state?.entries?.length
+        || state?.overviewGroups?.length
+        || Number(state?.lastSummarizedMessageIndex) >= 0);
+    const legacyBookName = `${current.name}${SUMMARY_BOOK_SUFFIX}`;
+    const chatBoundBookName = isSummaryBookForCharacter(
+        context?.chatMetadata?.world_info,
+        current.name,
+    ) ? String(context.chatMetadata.world_info).trim() : '';
+    let bookName = state?.bookName
+        || entryBookName
+        || chatBoundBookName
+        || (hasLegacySummaryState
+            ? legacyBookName
+            : '');
     if (create) {
-        const existing = typeof context?.loadWorldInfo === 'function'
-            ? await context.loadWorldInfo(bookName)
-            : null;
-        if (!existing) {
-            await createSummaryBook(context, bookName);
+        if (!bookName) bookName = await findNextSummaryBookName(context, current.name);
+        if (!bookName) throw new Error('当前聊天缺少可用于创建摘要世界书的存档标识。');
+        if (state && state.bookName !== bookName) {
+            state.bookName = bookName;
+            await context.saveMetadata?.();
         }
-        await bindSummaryBookToCharacter(context, current.character, bookName);
+        const bindingKey = `${String(getChatId(context) ?? '')}:${bookName}`;
+        const bindingIsCurrent = activeSummaryBinding?.metadata === context.chatMetadata
+            && activeSummaryBinding?.key === bindingKey;
+        if (!bindingIsCurrent) {
+            const existing = typeof context?.loadWorldInfo === 'function'
+                ? await context.loadWorldInfo(bookName)
+                : null;
+            if (!existing) await createSummaryBook(context, bookName);
+            await bindSummaryBookToCharacter(context, current.character, bookName);
+            activeSummaryBinding = { metadata: context.chatMetadata, key: bindingKey };
+        }
     }
     return bookName;
 }
@@ -1049,10 +1141,14 @@ export async function migrateLegacySummaries(context) {
         && (Object.hasOwn(metadata[SUMMARY_STATE_KEY], 'aiRepliesSinceLastSummary')
             || Object.hasOwn(metadata[SUMMARY_STATE_KEY], 'lastCountedReplySignature')));
     const state = getSummaryState(metadata, true);
+    const selectedBookName = await getSummaryBookName(context, true);
+    const selectionChanged = Boolean(selectedBookName && state.bookName !== selectedBookName);
+    if (selectionChanged) state.bookName = selectedBookName;
     const legacyStore = metadata[LEGACY_SUMMARY_METADATA_KEY];
     if (state.migrationVersion >= SUMMARY_MIGRATION_VERSION
         && !hadLegacyCounters
         && !(legacyStore && typeof legacyStore === 'object' && !Array.isArray(legacyStore))) {
+        if (selectionChanged) await context.saveMetadata?.();
         return 0;
     }
     const needsVersionSave = state.migrationVersion !== SUMMARY_MIGRATION_VERSION;
@@ -1082,7 +1178,7 @@ export async function migrateLegacySummaries(context) {
         delete metadata[LEGACY_SUMMARY_METADATA_KEY];
     }
     state.migrationVersion = SUMMARY_MIGRATION_VERSION;
-    if (migrated > 0 || hadLegacyCounters || needsVersionSave) {
+    if (migrated > 0 || hadLegacyCounters || needsVersionSave || selectionChanged) {
         await context.saveMetadata?.();
     }
     return migrated;

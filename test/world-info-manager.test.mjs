@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {
     applyWorldInfoVectorStatuses,
     isManagedSummaryWorldInfoBook,
+    isManagedSummaryWorldInfoBookName,
     normalizeWorldInfoEntries,
     rebuildAllCurrentWorldInfo,
     vectorizeSelectedWorldInfo,
@@ -36,6 +37,9 @@ test('world info vector status still accepts legacy wrapped responses', () => {
 
 test('automatic summary lorebooks are recognized by suffix or managed entry keys', () => {
     assert.equal(isManagedSummaryWorldInfoBook({ id: '角色A-自动总结', entries: [] }), true);
+    assert.equal(isManagedSummaryWorldInfoBook({ id: '角色A-自动总结12', entries: [] }), true);
+    assert.equal(isManagedSummaryWorldInfoBookName('角色A-自动总结12'), true);
+    assert.equal(isManagedSummaryWorldInfoBookName('角色A-自动总结0'), false);
     const [entry] = normalizeWorldInfoEntries([{
         world: '旧名称摘要书',
         uid: 3,

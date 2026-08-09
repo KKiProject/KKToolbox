@@ -451,6 +451,8 @@ function extractChatContent(payload, label = '副 API') {
     if (reasoning) {
         const acceptedKeys = /地图册/.test(label)
             ? ['title', 'pages']
+            : /直播/.test(label) ? ['phase', 'sessionSummary']
+            : /手机世界/.test(label) ? ['module', 'messages']
             : /手机/.test(label) ? ['messages']
             : /弹幕/.test(label) ? ['barrage', '弹幕', 'status', '状态', 'timeline', '时间线', 'development', '人物发展'] : [];
         const finalJson = acceptedKeys.length > 0 ? findFinalJsonObject(reasoning, acceptedKeys) : '';
@@ -613,6 +615,10 @@ export function buildPhoneUserContent(payload = {}) {
         `会话类型：${conversation.type === 'group' ? '群聊' : '单聊'}`,
         `会话名称：${String(conversation.name ?? '').trim()}`,
         `允许发言者：${participants.filter(Boolean).join('、') || '会话中的联系人'}`,
+        profile.persona ? `【玩家当前手机身份设定】\n${String(profile.persona).slice(0, 12000)}` : '',
+        profile.isMask
+            ? '【匿名马甲边界】当前账号是不绑定玩家真实身份的小号。联系人不得因为系统知道玩家是谁，就自动认出账号主人。只有聊天记录或正文里已经公开出现了足够线索时，才允许角色产生有根据的怀疑；怀疑也不能直接写成确认。'
+            : '',
         '',
         '【联系人真实身份】（身份设定优先于最近正文；手机备注名不等于人物本名）',
         (identitySections.join('\n\n') || '（无）').slice(0, 16_000),
@@ -639,6 +645,7 @@ export function buildPhoneUserContent(payload = {}) {
         '每条记忆必须提供至少一段 evidenceQuotes，且必须逐字存在于本次输出消息或上面的手机聊天记录；sourceMessageIds 只能使用记录前方真实存在的 msg-id。',
         '严格禁止脑补：发送、收到、热搜存在、帖子存在，都不代表任何角色已经看见、读完、理解、赞同、讨厌或产生情绪。只有角色在消息里明确说出的反应才能记为 confirmed_reaction；否则写 unknown_state 或完全不记录。',
         '不得根据人物性格推测其反应，不得把“可能、应该、看起来”改写成事实。平台内容只记录内容本身；角色是否接触或如何反应，必须等待正文或手机互动明确确认。',
+        '匿名马甲不等于真实身份公开。若当前资料标记 isMask=true，严禁让联系人无证据认出玩家；系统提供的玩家真实剧情只能用于保持世界一致，不能当作联系人已知信息。',
         'commitment 和尚未化解的 conflict 使用 status=active；普通事实使用 informational。只有新消息逐字明确完成、取消或化解已有事项时，才把其真实 ID 写入 resolvesEventIds。',
         'roundSummary 只概括本轮真实出现的对话事实；视觉上拆成多个气泡仍然是一轮，不得因此虚构多个事件。',
     ];
@@ -752,6 +759,9 @@ export async function generatePhoneCompletion(payload, options = {}) {
 
 export function buildWeiboUserContent(payload = {}) {
     const request = payload?.request && typeof payload.request === 'object' ? payload.request : {};
+    const sharedContext = request.storyContext && typeof request.storyContext === 'object'
+        ? Object.values(request.storyContext).filter(value => typeof value === 'string' && value.trim()).join('\n\n').slice(0, 60_000)
+        : '';
     const mode = String(request.mode ?? 'story');
     const roleAccounts = (Array.isArray(request.roleAccounts) ? request.roleAccounts : []).map(account => ({
         id: account?.id,
@@ -790,6 +800,7 @@ export function buildWeiboUserContent(payload = {}) {
         '7. 玩家发帖、转发和回复的原始文字属于玩家本人，禁止改写意思或替玩家添加新的立场。',
         '8. 热搜只能指向本批 posts 中真实存在的 postId。没有值得上榜的内容可以返回空数组。',
         '9. followerDelta 表示本次增减量而非粉丝总数。普通互动通常小幅变化，爆款或名人事件才允许大幅变化，并给出简短原因。',
+        '10. 若玩家微博资料 isMask=true，这是未绑定玩家真实身份的匿名马甲。网友、角色和参与者不得凭系统背景自动知道账号主人；只有公开帖子、互动或正文明确提供线索时才能有根据地猜测，而且猜测不能写成已确认。',
         '',
         `玩家微博资料：${JSON.stringify(request.profile ?? {})}`,
         `玩家设定：${String(request.userPersona ?? '').slice(0, 12000) || '未提供；按普通人处理'}`,
@@ -797,6 +808,7 @@ export function buildWeiboUserContent(payload = {}) {
         `兴趣标签：${JSON.stringify(request.interests ?? [])}`,
         `已建立角色微博账号：${JSON.stringify(roleAccounts)}`,
         `本次正文：${String(request.storyText ?? '').slice(0, 20000) || '（无）'}`,
+        `共同故事背景：${sharedContext || '（无额外背景）'}`,
         `本次玩家操作：${JSON.stringify(request.operation ?? {})}`,
         `当前首页帖子摘要：${JSON.stringify(request.recentPosts ?? [])}`,
         `当前热搜摘要：${JSON.stringify(request.hotTopics ?? [])}`,
@@ -820,6 +832,89 @@ export async function generateWeiboCompletion(payload, options = {}) {
         max_tokens: maxTokens,
     }, config, { timeoutMs: 180_000, ...options });
     return { content: extractChatContent(response, '微博更新 API') };
+}
+
+export function buildLiveUserContent(payload = {}) {
+    const request = payload?.request && typeof payload.request === 'object' ? payload.request : {};
+    const sharedContext = request.storyContext && typeof request.storyContext === 'object'
+        ? Object.values(request.storyContext).filter(value => typeof value === 'string' && value.trim()).join('\n\n').slice(0, 60_000)
+        : '';
+    const mode = String(request.mode ?? 'next');
+    const modeRule = mode === 'start'
+        ? '这是开播阶段。根据开播设置生成房间资料和第一阶段；room 必须完整填写。'
+        : mode === 'end'
+            ? '这是下播阶段。生成自然的收尾、告别弹幕和最终观众反应，不再开启新话题；room 返回 null。'
+            : '这是普通的下一阶段。承接直播摘要和最近阶段，根据玩家发言、导演提示及所选弹幕继续；room 返回 null。';
+    return [
+        '你负责推进虚构故事里的玩家个人直播。只输出合法 JSON，不要 Markdown，不要解释。',
+        modeRule,
+        '',
+        '输出结构：',
+        '{"room":{"title":"直播标题","summary":"直播简介","cover":"画面标签","initialViewers":0},"phase":{"id":"唯一ID","scenes":[{"id":"唯一ID","kind":"narration|dialogue","segment":"画面阶段","speaker":"说话人，旁白可空","speakerRole":"身份，旁白可空","speakerType":"player|participant|host|guest，旁白可空","text":"内容"}],"barrages":[{"id":"唯一ID","author":"观众昵称","content":"弹幕","likes":0,"replyable":true}],"gifts":[{"id":"唯一ID","author":"观众昵称","label":"礼物名","icon":"emoji","value":1}],"viewerDelta":0,"followerDelta":0,"summary":"本阶段事实摘要"},"sessionSummary":"截至当前的整场直播摘要"}',
+        '',
+        '硬性规则：',
+        '1. 每阶段生成 2–8 幕、8–20 条彼此不同且紧贴本阶段内容的弹幕；普通下一阶段建议生成 4–6 幕和 12–16 条弹幕。',
+        '2. operation.speech 是玩家逐字填写的公开发言，插件会单独插入画面；禁止改写、扩写或在 scenes 中重复这段原话。',
+        '3. operation.direction 是玩家授权的发挥范围。可以据此补充轻微衔接动作、镜头、参与者回应和自然后果，但不得越过方向替玩家作重大决定、制造新秘密或改变立场。',
+        '4. selectedBarrages 是玩家选择要回应的准确弹幕。必须让本阶段自然体现回应关系，不能换人、换问题或假装回复了未选择的弹幕。',
+        '5. 只有 participants 中的人允许作为出镜参与者说话或行动；未选择的人不得突然进入直播。保持每个人的绑定人设。',
+        '6. 私人娱乐直播以主播与参与者说话为主，夹少量环境旁白；工作性质直播可以增加流程、主持、商品或工作细节，但仍然是玩家自己的直播。',
+        '7. 弹幕只能知道直播公开画面、玩家已经公开说出的信息和合理可见事实，不得泄露私人剧情或读心。',
+        '8. viewerDelta、followerDelta 和礼物规模必须符合玩家身份、初始人数、直播性质和本阶段表现，不要每阶段暴涨。',
+        '9. sessionSummary 必须覆盖直播主题、已发生阶段、参与者、玩家公开发言和重要观众反应，控制在 800 字以内，供下一阶段续接。',
+        '10. end 模式必须明显收束并告别；start 以外的模式 room 必须为 null。',
+        '11. 若玩家资料 isMask=true，直播账号不绑定玩家真实身份。观众和参与者不得凭系统背景自动认出主播；只有直播公开画面、发言或既有公开证据足够时才能猜测，且不得把猜测写成确认。',
+        '',
+        `本次模式：${mode}`,
+        `玩家资料：${JSON.stringify(request.profile ?? {})}`,
+        `玩家设定：${String(request.userPersona ?? '').slice(0, 12000) || '未提供'}`,
+        `直播设置：${JSON.stringify(request.setup ?? {})}`,
+        `本次阶段指令：${JSON.stringify(request.operation ?? {})}`,
+        `已选择参与者：${JSON.stringify(request.participants ?? [])}`,
+        `当前直播摘要：${String(request.sessionSummary ?? '').slice(0, 800) || '（尚未开始）'}`,
+        `最近两个阶段：${JSON.stringify(request.recentPhases ?? [])}`,
+        `最近正文背景：${String(request.storyText ?? '').slice(0, 20000) || '（无）'}`,
+        `共同故事背景：${sharedContext || '（无额外背景）'}`,
+        `当前时间戳：${Number(request.now) || Date.now()}`,
+    ].join('\n');
+}
+
+export async function generateLiveCompletion(payload, options = {}) {
+    const config = normalizeConfig(payload?.barrage, '直播阶段');
+    const endpoint = new URL(`${config.baseUrl}/v1/chat/completions`).toString();
+    const maxTokens = Math.max(4096, Math.min(12_000, Math.trunc(Number(payload?.maxTokens) || 8192)));
+    const response = await postJson(endpoint, {
+        model: config.model,
+        messages: [
+            {
+                role: 'system',
+                content: '你只维护虚构世界里的阶段式个人直播数据。严格保留玩家原话、参与者边界和公共信息边界。',
+            },
+            { role: 'user', content: buildLiveUserContent(payload) },
+        ],
+        max_tokens: maxTokens,
+    }, config, { timeoutMs: 180_000, ...options });
+    return { content: extractChatContent(response, '直播阶段 API') };
+}
+
+export async function generatePhoneWorldCompletion(payload, options = {}) {
+    const config = normalizeConfig(payload?.barrage, '手机世界更新');
+    const endpoint = new URL(`${config.baseUrl}/v1/chat/completions`).toString();
+    const prompt = String(payload?.prompt ?? '').trim();
+    if (!prompt) throw new Error('手机世界更新没有收到生成规则。');
+    const maxTokens = Math.max(8192, Math.min(48_000, Math.trunc(Number(payload?.maxTokens) || 32_000)));
+    const response = await postJson(endpoint, {
+        model: config.model,
+        messages: [
+            {
+                role: 'system',
+                content: '你只维护虚构故事中的手机公共世界和明确出现的线上通讯。严格遵守信息边界，并按要求输出相互独立的 JSONL 记录。',
+            },
+            { role: 'user', content: prompt },
+        ],
+        max_tokens: maxTokens,
+    }, config, { timeoutMs: 240_000, ...options });
+    return { content: extractChatContent(response, '手机世界更新 API') };
 }
 
 function buildAtlasUserContent(books) {

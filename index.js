@@ -1,4 +1,5 @@
 import { extension_settings, renderExtensionTemplateAsync } from '../../../extensions.js';
+import { power_user } from '../../../power-user.js';
 import { Popup, POPUP_RESULT, POPUP_TYPE } from '../../../popup.js';
 import { normalizeBaseUrl } from './api-utils.js';
 import { bindChatIngestionLifecycle, reconcileBufferedMessageQueue } from './chat-lifecycle.js';
@@ -26,7 +27,8 @@ import { clearAllSummaries, getSummaryStatus, initializeSummaryManager, repairMa
 import { initializeWorldInfoManager, rebuildAllCurrentWorldInfo } from './world-info-manager.js';
 import { initializeHtmlRenderer, refreshHtmlRenderer } from './html-renderer.js';
 import { initializePhoneShellUi } from './phone-shell.js';
-import { initializePhoneWeiboLifecycle } from './phone-weibo-ai.js';
+import { createPhoneSession } from './phone-session.js';
+import { initializePhoneWorldLifecycle } from './phone-world-ai.js';
 import {
     clearPreparedPhoneContext,
     consumePreparedPhoneContext,
@@ -111,6 +113,16 @@ export const defaultSettings = Object.freeze({
         stickers: [],
         stickerGroups: [{ id: 'default', name: '默认' }],
         profile: { nickname: '我', avatar: '' },
+        accounts: {
+            items: [],
+            defaultAccountId: 'main',
+            assignments: {
+                messages: 'main',
+                weibo: 'main',
+                community: 'main',
+                live: 'main',
+            },
+        },
         weibo: {
             interests: [],
             posts: [],
@@ -134,10 +146,19 @@ export const defaultSettings = Object.freeze({
             forumThreads: [],
             cpRankings: [],
             fanWorks: [],
+            commentReplies: [],
         },
         live: {
             streams: [],
             followedStreamIds: [],
+            ownLive: {
+                status: 'idle',
+                phases: [],
+                records: [],
+                sessionSummary: '',
+                generating: false,
+                lastError: '',
+            },
         },
     },
 });
@@ -973,8 +994,20 @@ async function initialize() {
     } catch (error) {
         console.warn('[Memory Augment] Barrage UI initialization failed; the remaining extension will continue.', error);
     }
-    initializePhoneShellUi(settings, context);
-    initializePhoneWeiboLifecycle(settings, context);
+    const getPhoneContext = () => ({
+        ...(globalThis.SillyTavern?.getContext?.() ?? context),
+        powerUser: power_user,
+    });
+    const phoneSession = createPhoneSession(settings, getPhoneContext);
+    if (getPhoneChatId(context)) {
+        try {
+            await phoneSession.ensure();
+        } catch (error) {
+            console.warn('[Memory Augment] 当前聊天的手机存档初始化失败；打开手机时会再次尝试。', error);
+        }
+    }
+    initializePhoneShellUi(settings, context, globalThis.document, { powerUser: power_user, phoneSession });
+    initializePhoneWorldLifecycle(phoneSession, context);
     initializeCharacterDevelopmentUi(context);
     initializeDevelopmentBaselineUi(settings, context, {
         chooseSource: async (info) => {

@@ -5,12 +5,12 @@ import {
     syncSummaryMemory,
 } from './rag-client.js';
 import { normalizeBaseUrl } from './api-utils.js';
-import { getActiveWorldInfoBookIds } from './world-info-manager.js';
+import { getActiveWorldInfoBookIds, isManagedSummaryWorldInfoBookName } from './world-info-manager.js';
 import { getMessageTimelineMetadata, injectLatestStoryStatus } from './story-status.js';
 import { injectMapAtlasContext } from './map-atlas.js';
 import { injectCharacterDevelopment } from './character-development.js';
 import { getSummaries } from './summary-manager.js';
-import { injectPhoneContext, loadPhoneStore, normalizePhoneProfile } from './phone-store.js';
+import { injectPhoneContext, loadPhoneStore } from './phone-store.js';
 import { recallPhoneMemoryEvents } from './phone-memory-recall.js';
 
 const EXTENSION_KEY = 'st-memory-augment';
@@ -382,7 +382,7 @@ export async function retrieveAndInject(chat, settings, context, clients = {}) {
     const activeBookIds = Array.isArray(settings?.rag?.activeWorldInfoBookIds)
         ? settings.rag.activeWorldInfoBookIds.map(String)
         : getActiveWorldInfoBookIds();
-    const ordinaryBookIds = activeBookIds.filter(id => !String(id).endsWith('-自动总结'));
+    const ordinaryBookIds = activeBookIds.filter(id => !isManagedSummaryWorldInfoBookName(id));
     const semanticWorldInfo = Boolean(settings?.rag?.semanticWorldInfo && ordinaryBookIds.length > 0);
     let searchResponse = { chatResults: [], worldInfoResults: [], errors: {} };
     if (embedding) {
@@ -535,7 +535,6 @@ export async function memoryAugmentInterceptor(chat, contextSize, abort, type) {
 
     try {
         const phoneStore = await loadPhoneStore(context);
-        phoneStore.profile = normalizePhoneProfile(settings.phone?.profile ?? phoneStore.profile);
         let recalledPhoneEvents = [];
         const embedding = completeApiConfig(settings?.apis?.embedding);
         if (embedding) {

@@ -2957,13 +2957,6 @@
     font-size: 1rem;
 }
 
-.memory-augment-weibo-hot-feature > small {
-    font-size: 0.55rem;
-    line-height: 1.45;
-    margin-top: 0.3rem;
-    opacity: 0.75;
-}
-
 .memory-augment-weibo-hot-list {
     background: #fff;
     display: grid;
@@ -4687,14 +4680,27 @@
     padding-bottom: 1rem;
 }
 
+.memory-augment-phone-app-content.is-community p {
+    opacity: 1;
+    text-align: left;
+}
+
 .memory-augment-community-tabs {
     background: rgb(255 255 255 / 96%);
     border-bottom: 1px solid rgb(82 73 111 / 10%);
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    cursor: grab;
+    display: flex;
+    overflow-x: auto;
     position: sticky;
+    scrollbar-width: none;
     top: 0;
+    touch-action: pan-y;
+    user-select: none;
     z-index: 4;
+}
+
+.memory-augment-community-tabs::-webkit-scrollbar {
+    display: none;
 }
 
 .memory-augment-community-tabs > button {
@@ -4706,11 +4712,14 @@
     display: flex;
     font-size: 0.78rem;
     font-weight: 650;
+    flex: 0 0 auto;
     gap: 0.28rem;
     justify-content: center;
+    min-width: 7.15rem;
     min-height: 2.55rem;
-    padding: 0;
+    padding: 0 0.7rem;
     position: relative;
+    white-space: nowrap;
 }
 
 .memory-augment-community-tabs > button.is-active {
@@ -4774,24 +4783,25 @@
 }
 
 .memory-augment-community-hero > strong {
+    align-self: end;
     font-size: 1.15rem;
     line-height: 1.25;
 }
 
-.memory-augment-community-hero > span {
-    font-size: 0.7rem;
-    font-weight: 600;
-    line-height: 1.4;
-    opacity: 0.94;
-}
-
 .memory-augment-community-filters {
+    cursor: grab;
     display: flex;
     gap: 0.35rem;
     overflow-x: auto;
     padding: 0.08rem 0.65rem 0.52rem;
     scrollbar-width: none;
-    touch-action: pan-x;
+    touch-action: pan-y;
+    user-select: none;
+}
+
+.memory-augment-community-tabs.is-dragging,
+.memory-augment-community-filters.is-dragging {
+    cursor: grabbing;
 }
 
 .memory-augment-community-filters::-webkit-scrollbar {
@@ -5043,10 +5053,41 @@
     font-weight: 600;
 }
 
+.memory-augment-community-fan-card > div > small.memory-augment-community-fan-cp {
+    color: #5d4d78;
+    font-weight: 800;
+}
+
 .memory-augment-community-fan-card > div > strong {
     font-size: 0.81rem;
     font-weight: 800;
     line-height: 1.4;
+}
+
+.memory-augment-community-fan-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.22rem;
+    margin-top: 0.08rem;
+}
+
+.memory-augment-community-fan-tags > span {
+    background: #f1eef7;
+    border-radius: 999px;
+    color: #65567f;
+    font-size: 0.58rem;
+    font-weight: 750;
+    line-height: 1.35;
+    padding: 0.12rem 0.32rem;
+}
+
+.memory-augment-community-fan-tags.is-detail {
+    margin-top: 0.6rem;
+}
+
+.memory-augment-community-fan-tags.is-detail > span {
+    font-size: 0.65rem;
+    padding: 0.22rem 0.45rem;
 }
 
 .memory-augment-community-detail {
@@ -5234,11 +5275,493 @@
     margin: 0.25rem 0 0;
 }
 
+.memory-augment-community-comment > div > footer {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 0.16rem;
+}
+
+.memory-augment-community-comment > div > footer > button {
+    background: transparent;
+    border: 0;
+    color: #5969a7;
+    font-size: 0.65rem;
+    font-weight: 800;
+    padding: 0.12rem 0;
+}
+
+.memory-augment-community-player-replies {
+    background: #f3f1f6;
+    border-radius: 0.5rem;
+    display: grid;
+    gap: 0.28rem;
+    margin-top: 0.35rem;
+    padding: 0.42rem 0.5rem;
+}
+
+.memory-augment-phone-app-content .memory-augment-community-player-replies > p {
+    font-size: 0.68rem;
+    margin: 0;
+}
+
+.memory-augment-community-player-replies > p > strong {
+    color: #5969a7;
+    font-weight: 800;
+}
+
+.memory-augment-community-reply-form {
+    align-items: stretch;
+    display: grid;
+    gap: 0.35rem;
+    grid-template-columns: minmax(0, 1fr) auto;
+    margin-top: 0.35rem;
+}
+
+.memory-augment-community-reply-form > textarea {
+    background: #f8f7fa;
+    border: 1px solid rgb(89 105 167 / 25%);
+    border-radius: 0.5rem;
+    box-sizing: border-box;
+    caret-color: #5969a7;
+    color: #2e2934;
+    font: inherit;
+    font-size: 0.69rem;
+    line-height: 1.45;
+    min-height: 2.8rem;
+    outline: none;
+    padding: 0.45rem 0.5rem;
+    resize: none;
+    width: 100%;
+}
+
+.memory-augment-community-reply-form > textarea:focus {
+    background: #fff;
+    border-color: #6678bd;
+    box-shadow: 0 0 0 2px rgb(102 120 189 / 10%);
+}
+
+.memory-augment-community-reply-form > button {
+    background: #6374b5;
+    border: 0;
+    border-radius: 0.5rem;
+    color: #fff;
+    font-size: 0.66rem;
+    font-weight: 800;
+    padding: 0 0.55rem;
+}
+
 /* Live: official broadcasts and private streams share one room shell. */
 .memory-augment-phone-app-content.is-live {
     background: #f5f3f7;
     overflow: hidden;
     padding: 0;
+}
+
+/* Phone settings: account and mask management only. */
+.memory-augment-phone-app-content.is-phone-settings {
+    background: #f6f3f0;
+    overflow: hidden;
+    padding: 0;
+}
+
+.memory-augment-phone-settings-view {
+    box-sizing: border-box;
+    color: #29252a;
+    display: grid;
+    gap: 0.68rem;
+    height: 100%;
+    overflow-y: auto;
+    padding: 0.72rem;
+}
+
+.memory-augment-phone-app-content.is-phone-settings p {
+    opacity: 1;
+    text-align: left;
+}
+
+.memory-augment-phone-account-summary {
+    background: #fff;
+    border: 1px solid rgb(94 75 65 / 11%);
+    border-radius: 0.82rem;
+    display: grid;
+    gap: 0.42rem;
+    padding: 0.76rem;
+}
+
+.memory-augment-phone-account-summary > strong,
+.memory-augment-phone-account-list-heading > strong {
+    font-size: 0.82rem;
+    font-weight: 850;
+}
+
+.memory-augment-phone-account-summary > div {
+    display: grid;
+    gap: 0.38rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.memory-augment-phone-account-summary > div > div {
+    background: #f5f0ec;
+    border-radius: 0.55rem;
+    display: grid;
+    gap: 0.08rem;
+    padding: 0.48rem 0.55rem;
+}
+
+.memory-augment-phone-account-summary small {
+    color: #756a65;
+    font-size: 0.61rem;
+    font-weight: 700;
+}
+
+.memory-augment-phone-account-summary > div strong {
+    color: #824f3c;
+    font-size: 0.73rem;
+    font-weight: 850;
+}
+
+.memory-augment-phone-account-list-heading {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+    padding: 0.08rem 0.1rem 0;
+}
+
+.memory-augment-phone-account-list-heading > button {
+    background: #8d614e;
+    border: 0;
+    border-radius: 999px;
+    color: #fff;
+    font-size: 0.68rem;
+    font-weight: 800;
+    min-height: 2rem;
+    padding: 0 0.7rem;
+}
+
+.memory-augment-phone-account-list {
+    display: grid;
+    gap: 0.55rem;
+}
+
+.memory-augment-phone-account-card {
+    background: #fff;
+    border: 1px solid rgb(94 75 65 / 11%);
+    border-radius: 0.82rem;
+    display: grid;
+    gap: 0.55rem;
+    padding: 0.72rem;
+}
+
+.memory-augment-phone-account-card-top {
+    align-items: center;
+    display: grid;
+    gap: 0.62rem;
+    grid-template-columns: 2.85rem minmax(0, 1fr);
+}
+
+.memory-augment-phone-account-avatar {
+    align-items: center;
+    background: linear-gradient(145deg, #aa7861, #705169);
+    border-radius: 50%;
+    color: #fff;
+    display: flex;
+    font-size: 0.92rem;
+    font-weight: 850;
+    height: 2.85rem;
+    justify-content: center;
+    overflow: hidden;
+}
+
+.memory-augment-phone-account-avatar > img {
+    height: 100%;
+    object-fit: cover;
+    width: 100%;
+}
+
+.memory-augment-phone-account-card-top > div {
+    display: grid;
+    gap: 0.2rem;
+    min-width: 0;
+}
+
+.memory-augment-phone-account-card-top > div > div {
+    align-items: center;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+}
+
+.memory-augment-phone-account-card-top strong {
+    font-size: 0.82rem;
+    font-weight: 850;
+}
+
+.memory-augment-phone-account-card-top span {
+    background: #f1ece8;
+    border-radius: 999px;
+    color: #715b51;
+    font-size: 0.58rem;
+    font-weight: 800;
+    padding: 0.12rem 0.36rem;
+}
+
+.memory-augment-phone-account-card-top span.is-main {
+    background: #fff0e8;
+    color: #a54e31;
+}
+
+.memory-augment-phone-account-card-top span.is-default {
+    background: #eee8f5;
+    color: #684b82;
+}
+
+.memory-augment-phone-app-content .memory-augment-phone-account-card-top p {
+    color: #4f4846;
+    font-size: 0.69rem;
+    font-weight: 650;
+    line-height: 1.45;
+    margin: 0;
+}
+
+.memory-augment-phone-account-card-top small {
+    color: #716966;
+    font-size: 0.61rem;
+    font-weight: 600;
+}
+
+.memory-augment-phone-account-used {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.32rem;
+}
+
+.memory-augment-phone-account-used > span {
+    background: #f3eff5;
+    border-radius: 999px;
+    color: #644f72;
+    font-size: 0.61rem;
+    font-weight: 750;
+    padding: 0.18rem 0.42rem;
+}
+
+.memory-augment-phone-account-used > small {
+    color: #827975;
+    font-size: 0.62rem;
+    font-weight: 600;
+}
+
+.memory-augment-phone-account-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+
+.memory-augment-phone-account-actions > button,
+.memory-augment-phone-account-apply button {
+    background: #f2eeeb;
+    border: 0;
+    border-radius: 999px;
+    color: #574d49;
+    font-size: 0.64rem;
+    font-weight: 800;
+    min-height: 2rem;
+    padding: 0 0.62rem;
+}
+
+.memory-augment-phone-account-actions > button.is-primary,
+.memory-augment-phone-account-apply button.is-primary {
+    background: #8c5d49;
+    color: #fff;
+}
+
+.memory-augment-phone-account-actions > button.is-danger {
+    color: #aa3651;
+}
+
+.memory-augment-phone-account-apply {
+    border-top: 1px solid #eee8e4;
+    display: grid;
+    gap: 0.45rem;
+    padding-top: 0.55rem;
+}
+
+.memory-augment-phone-account-apply > strong {
+    font-size: 0.71rem;
+    font-weight: 850;
+}
+
+.memory-augment-phone-account-apply > div:first-of-type {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.38rem;
+}
+
+.memory-augment-phone-account-apply label {
+    cursor: pointer;
+    position: relative;
+}
+
+.memory-augment-phone-account-apply label > input {
+    opacity: 0;
+    position: absolute;
+}
+
+.memory-augment-phone-account-apply label > span {
+    align-items: center;
+    background: #f3efec;
+    border: 1px solid #ddd3ce;
+    border-radius: 999px;
+    color: #5d524e;
+    display: inline-flex;
+    font-size: 0.66rem;
+    font-weight: 750;
+    min-height: 2rem;
+    padding: 0 0.62rem;
+}
+
+.memory-augment-phone-account-apply label > input:checked + span {
+    background: #fff0e8;
+    border-color: #a96d52;
+    color: #93482e;
+}
+
+.memory-augment-phone-account-apply > div:last-child {
+    display: flex;
+    gap: 0.4rem;
+}
+
+.memory-augment-phone-account-editor-header {
+    align-items: center;
+    background: #fff;
+    display: grid;
+    grid-template-columns: 2.3rem minmax(0, 1fr) 2.3rem;
+    margin: -0.72rem -0.72rem 0;
+    min-height: 3rem;
+    position: sticky;
+    top: -0.72rem;
+    z-index: 3;
+}
+
+.memory-augment-phone-account-editor-header > button {
+    background: transparent;
+    border: 0;
+    color: #443b38;
+    min-height: 2.3rem;
+}
+
+.memory-augment-phone-account-editor-header > strong {
+    font-size: 0.86rem;
+    font-weight: 850;
+    text-align: center;
+}
+
+.memory-augment-phone-account-editor {
+    background: #fff;
+    border-radius: 0.82rem;
+    display: grid;
+    gap: 0.64rem;
+    padding: 0.78rem;
+}
+
+.memory-augment-phone-account-binding-note {
+    background: #f5f0ec;
+    border: 1px solid #dfd2ca;
+    border-radius: 0.65rem;
+    display: grid;
+    gap: 0.25rem;
+    padding: 0.65rem;
+}
+
+.memory-augment-phone-account-binding-note.is-mask {
+    background: #f2eef7;
+    border-color: #d9cce5;
+}
+
+.memory-augment-phone-account-binding-note > strong {
+    font-size: 0.74rem;
+    font-weight: 850;
+}
+
+.memory-augment-phone-account-editor > label {
+    display: grid;
+    gap: 0.3rem;
+}
+
+.memory-augment-phone-account-editor > label > strong {
+    font-size: 0.72rem;
+    font-weight: 850;
+}
+
+.memory-augment-phone-account-local-avatar {
+    background: #f8f5f3;
+    border: 1px dashed #cdbdb5;
+    border-radius: 0.62rem;
+    cursor: pointer;
+    padding: 0.62rem;
+    position: relative;
+}
+
+.memory-augment-phone-account-local-avatar > input {
+    inset: 0;
+    opacity: 0;
+    position: absolute;
+}
+
+.memory-augment-phone-account-local-avatar > span {
+    align-items: center;
+    background: #8c5d49;
+    border-radius: 999px;
+    color: #fff;
+    display: inline-flex;
+    font-size: 0.68rem;
+    font-weight: 800;
+    min-height: 2.15rem;
+    padding: 0 0.72rem;
+    width: fit-content;
+}
+
+.memory-augment-phone-account-editor input,
+.memory-augment-phone-account-editor textarea {
+    background: #f6f2ef;
+    border: 1px solid #ddd4cf;
+    border-radius: 0.55rem;
+    box-sizing: border-box;
+    caret-color: #95583e;
+    color: #2d2826;
+    font-family: inherit;
+    font-size: 0.72rem;
+    font-weight: 600;
+    line-height: 1.5;
+    min-height: 2.35rem;
+    outline: none;
+    padding: 0.52rem 0.6rem;
+    resize: vertical;
+    width: 100%;
+}
+
+.memory-augment-phone-account-editor input:focus,
+.memory-augment-phone-account-editor textarea:focus {
+    background: #fff;
+    border-color: #a86c52;
+    box-shadow: 0 0 0 0.14rem rgb(168 108 82 / 14%);
+}
+
+.memory-augment-phone-app-content .memory-augment-phone-account-feedback {
+    color: #b02f4b;
+    font-size: 0.66rem;
+    font-weight: 700;
+    margin: 0;
+    min-height: 0.9rem;
+}
+
+.memory-augment-phone-account-submit {
+    background: #8c5d49;
+    border: 0;
+    border-radius: 999px;
+    color: #fff;
+    font-size: 0.72rem;
+    font-weight: 850;
+    min-height: 2.4rem;
 }
 
 .memory-augment-live-view {
@@ -5251,11 +5774,16 @@
     padding-bottom: 0.8rem;
 }
 
+.memory-augment-phone-app-content.is-live p {
+    opacity: 1;
+    text-align: left;
+}
+
 .memory-augment-live-channels {
     background: rgb(255 255 255 / 97%);
     border-bottom: 1px solid rgb(74 58 84 / 10%);
     display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     position: sticky;
     top: 0;
     z-index: 5;
@@ -5332,20 +5860,60 @@
 }
 
 .memory-augment-live-hero > strong {
+    align-self: end;
     font-size: 1.1rem;
     font-weight: 850;
 }
 
-.memory-augment-live-hero > small {
-    font-size: 0.71rem;
-    font-weight: 600;
-    opacity: 0.94;
+.memory-augment-live-self-entry {
+    align-items: center;
+    background: #fff;
+    border: 1px solid rgb(74 58 84 / 10%);
+    border-radius: 0.85rem;
+    color: #28222d;
+    display: grid;
+    gap: 0.62rem;
+    grid-template-columns: 2.35rem minmax(0, 1fr) auto;
+    margin: 0.68rem 0.68rem 0;
+    min-height: 4.2rem;
+    padding: 0.62rem 0.72rem;
+    text-align: left;
+    width: calc(100% - 1.36rem);
+}
+
+.memory-augment-live-self-entry > span {
+    align-items: center;
+    background: linear-gradient(145deg, #f06a8d, #8b6bad);
+    border-radius: 50%;
+    color: #fff;
+    display: flex;
+    font-size: 0.85rem;
+    font-weight: 850;
+    height: 2.35rem;
+    justify-content: center;
+}
+
+.memory-augment-live-self-entry > div {
+    display: grid;
+    gap: 0.16rem;
+    min-width: 0;
+}
+
+.memory-augment-live-self-entry strong {
+    font-size: 0.83rem;
+    font-weight: 850;
+}
+
+.memory-augment-live-self-entry small {
+    color: #5d5562;
+    font-size: 0.68rem;
+    font-weight: 650;
 }
 
 .memory-augment-live-list {
     display: grid;
     gap: 0.58rem;
-    padding: 0 0.68rem;
+    padding: 0 0.68rem 0.68rem;
 }
 
 .memory-augment-live-card {
@@ -5472,6 +6040,9 @@
     gap: 0.5rem;
     grid-template-columns: 1.8rem minmax(0, 1fr) auto;
     padding: 0.55rem 0.65rem;
+    position: sticky;
+    top: 0;
+    z-index: 6;
 }
 
 .memory-augment-live-room-header > button {
@@ -5516,17 +6087,56 @@
     color: #5f5864;
 }
 
+.memory-augment-live-own-badge {
+    background: #f0ebf6;
+    border-radius: 999px;
+    color: #705488;
+    font-size: 0.64rem;
+    font-weight: 850;
+    padding: 0.38rem 0.65rem;
+}
+
+.memory-augment-live-room-header > button.memory-augment-live-advance-button {
+    background: #76558f;
+    color: #fff;
+    display: inline-flex;
+    gap: 0.28rem;
+    min-width: 3.2rem;
+}
+
+.memory-augment-live-room-header > button.memory-augment-live-advance-button.is-generating {
+    cursor: wait;
+    opacity: 0.82;
+}
+
+.memory-augment-live-advance-button.is-generating > i {
+    animation: memory-augment-live-advance-spin 0.8s linear infinite;
+}
+
+@keyframes memory-augment-live-advance-spin {
+    to { transform: rotate(360deg); }
+}
+
 .memory-augment-live-stage {
     background: radial-gradient(circle at 70% 22%, #734b59, #17151c 62%);
+    box-sizing: border-box;
     color: #fff;
-    min-height: 14.5rem;
+    cursor: pointer;
+    height: 15.8rem;
+    min-height: 15.8rem;
     overflow: hidden;
     padding: 0.7rem;
     position: relative;
+    user-select: none;
 }
 
 .memory-augment-live-stage.is-private {
     background: radial-gradient(circle at 24% 20%, #655170, #1a171f 65%);
+}
+
+.memory-augment-live-stage:focus-visible {
+    box-shadow: inset 0 0 0 0.13rem rgb(255 255 255 / 70%);
+    outline: none;
 }
 
 .memory-augment-live-stage > header {
@@ -5553,25 +6163,76 @@
     padding: 0.2rem 0.42rem;
 }
 
-.memory-augment-phone-app-content .memory-augment-live-stage > p {
+.memory-augment-live-stage-copy {
     background: rgb(9 8 12 / 48%);
     border: 1px solid rgb(255 255 255 / 12%);
     border-radius: 0.75rem;
     bottom: 0.72rem;
-    font-size: 0.77rem;
-    font-weight: 600;
+    box-sizing: border-box;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    height: 6.35rem;
     left: 0.7rem;
-    line-height: 1.68;
-    margin: 0;
-    padding: 0.68rem;
+    padding: 0.5rem 0.62rem 0.42rem;
     position: absolute;
     right: 0.7rem;
     text-shadow: 0 1px 2px rgb(0 0 0 / 50%);
-    z-index: 2;
+    z-index: 4;
+}
+
+.memory-augment-live-stage-copy.is-dialogue {
+    background: linear-gradient(100deg, rgb(18 14 24 / 88%), rgb(24 16 25 / 72%));
+    border-color: rgb(255 187 211 / 30%);
+}
+
+.memory-augment-live-stage-copy > header,
+.memory-augment-live-stage-copy > footer {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+}
+
+.memory-augment-live-stage-copy > header > strong {
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 850;
+}
+
+.memory-augment-live-stage-copy.is-dialogue > header > strong {
+    color: #ffc2d5;
+}
+
+.memory-augment-live-stage-copy > header > small,
+.memory-augment-live-stage-copy > footer {
+    color: rgb(255 255 255 / 76%);
+    font-size: 0.56rem;
+    font-weight: 700;
+}
+
+.memory-augment-phone-app-content .memory-augment-live-stage-copy > p {
+    color: #fff;
+    font-size: 0.73rem;
+    font-weight: 600;
+    line-height: 1.52;
+    margin: 0.22rem 0 0.16rem;
+    opacity: 1;
+    overflow-y: auto;
+    scrollbar-width: none;
+    text-align: left;
+}
+
+.memory-augment-live-stage-copy > p::-webkit-scrollbar {
+    display: none;
+}
+
+.memory-augment-live-stage-copy > footer > span {
+    color: #ffc2d5;
+    font-variant-numeric: tabular-nums;
+    font-weight: 850;
 }
 
 .memory-augment-live-floating-barrages {
-    inset: 2.55rem 0 7.7rem;
+    inset: 2.55rem 0 7.25rem;
     overflow: hidden;
     pointer-events: none;
     position: absolute;
@@ -5599,17 +6260,6 @@
 @keyframes memory-augment-live-barrage {
     from { transform: translateX(0); }
     to { transform: translateX(calc(-100% - 24rem)); }
-}
-
-.memory-augment-live-official-notice {
-    align-items: center;
-    background: #fff2f5;
-    color: #91435c;
-    display: flex;
-    font-size: 0.66rem;
-    font-weight: 700;
-    gap: 0.38rem;
-    padding: 0.48rem 0.68rem;
 }
 
 .memory-augment-live-chat {
@@ -5640,9 +6290,13 @@
 }
 
 .memory-augment-live-chat-list {
+    align-content: start;
+    box-sizing: border-box;
     display: grid;
     gap: 0.25rem;
+    height: 7.4rem;
     max-height: 7.4rem;
+    min-height: 7.4rem;
     overflow-y: auto;
 }
 
@@ -5719,6 +6373,564 @@
     border-radius: 999px;
     color: #fff;
     padding: 0 0.65rem;
+}
+
+.memory-augment-live-own-header {
+    align-items: center;
+    background: #fff;
+    border-bottom: 1px solid rgb(74 58 84 / 10%);
+    display: grid;
+    grid-template-columns: 2.35rem minmax(0, 1fr) 2.35rem;
+    min-height: 3.2rem;
+    position: sticky;
+    top: 0;
+    z-index: 5;
+}
+
+.memory-augment-live-own-header > button {
+    background: transparent;
+    border: 0;
+    color: #302a35;
+    font-size: 0.92rem;
+    min-height: 2.35rem;
+}
+
+.memory-augment-live-own-header > strong {
+    font-size: 0.88rem;
+    font-weight: 850;
+    text-align: center;
+}
+
+.memory-augment-live-own-profile {
+    align-items: center;
+    background: linear-gradient(135deg, #fff, #fff1f5);
+    display: grid;
+    gap: 0.72rem;
+    grid-template-columns: 3.3rem minmax(0, 1fr);
+    margin: 0.72rem;
+    padding: 0.9rem;
+}
+
+.memory-augment-live-own-avatar {
+    align-items: center;
+    background: linear-gradient(145deg, #ed6688, #8162a1);
+    border: 0.16rem solid #fff;
+    border-radius: 50%;
+    box-shadow: 0 0.18rem 0.55rem rgb(71 43 76 / 18%);
+    color: #fff;
+    display: flex;
+    font-size: 1.05rem;
+    font-weight: 850;
+    height: 3.3rem;
+    justify-content: center;
+}
+
+.memory-augment-live-own-profile > div {
+    display: grid;
+    gap: 0.24rem;
+}
+
+.memory-augment-live-own-profile strong,
+.memory-augment-live-own-action > strong,
+.memory-augment-live-own-summary > strong,
+.memory-augment-live-stage-panel > strong,
+.memory-augment-live-stage-panel-header > strong {
+    font-size: 0.92rem;
+    font-weight: 850;
+}
+
+.memory-augment-phone-app-content .memory-augment-live-own-profile p,
+.memory-augment-phone-app-content .memory-augment-live-own-action p,
+.memory-augment-phone-app-content .memory-augment-live-own-summary p,
+.memory-augment-phone-app-content .memory-augment-live-stage-panel > p {
+    color: #534b58;
+    font-size: 0.73rem;
+    font-weight: 600;
+    line-height: 1.55;
+    margin: 0;
+}
+
+.memory-augment-live-own-action,
+.memory-augment-live-own-summary,
+.memory-augment-live-setup,
+.memory-augment-live-stage-panel {
+    background: #fff;
+    border: 1px solid rgb(74 58 84 / 10%);
+    border-radius: 0.88rem;
+    box-sizing: border-box;
+    display: grid;
+    gap: 0.62rem;
+    margin: 0.72rem;
+    padding: 0.82rem;
+}
+
+.memory-augment-live-stage-overlay {
+    align-items: flex-end;
+    background: rgb(20 15 24 / 42%);
+    display: flex;
+    inset: 0;
+    padding: 0.55rem;
+    position: absolute;
+    z-index: 20;
+}
+
+.memory-augment-live-stage-overlay > .memory-augment-live-stage-panel {
+    border-radius: 0.95rem;
+    box-shadow: 0 -0.35rem 1.4rem rgb(31 21 38 / 22%);
+    margin: 0;
+    max-height: calc(100% - 1.1rem);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    width: 100%;
+}
+
+.memory-augment-live-stage-panel-header {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+}
+
+.memory-augment-live-stage-panel-header > button {
+    align-items: center;
+    background: #f1edf2;
+    border: 0;
+    border-radius: 50%;
+    color: #5b525f;
+    display: flex;
+    height: 2rem;
+    justify-content: center;
+    padding: 0;
+    width: 2rem;
+}
+
+.memory-augment-live-own-stats {
+    display: grid;
+    gap: 0.42rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.memory-augment-live-own-stat {
+    background: #f6f2f7;
+    border-radius: 0.55rem;
+    display: grid;
+    gap: 0.08rem;
+    padding: 0.48rem 0.55rem;
+}
+
+.memory-augment-live-own-stat > strong {
+    color: #c0446a;
+    font-size: 0.82rem;
+    font-weight: 850;
+}
+
+.memory-augment-live-own-stat > small {
+    color: #625a66;
+    font-size: 0.63rem;
+    font-weight: 650;
+}
+
+.memory-augment-live-own-action > button,
+.memory-augment-live-submit,
+.memory-augment-live-stage-actions > button {
+    border: 0;
+    border-radius: 999px;
+    font-size: 0.74rem;
+    font-weight: 850;
+    min-height: 2.35rem;
+    padding: 0 0.9rem;
+}
+
+.memory-augment-live-own-action > button.is-primary,
+.memory-augment-live-submit,
+.memory-augment-live-stage-actions > button.is-primary {
+    background: linear-gradient(135deg, #e34f78, #bd3f67);
+    color: #fff;
+}
+
+.memory-augment-live-field {
+    color: #302a35;
+    display: grid;
+    gap: 0.34rem;
+}
+
+.memory-augment-live-field > strong {
+    font-size: 0.75rem;
+    font-weight: 850;
+}
+
+.memory-augment-live-field > small {
+    color: #625a67;
+    font-size: 0.64rem;
+    font-weight: 600;
+    line-height: 1.45;
+}
+
+.memory-augment-live-field > input,
+.memory-augment-live-field > textarea {
+    background: #f6f3f7;
+    border: 1px solid #ded7e1;
+    border-radius: 0.58rem;
+    box-sizing: border-box;
+    caret-color: #d84c74;
+    color: #27212c;
+    font-family: inherit;
+    font-size: 0.74rem;
+    font-weight: 600;
+    line-height: 1.5;
+    min-height: 2.35rem;
+    outline: none;
+    padding: 0.55rem 0.62rem;
+    resize: vertical;
+    width: 100%;
+}
+
+.memory-augment-live-field > input:focus,
+.memory-augment-live-field > textarea:focus {
+    background: #fff;
+    border-color: #d95177;
+    box-shadow: 0 0 0 0.15rem rgb(217 81 119 / 15%);
+}
+
+.memory-augment-live-choice-group,
+.memory-augment-live-participants {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+
+.memory-augment-live-choice-group label,
+.memory-augment-live-participants label {
+    cursor: pointer;
+    position: relative;
+}
+
+.memory-augment-live-choice-group input,
+.memory-augment-live-participants input {
+    opacity: 0;
+    pointer-events: none;
+    position: absolute;
+}
+
+.memory-augment-live-choice-group span,
+.memory-augment-live-participants span {
+    background: #f3eff5;
+    border: 1px solid #ddd5e0;
+    border-radius: 999px;
+    color: #4f4754;
+    display: inline-flex;
+    font-size: 0.68rem;
+    font-weight: 750;
+    min-height: 2rem;
+    align-items: center;
+    padding: 0 0.65rem;
+}
+
+.memory-augment-live-choice-group input:checked + span,
+.memory-augment-live-participants input:checked + span {
+    background: #fff0f4;
+    border-color: #dc567e;
+    color: #bd3b63;
+}
+
+.memory-augment-phone-app-content .memory-augment-live-participants .is-empty,
+.memory-augment-phone-app-content .memory-augment-live-barrage-choices .is-empty {
+    color: #655d69;
+    font-size: 0.68rem;
+    font-weight: 600;
+    margin: 0;
+}
+
+.memory-augment-phone-app-content .memory-augment-live-form-feedback {
+    color: #665e6b;
+    font-size: 0.68rem;
+    font-weight: 700;
+    line-height: 1.45;
+    margin: 0;
+    min-height: 1rem;
+}
+
+.memory-augment-phone-app-content .memory-augment-live-form-feedback.is-error {
+    color: #b72f58;
+}
+
+.memory-augment-live-submit:disabled,
+.memory-augment-live-stage-actions > button:disabled {
+    cursor: wait;
+    opacity: 0.6;
+}
+
+.memory-augment-live-barrage-picker {
+    border: 1px solid #ddd5e0;
+    border-radius: 0.65rem;
+    overflow: hidden;
+}
+
+.memory-augment-live-barrage-picker > summary {
+    align-items: center;
+    background: #f7f4f8;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    min-height: 2.5rem;
+    padding: 0 0.65rem;
+}
+
+.memory-augment-live-barrage-picker > summary > strong {
+    font-size: 0.73rem;
+    font-weight: 850;
+}
+
+.memory-augment-live-barrage-picker > summary > span {
+    color: #bd3f67;
+    font-size: 0.64rem;
+    font-weight: 750;
+}
+
+.memory-augment-live-barrage-choices {
+    display: grid;
+    gap: 0.35rem;
+    max-height: 12rem;
+    overflow-y: auto;
+    padding: 0.5rem;
+    touch-action: pan-y;
+}
+
+.memory-augment-live-barrage-choices > button {
+    background: #fff;
+    border: 1px solid #e2dce4;
+    border-radius: 0.55rem;
+    color: #38313c;
+    display: grid;
+    gap: 0.16rem;
+    grid-template-columns: minmax(0, 1fr) auto;
+    min-height: 3.4rem;
+    padding: 0.48rem 0.55rem;
+    text-align: left;
+    touch-action: manipulation;
+}
+
+.memory-augment-live-barrage-choices > button > strong,
+.memory-augment-live-barrage-choices > button > span {
+    grid-column: 1;
+}
+
+.memory-augment-live-barrage-choices > button > strong {
+    color: #66517c;
+    font-size: 0.68rem;
+    font-weight: 850;
+}
+
+.memory-augment-live-barrage-choices > button > span {
+    font-size: 0.7rem;
+    font-weight: 600;
+    line-height: 1.45;
+}
+
+.memory-augment-live-barrage-choices > button > small {
+    color: #6b626e;
+    font-size: 0.61rem;
+    grid-column: 2;
+    grid-row: 1 / span 2;
+}
+
+.memory-augment-live-barrage-choices > button.is-selected {
+    background: #fff0f4;
+    border-color: #d84c74;
+    box-shadow: inset 0.2rem 0 #d84c74;
+}
+
+.memory-augment-live-stage-actions {
+    display: grid;
+    gap: 0.48rem;
+    grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.memory-augment-live-stage-actions > button.is-danger {
+    background: #f1edf2;
+    color: #8b3a52;
+}
+
+.memory-augment-live-stage-panel.is-ended > .memory-augment-live-own-summary {
+    border: 0;
+    margin: 0;
+    padding: 0;
+}
+
+.memory-augment-live-records {
+    display: grid;
+    gap: 0.48rem;
+    margin: 0.72rem;
+}
+
+.memory-augment-live-records > header {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+    padding: 0 0.1rem;
+}
+
+.memory-augment-live-records > header > strong {
+    font-size: 0.86rem;
+    font-weight: 850;
+}
+
+.memory-augment-live-records > header > small {
+    color: #665e6b;
+    font-size: 0.65rem;
+    font-weight: 700;
+}
+
+.memory-augment-phone-app-content .memory-augment-live-records > p.is-empty {
+    background: #fff;
+    border: 1px dashed #d9d1dc;
+    border-radius: 0.75rem;
+    color: #665e6b;
+    font-size: 0.7rem;
+    font-weight: 600;
+    line-height: 1.55;
+    margin: 0;
+    padding: 0.85rem;
+}
+
+.memory-augment-live-record-list {
+    display: grid;
+    gap: 0.48rem;
+}
+
+.memory-augment-live-record-card {
+    align-items: center;
+    background: #fff;
+    border: 1px solid rgb(74 58 84 / 10%);
+    border-radius: 0.78rem;
+    color: #302a35;
+    display: grid;
+    gap: 0.5rem;
+    grid-template-columns: minmax(0, 1fr) auto;
+    min-height: 5rem;
+    padding: 0.68rem 0.72rem;
+    text-align: left;
+    width: 100%;
+}
+
+.memory-augment-live-record-card > div {
+    display: grid;
+    gap: 0.2rem;
+    min-width: 0;
+}
+
+.memory-augment-live-record-card strong {
+    font-size: 0.78rem;
+    font-weight: 850;
+}
+
+.memory-augment-phone-app-content .memory-augment-live-record-card p {
+    color: #554e5a;
+    display: -webkit-box;
+    font-size: 0.68rem;
+    font-weight: 600;
+    line-height: 1.45;
+    margin: 0;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+
+.memory-augment-live-record-card small {
+    color: #716976;
+    font-size: 0.61rem;
+    font-weight: 650;
+}
+
+.memory-augment-live-record-card > i {
+    color: #a099a4;
+    font-size: 0.72rem;
+}
+
+.memory-augment-live-record-intro {
+    background: linear-gradient(135deg, #6f4f88, #ca5578);
+    color: #fff;
+    display: grid;
+    gap: 0.38rem;
+    margin: 0.72rem;
+    padding: 0.9rem;
+}
+
+.memory-augment-live-record-intro > small {
+    font-size: 0.62rem;
+    font-weight: 700;
+    opacity: 0.88;
+}
+
+.memory-augment-live-record-intro > strong {
+    font-size: 1rem;
+    font-weight: 850;
+}
+
+.memory-augment-phone-app-content .memory-augment-live-record-intro > p {
+    color: #fff;
+    font-size: 0.7rem;
+    font-weight: 600;
+    line-height: 1.55;
+    margin: 0;
+}
+
+.memory-augment-live-record-transcript {
+    display: grid;
+    gap: 0.65rem;
+    margin: 0.72rem;
+}
+
+.memory-augment-live-record-transcript > article {
+    background: #fff;
+    border: 1px solid rgb(74 58 84 / 10%);
+    border-radius: 0.78rem;
+    display: grid;
+    gap: 0.5rem;
+    padding: 0.72rem;
+}
+
+.memory-augment-live-record-transcript article > header {
+    border-bottom: 1px solid #eee9ef;
+    display: grid;
+    gap: 0.12rem;
+    padding-bottom: 0.45rem;
+}
+
+.memory-augment-live-record-transcript article > header > strong {
+    color: #9b3f60;
+    font-size: 0.74rem;
+    font-weight: 850;
+}
+
+.memory-augment-live-record-transcript article > header > small {
+    color: #6b636f;
+    font-size: 0.62rem;
+    font-weight: 600;
+}
+
+.memory-augment-live-record-transcript article > div {
+    border-left: 0.18rem solid #d7d0da;
+    display: grid;
+    gap: 0.2rem;
+    padding: 0.12rem 0 0.12rem 0.55rem;
+}
+
+.memory-augment-live-record-transcript article > div.is-dialogue {
+    border-left-color: #d44e75;
+}
+
+.memory-augment-live-record-transcript article > div > small {
+    color: #746b78;
+    font-size: 0.61rem;
+    font-weight: 750;
+}
+
+.memory-augment-phone-app-content .memory-augment-live-record-transcript article > div > p {
+    color: #37303b;
+    font-size: 0.72rem;
+    font-weight: 600;
+    line-height: 1.58;
+    margin: 0;
 }
 
 .memory-augment-live-gift-tray {

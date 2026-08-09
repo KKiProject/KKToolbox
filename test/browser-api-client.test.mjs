@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+    buildLiveUserContent,
+    buildPhoneUserContent,
     buildWeiboUserContent,
     createEmbeddings,
     generateAtlasCompletion,
@@ -9,6 +11,21 @@ import {
     generateSummaryCompletion,
     rerankCandidates,
 } from '../browser-api-client.js';
+
+test('anonymous phone masks never reveal their player binding without public evidence', () => {
+    const phonePrompt = buildPhoneUserContent({
+        snapshot: {
+            profile: { nickname: '瓜田路人', isMask: true, persona: '普通围观群众' },
+            conversation: { type: 'direct', name: '林晚', identity: { mode: 'custom', label: '林晚', persona: '演员林晚' } },
+        },
+    });
+    const weiboPrompt = buildWeiboUserContent({ request: { mode: 'player_post', profile: { nickname: '瓜田路人', isMask: true } } });
+    const livePrompt = buildLiveUserContent({ request: { mode: 'start', profile: { nickname: '瓜田路人', isMask: true } } });
+    assert.match(phonePrompt, /不得因为系统知道玩家是谁.*自动认出账号主人/);
+    assert.match(phonePrompt, /严禁让联系人无证据认出玩家/);
+    assert.match(weiboPrompt, /未绑定玩家真实身份的匿名马甲/);
+    assert.match(livePrompt, /直播账号不绑定玩家真实身份/);
+});
 
 test('weibo prompt enforces account, evidence, public-knowledge, and five-comment gates', () => {
     const prompt = buildWeiboUserContent({

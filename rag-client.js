@@ -5,6 +5,8 @@ import {
     generateAtlasCompletion,
     generatePhoneCompletion,
     generateWeiboCompletion,
+    generateLiveCompletion,
+    generatePhoneWorldCompletion,
     listModels,
     rerankCandidates,
 } from './browser-api-client.js';
@@ -209,6 +211,6 @@ export function clearSummaryMemory(chatId) {
     return clearSummaryScope(chatId);
 }
 
-export { generatePhoneCompletion, generateWeiboCompletion };
+export { generatePhoneCompletion, generateWeiboCompletion, generateLiveCompletion, generatePhoneWorldCompletion };
 
 export { createEmbeddings, CHAT_KIND };

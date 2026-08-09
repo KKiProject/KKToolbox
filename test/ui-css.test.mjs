@@ -117,9 +117,9 @@ test('weibo keeps its three main views, interest picker, and composer inside the
     assert.match(source, /loadPhoneIdentitySources/);
     assert.match(source, /新建微博角色账号/);
     assert.match(source, /互相关注/);
-    assert.match(source, /路人 NPC 已折叠/);
+    assert.doesNotMatch(source, /路人 NPC 已折叠/);
     assert.match(source, /添加微博话题/);
-    assert.match(source, /没有话题也可以直接发布/);
+    assert.doesNotMatch(source, /没有话题也可以直接发布/);
     assert.match(source, /删除话题/);
     assert.match(source, /customTopics\.splice/);
     assert.match(source, /选择要提及的人/);
@@ -127,7 +127,7 @@ test('weibo keeps its three main views, interest picker, and composer inside the
     assert.match(source, /添加图片描述/);
     assert.match(source, /添加位置/);
     assert.match(source, /编辑微博资料/);
-    assert.match(source, /state\(\)\.profile = result/);
+    assert.match(source, /state\(\)\.profile = \{ \.\.\.current, \.\.\.result \}/);
     assert.doesNotMatch(source, /renderInterestStrip|enableHorizontalStrip/);
     assert.doesNotMatch(css, /\.memory-augment-weibo-interest-strip/);
     assert.doesNotMatch(source, /memory-augment-weibo-compose-button/);
@@ -168,15 +168,27 @@ test('community renders forum, CP ranking, fanwork previews, and internal detail
     assert.match(source, /id: 'fanworks', label: '同人区'/);
     assert.match(source, /匿名爆料/);
     assert.match(source, /本周嗑点/);
-    assert.match(source, /约 100 字试读/);
-    assert.match(source, /作品文字预览/);
+    assert.doesNotMatch(source, /约 100 字试读/);
+    assert.doesNotMatch(source, /作品文字预览/);
     assert.match(source, /热门回复/);
+    assert.match(source, /发送回复/);
+    assert.match(source, /bindClickSafeHorizontalStrip/);
+    assert.match(source, /setPointerCapture/);
+    assert.match(source, /stopImmediatePropagation/);
+    assert.match(source, /commentReplies/);
+    assert.match(source, /kindLabel: '关系组'/);
+    assert.match(source, /kindLabel: '谐音CP'/);
+    assert.match(source, /kindLabel: 'All×'/);
+    assert.doesNotMatch(source, /\[item\.pairing, item\.reverse/);
     assert.match(css, /\.memory-augment-phone-app-content\.is-community/);
     assert.match(css, /\.memory-augment-community-tabs/);
     assert.match(css, /\.memory-augment-community-filters/);
-    assert.match(css, /touch-action:\s*pan-x/);
+    assert.match(css, /touch-action:\s*pan-y/);
     assert.match(css, /\.memory-augment-community-cp-row/);
     assert.match(css, /\.memory-augment-community-work-preview/);
+    assert.match(css, /\.memory-augment-community-fan-tags/);
+    assert.match(css, /\.memory-augment-community-reply-form/);
+    assert.match(css, /\.memory-augment-phone-app-content\.is-community p\s*\{[\s\S]*?opacity:\s*1;[\s\S]*?text-align:\s*left;/);
 });
 
 test('live app shares a room shell while keeping official and private interactions distinct', async () => {
@@ -186,17 +198,46 @@ test('live app shares a room shell while keeping official and private interactio
     ]);
     assert.match(source, /\['official', '官方直播'/);
     assert.match(source, /\['private', '私人直播'/);
-    assert.match(source, /官方直播以现场画面与观众弹幕为主/);
+    assert.doesNotMatch(source, /官方直播以现场画面与观众弹幕为主/);
     assert.match(source, /和主播说点什么/);
     assert.match(source, /打开礼物区/);
     assert.match(source, /renderFloatingBarrages/);
+    assert.match(source, /renderStageFrame/);
+    assert.match(source, /advancePhoneLiveSceneIndex/);
+    assert.match(source, /scene\.kind === 'dialogue'/);
     assert.match(source, /setInterval/);
     assert.match(source, /stopPlayback/);
+    assert.match(source, /renderSelfCenter/);
+    assert.match(source, /renderOwnSetup/);
+    assert.match(source, /renderOwnStagePanel/);
+    assert.match(source, /renderOwnRecords/);
+    assert.match(source, /renderRecordDetail/);
+    assert.match(source, /memory-augment-live-advance-button/);
+    assert.match(source, /关闭推进面板/);
+    assert.match(source, /正在生成直播阶段/);
+    assert.match(source, /stagePanelOpen/);
+    assert.match(source, /selectedBarrageIds/);
+    assert.match(source, /生成下一阶段/);
+    assert.match(source, /自然收束本场直播/);
+    assert.doesNotMatch(source, /barrageOffset = \(barrageOffset \+ 1\)[\s\S]{0,120}render\(\)/);
     assert.match(css, /\.memory-augment-phone-app-content\.is-live/);
     assert.match(css, /\.memory-augment-live-stage/);
+    assert.doesNotMatch(source, /live-speaker-portrait|scene\.position/);
+    assert.doesNotMatch(css, /\.memory-augment-live-speaker-portrait/);
+    assert.match(css, /\.memory-augment-live-stage-copy/);
+    assert.match(css, /\.memory-augment-phone-app-content\.is-live p\s*\{[\s\S]*?opacity:\s*1;[\s\S]*?text-align:\s*left;/);
+    assert.match(css, /\.memory-augment-live-chat-list\s*\{[\s\S]*?height:\s*7\.4rem;[\s\S]*?min-height:\s*7\.4rem;/);
     assert.match(css, /@keyframes memory-augment-live-barrage/);
     assert.match(css, /\.memory-augment-live-composer/);
     assert.match(css, /\.memory-augment-live-gift-tray/);
+    assert.match(css, /\.memory-augment-live-self-entry/);
+    assert.match(css, /\.memory-augment-live-setup/);
+    assert.match(css, /\.memory-augment-live-stage-panel/);
+    assert.match(css, /\.memory-augment-live-stage-overlay/);
+    assert.match(css, /\.memory-augment-live-record-card/);
+    assert.match(css, /\.memory-augment-live-record-transcript/);
+    assert.match(css, /\.memory-augment-live-barrage-choices/);
+    assert.match(css, /touch-action:\s*manipulation/);
 });
 
 test('phone forms keep validation inside the simulated phone and conversation headers stay immersive', async () => {
@@ -206,6 +247,83 @@ test('phone forms keep validation inside the simulated phone and conversation he
     assert.match(source, /min: 0\.01, step: 0\.01, value: 88\.88/);
     assert.doesNotMatch(source, /昵称备注 · \$\{/);
     assert.doesNotMatch(source, /人 · 长按消息可多选/);
+});
+
+test('phone settings manages account identities without exposing appearance controls', async () => {
+    const [source, css] = await Promise.all([
+        readFile(new URL('../phone-settings.js', import.meta.url), 'utf8'),
+        readFile(new URL('../style.css', import.meta.url), 'utf8'),
+    ]);
+    assert.match(source, /当前身份/);
+    assert.match(source, /一键全部换成它/);
+    assert.match(source, /设为默认/);
+    assert.match(source, /PHONE_ACCOUNT_AREAS/);
+    assert.match(source, /本地头像/);
+    assert.match(source, /uploadPhoneImage/);
+    assert.match(source, /编辑大号资料/);
+    assert.match(source, /匿名小号／马甲/);
+    assert.match(source, /listScrollTop/);
+    assert.doesNotMatch(source, /主题颜色|壁纸|外观美化/);
+    assert.match(css, /\.memory-augment-phone-app-content\.is-phone-settings/);
+    assert.match(css, /\.memory-augment-phone-account-card/);
+    assert.match(css, /\.memory-augment-phone-account-apply/);
+    assert.match(css, /\.memory-augment-phone-account-editor/);
+    assert.match(css, /\.memory-augment-phone-account-local-avatar/);
+});
+
+test('simulated phone apps keep decorative headers without player-facing explanations', async () => {
+    const [source, css] = await Promise.all([
+        Promise.all([
+            'phone-shell.js',
+            'phone-messages.js',
+            'phone-weibo.js',
+            'phone-community.js',
+            'phone-live.js',
+            'phone-settings.js',
+        ].map(file => readFile(new URL(`../${file}`, import.meta.url), 'utf8'))).then(parts => parts.join('\n')),
+        readFile(new URL('../style.css', import.meta.url), 'utf8'),
+    ]);
+    for (const copy of [
+        '爆料、角色讨论与剧情显微镜集中地',
+        '热度每周刷新 · 涨跌只代表社区讨论量',
+        '文字、画面与剪辑都用想象力加载',
+        '热搜会随剧情与新帖子增量变化',
+        '活动、节目与公开行程实时放送',
+        '距离更近，也可以发送消息互动',
+        '功能稍后接入',
+        '手机骨架已经就位',
+        '故事之外，也有人正在注视他们',
+        '约 100 字试读',
+        '作品文字预览',
+        '点击设置昵称和头像',
+        '选择一个或多个接收聊天',
+        '官方直播以现场画面与观众弹幕为主',
+        '这里只管理你在手机各处使用的身份',
+        '没有话题也可以直接发布',
+        '路人 NPC 已折叠',
+        '发布后会先生成合理数据',
+        '这一页只负责安排下一阶段',
+        '使用酒馆用户设定的默认身份。',
+    ]) {
+        assert.equal(source.includes(copy), false, `unexpected tutorial copy: ${copy}`);
+    }
+    for (const heading of [
+        'COMMUNITY NOW',
+        '此刻大家都在聊',
+        'WEEKLY CP CHART',
+        '本周心动榜',
+        'FANWORKS',
+        '造梦放映厅',
+        'TRENDING NOW',
+        'WELCOME TO WEIBO',
+        '正在发生的大现场',
+        '与他们共享这一刻',
+    ]) {
+        assert.equal(source.includes(heading), true, `missing decorative heading: ${heading}`);
+    }
+    assert.match(css, /\.memory-augment-community-hero/);
+    assert.match(css, /\.memory-augment-live-hero/);
+    assert.match(css, /\.memory-augment-weibo-hot-feature/);
 });
 
 test('phone red packets use a bright yuan seal instead of an email label', async () => {

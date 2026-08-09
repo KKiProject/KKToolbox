@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+    buildSummaryBookName,
     clearAllSummaries,
     buildSummaryPrompt,
     getSummaries,
@@ -36,6 +37,15 @@ test('summary prompt treats floor batches as processing windows and uses saved a
     assert.match(prompt, /“昨天、三天前、十年前”等词只相对于它所在的场景时间有效/);
 });
 
+test('summary lorebooks keep the character name and use a simple increasing sequence', () => {
+    const first = buildSummaryBookName('金钰琳', 1);
+    const repeated = buildSummaryBookName('金钰琳', 1);
+    const second = buildSummaryBookName('金钰琳', 2);
+    assert.equal(first, '金钰琳-自动总结1');
+    assert.equal(repeated, first);
+    assert.equal(second, '金钰琳-自动总结2');
+});
+
 function unescapeSlashValue(value) {
     return value.replace(/\\([\\"{}|])/g, '$1');
 }
@@ -51,7 +61,7 @@ function createContext(messages = []) {
     const calls = [];
     const reloadedWorldInfoBooks = [];
     const lorebooks = new Map();
-    const bookName = '金钰琳-自动总结';
+    const bookName = buildSummaryBookName('金钰琳', 1);
     const additionalBooks = [];
     const context = {
         chatId: 'summary-chat',
@@ -65,6 +75,9 @@ function createContext(messages = []) {
         async loadWorldInfo(name) {
             worldInfoLoads++;
             return lorebooks.has(name) ? structuredClone(lorebooks.get(name)) : null;
+        },
+        async getWorldInfoBookNames() {
+            return [...lorebooks.keys()];
         },
         async saveWorldInfo(name, data) {
             lorebooks.set(name, structuredClone(data));
@@ -170,6 +183,9 @@ function createContext(messages = []) {
         get additionalBooks() {
             return additionalBooks;
         },
+        get summaryBookName() {
+            return bookName;
+        },
     };
     return context;
 }
@@ -230,7 +246,7 @@ test('a summary starts only after one full batch has left the recent-message win
     assert.ok(context.worldInfoListUpdates > 0, 'the new summary lorebook must enter ST\'s live list immediately');
     assert.ok(context.reloadedWorldInfoBooks.includes(context.additionalBooks[0]), 'the open lorebook editor must reload after content is saved');
 
-    const data = context.lorebooks.get('金钰琳-自动总结');
+    const data = context.lorebooks.get(context.summaryBookName);
     const entries = Object.values(data.entries);
     assert.equal(entries.length, 2);
     const detail = entries.find(entry => entry.key[0] === `${SUMMARY_KEY_PREFIX}[第1-10楼]`);
@@ -251,7 +267,7 @@ test('a summary starts only after one full batch has left the recent-message win
     ].join('\n'));
     assert.equal(overview.constant, true);
     assert.equal(overview.content, '');
-    assert.deepEqual(context.additionalBooks, ['金钰琳-自动总结']);
+    assert.deepEqual(context.additionalBooks, [context.summaryBookName]);
     assert.equal(context.characters[0].data.extensions.world, '角色主世界书');
     assert.equal(context.calls.some(command => command.startsWith('/createentry ')), false);
     assert.deepEqual(
@@ -304,10 +320,11 @@ test('a malformed summary is rebuilt from hidden messages before new ranges adva
     const context = createContext(dialoguePairs(15));
     context.chat.slice(0, 10).forEach(message => message.is_system = true);
     context.chatMetadata[SUMMARY_STATE_KEY] = {
+        bookName: context.summaryBookName,
         lastSummarizedMessageIndex: 9,
         entries: [{ uid: '0', start: 0, end: 9, createdAt: '2026-08-02T00:00:00.000Z' }],
     };
-    context.lorebooks.set('金钰琳-自动总结', { entries: {
+    context.lorebooks.set(context.summaryBookName, { entries: {
         0: {
             uid: 0,
             key: [`${SUMMARY_KEY_PREFIX}[第1-10楼]`],
@@ -329,17 +346,18 @@ test('a malformed summary is rebuilt from hidden messages before new ranges adva
     assert.equal(result.start, 0);
     assert.equal(result.end, 9);
     assert.equal(context.chatMetadata[SUMMARY_STATE_KEY].lastSummarizedMessageIndex, 9);
-    assert.match(context.lorebooks.get('金钰琳-自动总结').entries[0].content, /A重新取得了关键线索/);
+    assert.match(context.lorebooks.get(context.summaryBookName).entries[0].content, /A重新取得了关键线索/);
     assert.equal(context.calls.some(command => command.startsWith('/hide ')), false);
 });
 
 test('ordinary automatic summary checks do not repair old malformed entries in the background', async () => {
     const context = createContext(dialoguePairs(15));
     context.chatMetadata[SUMMARY_STATE_KEY] = {
+        bookName: context.summaryBookName,
         lastSummarizedMessageIndex: 9,
         entries: [{ uid: '0', start: 0, end: 9, createdAt: '2026-08-02T00:00:00.000Z' }],
     };
-    context.lorebooks.set('金钰琳-自动总结', { entries: {
+    context.lorebooks.set(context.summaryBookName, { entries: {
         0: { uid: 0, key: [`${SUMMARY_KEY_PREFIX}[第1-10楼]`], content: 'Drafting Event 1', constant: true },
     } });
     let generationCalls = 0;
@@ -370,7 +388,7 @@ test('a truncated structured summary retries as concise structured events before
 
     assert.equal(result.created, 1);
     assert.equal(generationCalls, 2);
-    assert.match(context.lorebooks.get('金钰琳-自动总结').entries[0].content, /主角在旧王宫找回王冠/);
+    assert.match(context.lorebooks.get(context.summaryBookName).entries[0].content, /主角在旧王宫找回王冠/);
     assert.equal(context.chat.slice(0, 10).every(message => message.is_system === true), true);
 });
 
@@ -395,7 +413,7 @@ test('the next summary starts immediately after the previous summarized range', 
     const summaries = (await getSummaries(context)).map(item => item.summary);
     assert.match(summaries[0], /A发现了新的线索/);
     assert.match(summaries[1], /A与B作出改变主线走向的决定/);
-    const entries = Object.values(context.lorebooks.get('金钰琳-自动总结').entries)
+    const entries = Object.values(context.lorebooks.get(context.summaryBookName).entries)
         .filter(entry => entry.key[0].startsWith(SUMMARY_KEY_PREFIX))
         .sort((left, right) => left.order - right.order);
     assert.deepEqual(entries.map(entry => entry.order), [100, 101]);
@@ -407,7 +425,12 @@ test('the next summary starts immediately after the previous summarized range', 
 
 test('existing summary lorebook entries are automatically reordered by floor range', async () => {
     const context = createContext(dialoguePairs(2));
-    const bookName = '金钰琳-自动总结';
+    const bookName = context.summaryBookName;
+    context.chatMetadata[SUMMARY_STATE_KEY] = {
+        bookName,
+        lastSummarizedMessageIndex: -1,
+        entries: [],
+    };
     context.lorebooks.set(bookName, { entries: {
         3: { uid: 3, key: [`${SUMMARY_KEY_PREFIX}[第21-30楼]`], content: '第三段', order: 100 },
         1: { uid: 1, key: [`${SUMMARY_KEY_PREFIX}[第1-10楼]`], content: '第一段', order: 100 },
@@ -430,8 +453,9 @@ test('existing summary lorebook entries are automatically reordered by floor ran
 
 test('every five detailed summaries append one blue historical overview block', async () => {
     const context = createContext(dialoguePairs(30));
-    const bookName = '金钰琳-自动总结';
+    const bookName = context.summaryBookName;
     context.chatMetadata[SUMMARY_STATE_KEY] = {
+        bookName,
         lastSummarizedMessageIndex: 49,
         entries: Array.from({ length: 5 }, (_, index) => ({
             uid: String(index),
@@ -480,7 +504,7 @@ test('every five detailed summaries append one blue historical overview block', 
 
 test('legacy per-event entries for the same floor range are merged', async () => {
     const context = createContext(dialoguePairs(15));
-    const bookName = '金钰琳-自动总结';
+    const bookName = context.summaryBookName;
     context.chatMetadata.world_info = bookName;
     context.lorebooks.set(bookName, { entries: {
         4: { uid: 4, key: [`${SUMMARY_KEY_PREFIX}[★★★★★][第0-9楼]`], content: 'old high', constant: true },
@@ -512,7 +536,12 @@ test('legacy metadata summaries migrate through slash commands and are removed f
 
 test('legacy summary migration scans the lorebook once and then stays dormant', async () => {
     const context = createContext(dialoguePairs(2));
-    context.lorebooks.set('金钰琳-自动总结', { entries: {} });
+    context.chatMetadata[SUMMARY_STATE_KEY] = {
+        bookName: context.summaryBookName,
+        lastSummarizedMessageIndex: -1,
+        entries: [],
+    };
+    context.lorebooks.set(context.summaryBookName, { entries: {} });
 
     assert.equal(await migrateLegacySummaries(context), 0);
     const loadsAfterFirstMigration = context.worldInfoLoads;
@@ -524,9 +553,51 @@ test('legacy summary migration scans the lorebook once and then stays dormant', 
     assert.equal(context.metadataSaves, savesAfterFirstMigration);
 });
 
+test('a new chat does not adopt the character legacy summary lorebook', async () => {
+    const context = createContext(dialoguePairs(2));
+    context.lorebooks.set('金钰琳-自动总结', { entries: {
+        0: { uid: 0, key: [`${SUMMARY_KEY_PREFIX}[第1-2楼]`], content: '另一个存档的旧总结。' },
+    } });
+
+    await migrateLegacySummaries(context);
+
+    assert.equal(context.chatMetadata[SUMMARY_STATE_KEY].bookName, context.summaryBookName);
+    assert.notEqual(context.chatMetadata[SUMMARY_STATE_KEY].bookName, '金钰琳-自动总结');
+    assert.equal(context.lorebooks.get('金钰琳-自动总结').entries[0].content, '另一个存档的旧总结。');
+});
+
+test('a new chat takes the next number after existing character summary lorebooks', async () => {
+    const context = createContext(dialoguePairs(2));
+    context.lorebooks.set(buildSummaryBookName('金钰琳', 1), { entries: {} });
+    context.lorebooks.set(buildSummaryBookName('金钰琳', 2), { entries: {} });
+
+    await migrateLegacySummaries(context);
+
+    const expected = '金钰琳-自动总结3';
+    assert.equal(context.chatMetadata[SUMMARY_STATE_KEY].bookName, expected);
+    assert.equal(context.lorebooks.has(expected), true);
+});
+
+test('an existing legacy chat keeps its original unsuffixed summary lorebook', async () => {
+    const context = createContext(dialoguePairs(2));
+    const legacyBookName = '金钰琳-自动总结';
+    context.chatMetadata[SUMMARY_STATE_KEY] = {
+        lastSummarizedMessageIndex: 1,
+        entries: [{ uid: '0', start: 0, end: 1, createdAt: '' }],
+    };
+    context.lorebooks.set(legacyBookName, { entries: {
+        0: { uid: 0, key: [`${SUMMARY_KEY_PREFIX}[第1-2楼]`], content: '这个旧档自己的总结。' },
+    } });
+
+    await migrateLegacySummaries(context);
+
+    assert.equal(context.chatMetadata[SUMMARY_STATE_KEY].bookName, legacyBookName);
+    assert.equal((await getSummaries(context))[0].summary, '这个旧档自己的总结。');
+});
+
 test('existing unstructured KKT lorebook entries remain readable without changing their key', async () => {
     const context = createContext(dialoguePairs(2));
-    const bookName = '金钰琳-自动总结';
+    const bookName = context.summaryBookName;
     const oldKey = `${SUMMARY_KEY_PREFIX}第0-2楼`;
     context.chatMetadata.world_info = bookName;
     context.lorebooks.set(bookName, { entries: {
@@ -543,10 +614,11 @@ test('status counts prefixed entries and clear preserves ordinary lorebook entri
     const context = createContext(dialoguePairs(1));
     context.chatMetadata.world_info = 'unused-chat-book';
     context.chatMetadata[SUMMARY_STATE_KEY] = {
+        bookName: context.summaryBookName,
         lastSummarizedMessageIndex: 1,
         entries: [{ uid: '0', start: 0, end: 1, createdAt: '2026-01-01T00:00:00.000Z' }],
     };
-    context.lorebooks.set('金钰琳-自动总结', { entries: {
+    context.lorebooks.set(context.summaryBookName, { entries: {
         0: { uid: 0, key: [`${SUMMARY_KEY_PREFIX}第0-1楼`], content: '旧格式摘要，没有星级和结构化字段' },
         9: { uid: 9, key: ['ordinary'], content: 'keep me' },
     } });
@@ -554,7 +626,7 @@ test('status counts prefixed entries and clear preserves ordinary lorebook entri
     const status = await getSummaryStatus(context);
     assert.equal(status.entryCount, 1);
     assert.equal(await clearAllSummaries(context), 1);
-    assert.equal(context.lorebooks.get('金钰琳-自动总结').entries[9].content, 'keep me');
+    assert.equal(context.lorebooks.get(context.summaryBookName).entries[9].content, 'keep me');
     assert.equal(context.chatMetadata[SUMMARY_STATE_KEY].entries.length, 0);
     assert.equal(context.chatMetadata[SUMMARY_STATE_KEY].lastSummarizedMessageIndex, -1);
 });

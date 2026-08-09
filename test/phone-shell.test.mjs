@@ -26,14 +26,18 @@ test('phone shell delegates message data and API work to the message controller'
     assert.match(source, /createPhoneWeiboController/);
     assert.match(source, /createPhoneCommunityController/);
     assert.match(source, /createPhoneLiveController/);
+    assert.match(source, /createPhoneSettingsController/);
+    assert.match(source, /syncPhoneAccountProfiles/);
+    assert.match(source, /runtime\.powerUser/);
     assert.match(source, /appControllers\[activeApp\]\?\.close\?\.\(\)/);
     assert.match(source, /CHAT_CHANGED/);
-    assert.match(source, /appControllers\.messages\.open\(content\)/);
+    assert.match(source, /phoneSession\.invalidate\(\)/);
+    assert.match(source, /appControllers\[activeApp\]\?\.open\?\.\(content\)/);
 });
 
-test('the empty phone list clearly asks for a SillyTavern character chat', async () => {
+test('the empty phone list stays concise when no character chat is open', async () => {
     const source = await readFile(new URL('../phone-messages.js', import.meta.url), 'utf8');
-    assert.match(source, /请先在酒馆中打开一个角色卡聊天/);
+    assert.doesNotMatch(source, /请先在酒馆中打开一个角色卡聊天/);
     assert.match(source, /add\.disabled = !store\.chatId/);
 });
 

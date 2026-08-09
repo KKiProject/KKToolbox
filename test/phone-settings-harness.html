@@ -3,9 +3,8 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>KKToolbox Community Harness</title>
+    <title>KKToolbox Settings Harness</title>
     <link rel="stylesheet" href="../style.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
     <style>
         body { background: #ddd9e8; margin: 0; min-height: 100vh; padding: 1.5rem; }
         .memory-augment-phone-device { height: 44rem; margin: auto; }
@@ -17,23 +16,30 @@
             <header class="memory-augment-phone-statusbar"><span>09:41</span><span></span><span>▮ ◉</span></header>
             <main class="memory-augment-phone-app-page">
                 <header class="memory-augment-phone-app-header">
-                    <button type="button"><i class="fa-solid fa-chevron-left"></i></button>
-                    <strong>社区</strong><span></span>
+                    <button type="button" aria-label="返回">‹</button>
+                    <strong>设置</strong><span></span>
                 </header>
                 <div class="memory-augment-phone-app-content"></div>
             </main>
         </div>
     </section>
     <script type="module">
-        import { createPhoneCommunityController } from '../phone-community.js';
-        const settings = { phone: { community: {} } };
-        const controller = createPhoneCommunityController({
+        import { createPhoneSettingsController } from '../phone-settings.js';
+
+        const settings = { phone: {} };
+        const context = {
+            name1: '夜酱',
+            powerUser: { persona_description: '酒馆大号的人设说明。' },
+        };
+        let saveCount = 0;
+        const controller = createPhoneSettingsController({
             document,
             settings,
-            saveSettings: () => { globalThis.savedCommunitySettings = structuredClone(settings); },
+            contextGetter: () => context,
+            saveSettings: () => { saveCount += 1; },
         });
         await controller.open(document.querySelector('.memory-augment-phone-app-content'));
-        globalThis.communityHarness = { controller, settings };
+        globalThis.settingsHarness = { controller, settings, context, get saveCount() { return saveCount; } };
     </script>
 </body>
 </html>

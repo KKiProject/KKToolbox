@@ -1,6 +1,6 @@
 import { cleanPhoneText as cleanText } from './phone-utils.js';
 
-export const PHONE_STORE_VERSION = 4;
+export const PHONE_STORE_VERSION = 5;
 export const PHONE_MESSAGE_TYPES = Object.freeze([
     'text',
     'voice',
@@ -22,6 +22,8 @@ export const PHONE_MEMORY_EVENT_TYPES = Object.freeze([
 ]);
 export const PHONE_MEMORY_EVENT_STATUSES = Object.freeze(['informational', 'active', 'resolved']);
 export const PHONE_DEFAULT_STICKER_GROUP_ID = 'default';
+export const PHONE_ACTIVITY_APPS = Object.freeze(['weibo', 'community', 'live']);
+export const PHONE_ACTIVITY_TIERS = Object.freeze(['public_personal', 'ambient_role']);
 
 const storeCache = new Map();
 const writeLocks = new Map();
@@ -70,20 +72,52 @@ function getPhoneScope(chatId) {
 }
 
 export function createEmptyPhoneStore(chatId = '') {
+    const profile = normalizePhoneProfile();
     return {
         version: PHONE_STORE_VERSION,
         chatId: cleanText(chatId, 500),
-        profile: normalizePhoneProfile(),
+        profile,
         conversations: [],
         onlineMemory: { events: [] },
+        phone: createEmptyScopedPhoneState(profile),
+        activity: { events: [] },
+        storyBatches: [],
+        scopedInitialized: false,
         updatedAt: 0,
+    };
+}
+
+export function createEmptyScopedPhoneState(profile = {}) {
+    const normalizedProfile = normalizePhoneProfile(profile);
+    return {
+        maxTokens: 2048,
+        profile: normalizedProfile,
+        accounts: {
+            items: [],
+            defaultAccountId: 'main',
+            assignments: {
+                messages: 'main',
+                weibo: 'main',
+                community: 'main',
+                live: 'main',
+            },
+        },
+        stickers: [],
+        stickerGroups: [{ id: PHONE_DEFAULT_STICKER_GROUP_ID, name: '默认' }],
+        weibo: {},
+        community: {},
+        live: {},
     };
 }
 
 export function normalizePhoneProfile(value = {}) {
     return {
+        accountId: cleanText(value?.accountId, 120),
+        isMask: Boolean(value?.isMask),
         nickname: cleanText(value?.nickname, 80) || '我',
         avatar: cleanText(value?.avatar, 4000),
+        bio: cleanText(value?.bio, 240),
+        persona: cleanText(value?.persona, 12000),
     };
 }
 
@@ -222,6 +256,58 @@ export function normalizePhoneMemoryEvent(value = {}) {
     };
 }
 
+export function normalizePhoneActivityEvent(value = {}) {
+    const app = PHONE_ACTIVITY_APPS.includes(value?.app) ? value.app : 'community';
+    const defaultTier = app === 'community' ? 'ambient_role' : 'public_personal';
+    const origin = value?.origin === 'story_sync' ? 'story_sync' : 'player_action';
+    return {
+        id: cleanText(value?.id, 120) || makeId('phone-activity'),
+        app,
+        tier: PHONE_ACTIVITY_TIERS.includes(value?.tier) ? value.tier : defaultTier,
+        accountId: cleanText(value?.accountId, 120),
+        isMask: value?.isMask === true,
+        origin,
+        summary: cleanText(value?.summary, 1000),
+        participants: [...new Set((Array.isArray(value?.participants) ? value.participants : [])
+            .map(item => cleanText(item, 80)).filter(Boolean))],
+        evidenceQuotes: [...new Set((Array.isArray(value?.evidenceQuotes) ? value.evidenceQuotes : [])
+            .map(item => cleanText(item, 500)).filter(Boolean))],
+        sourceKey: cleanText(value?.sourceKey, 500),
+        pending: origin === 'player_action' && value?.pending !== false,
+        createdAt: Number.isFinite(Number(value?.createdAt)) ? Number(value.createdAt) : Date.now(),
+        consumedAt: Number.isFinite(Number(value?.consumedAt)) ? Number(value.consumedAt) : 0,
+    };
+}
+
+export function appendPhoneActivityEvent(store, value = {}) {
+    store.activity ??= { events: [] };
+    store.activity.events ??= [];
+    const event = normalizePhoneActivityEvent(value);
+    if (!event.summary || (event.tier === 'public_personal' && event.isMask) || (event.sourceKey
+        && store.activity.events.some(item => item.sourceKey === event.sourceKey))) return null;
+    store.activity.events.push(event);
+    store.activity.events = store.activity.events.slice(-500);
+    return event;
+}
+
+function normalizeScopedPhoneState(value = {}, profile = {}) {
+    const source = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+    const fallback = createEmptyScopedPhoneState(profile);
+    return {
+        ...fallback,
+        ...source,
+        profile: normalizePhoneProfile(source.profile ?? profile),
+        accounts: source.accounts && typeof source.accounts === 'object' ? source.accounts : fallback.accounts,
+        stickers: Array.isArray(source.stickers) ? source.stickers : [],
+        stickerGroups: Array.isArray(source.stickerGroups) && source.stickerGroups.length > 0
+            ? source.stickerGroups
+            : fallback.stickerGroups,
+        weibo: source.weibo && typeof source.weibo === 'object' ? source.weibo : {},
+        community: source.community && typeof source.community === 'object' ? source.community : {},
+        live: source.live && typeof source.live === 'object' ? source.live : {},
+    };
+}
+
 function normalizeConversation(value) {
     const type = value?.type === 'group' ? 'group' : 'direct';
     const members = type === 'group'
@@ -269,10 +355,11 @@ function normalizeConversation(value) {
 
 export function normalizePhoneStore(value, chatId = '') {
     const store = value && typeof value === 'object' ? value : {};
+    const profile = normalizePhoneProfile(store?.phone?.profile ?? store?.profile);
     return {
         version: PHONE_STORE_VERSION,
         chatId: cleanText(chatId || store.chatId, 500),
-        profile: normalizePhoneProfile(store?.profile),
+        profile,
         conversations: (Array.isArray(store.conversations) ? store.conversations : [])
             .map(normalizeConversation),
         onlineMemory: {
@@ -280,6 +367,27 @@ export function normalizePhoneStore(value, chatId = '') {
                 .map(normalizePhoneMemoryEvent)
                 .filter(event => event.summary),
         },
+        phone: normalizeScopedPhoneState(store.phone, profile),
+        activity: {
+            events: (Array.isArray(store?.activity?.events) ? store.activity.events : [])
+                .map(normalizePhoneActivityEvent)
+                .filter(event => event.summary),
+        },
+        storyBatches: (Array.isArray(store.storyBatches) ? store.storyBatches : [])
+            .map(batch => ({
+                sourceKey: cleanText(batch?.sourceKey, 500),
+                messageId: cleanText(batch?.messageId, 120),
+                swipeIndex: Math.max(0, Math.trunc(Number(batch?.swipeIndex) || 0)),
+                modules: Array.isArray(batch?.modules)
+                    ? [...new Set(batch.modules.map(item => cleanText(item, 40)).filter(Boolean))]
+                    : [],
+                items: Object.fromEntries(Object.entries(batch?.items ?? {}).map(([key, values]) => [
+                    cleanText(key, 40),
+                    (Array.isArray(values) ? values : []).map(item => cleanText(item, 120)).filter(Boolean),
+                ])),
+                createdAt: Number(batch?.createdAt) || Date.now(),
+            })).filter(batch => batch.sourceKey).slice(-200),
+        scopedInitialized: store.scopedInitialized === true,
         updatedAt: Number(store.updatedAt) || 0,
     };
 }
@@ -298,6 +406,28 @@ function encodeBase64Utf8(text) {
         binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
     }
     return btoa(binary);
+}
+
+function replaceObjectContents(target, source) {
+    if (!target || typeof target !== 'object' || Array.isArray(target)) return source;
+    if (target === source) return target;
+    for (const key of Object.keys(target)) delete target[key];
+    Object.assign(target, source);
+    return target;
+}
+
+function preserveScopedPhoneReferences(store, normalized) {
+    const currentPhone = store?.phone;
+    if (!currentPhone || typeof currentPhone !== 'object' || Array.isArray(currentPhone)) return;
+    for (const key of ['profile', 'accounts', 'weibo', 'community', 'live']) {
+        const current = currentPhone[key];
+        const next = normalized.phone?.[key];
+        if (current && typeof current === 'object' && !Array.isArray(current)
+            && next && typeof next === 'object' && !Array.isArray(next)) {
+            normalized.phone[key] = replaceObjectContents(current, next);
+        }
+    }
+    normalized.phone = replaceObjectContents(currentPhone, normalized.phone);
 }
 
 export async function loadPhoneStore(context = globalThis.SillyTavern?.getContext?.(), options = {}) {
@@ -334,7 +464,6 @@ export async function savePhoneStore(store, context = globalThis.SillyTavern?.ge
         const normalized = normalizePhoneStore(store, chatId);
         normalized.updatedAt = Date.now();
         const persisted = { ...normalized };
-        delete persisted.profile;
         const response = await fetch('/api/files/upload', {
             method: 'POST',
             headers: getRequestHeaders(),
@@ -344,6 +473,7 @@ export async function savePhoneStore(store, context = globalThis.SillyTavern?.ge
             }),
         });
         if (!response.ok) throw new Error(`保存手机数据失败（${response.status}）。`);
+        preserveScopedPhoneReferences(store, normalized);
         Object.assign(store, normalized);
         storeCache.set(chatId, store);
         return store;
@@ -1072,12 +1202,58 @@ function getPhoneContextSelection(store, limit = 12, recalledEvents = []) {
         ...(Array.isArray(recalledEvents) ? recalledEvents : []).filter(event => !eventIds.has(event.id)),
         ...automaticEvents,
     ];
+    const activities = (store?.activity?.events ?? [])
+        .filter(event => event.pending === true && event.origin === 'player_action'
+            && (event.tier !== 'public_personal' || event.isMask !== true))
+        .sort((left, right) => left.createdAt - right.createdAt)
+        .slice(-40);
     return {
         messages,
         events,
+        activities,
         pendingMessageIds: pendingMessages.map(item => item.message.id),
         pendingEventIds: automaticEvents.filter(event => event.pending).map(event => event.id),
+        pendingActivityIds: activities.map(event => event.id),
     };
+}
+
+function formatPhoneActivityEvent(event) {
+    const appLabels = {
+        weibo: '微博',
+        live: '直播',
+        community: '社区',
+    };
+    const tierLabels = {
+        public_personal: '玩家大号的公开动态',
+        ambient_role: '与角色相关的公共内容',
+    };
+    const participants = event.participants?.length > 0
+        ? `；涉及：${event.participants.join('、')}`
+        : '';
+    return `[${appLabels[event.app] ?? '手机'}·${tierLabels[event.tier] ?? '公共动态'}] ${event.summary}${participants}`;
+}
+
+function formatPhoneActivitiesForPrompt(activities, budget = 10_000) {
+    if (!Array.isArray(activities) || activities.length === 0 || budget <= 0) return '';
+    const heading = '【其他手机应用中尚未写入正文的有效动态】\n';
+    const guard = '\n这些只是平台上确实发生的内容或玩家操作，不代表任何角色已经看见、理解或作出反应。';
+    const bodyBudget = Math.max(0, budget - heading.length - guard.length - 2);
+    const recentEvents = activities.slice(-8);
+    const olderEvents = activities.slice(0, -8);
+    const recentLineBudget = Math.max(120, Math.floor(bodyBudget * 0.58 / Math.max(1, recentEvents.length)));
+    const recentLines = recentEvents.map(event => formatPhoneActivityEvent(event).slice(0, recentLineBudget));
+    const recentUsed = recentLines.reduce((sum, line) => sum + line.length + 1, 0);
+    const olderLineBudget = olderEvents.length > 0
+        ? Math.max(35, Math.floor((bodyBudget - recentUsed - 40) / olderEvents.length))
+        : 0;
+    const olderLines = olderEvents.map(event => {
+        const prefix = `[较早·${event.app}] `;
+        return `${prefix}${cleanText(event.summary, Math.max(10, olderLineBudget - prefix.length))}`;
+    });
+    const olderText = olderLines.length > 0
+        ? `【较早动态压缩记录】\n${olderLines.join('\n')}`
+        : '';
+    return `${heading}${[olderText, recentLines.join('\n')].filter(Boolean).join('\n')}\n${guard}`;
 }
 
 function formatPhoneMemoryEvent(event, store) {
@@ -1126,8 +1302,8 @@ function formatPhoneTimelineBlock(group) {
 
 export function buildPhonePromptContext(store, limit = 12, recalledEvents = []) {
     const selection = getPhoneContextSelection(store, limit, recalledEvents);
-    const { messages, events } = selection;
-    if (messages.length === 0 && events.length === 0) return '';
+    const { messages, events, activities } = selection;
+    if (messages.length === 0 && events.length === 0 && activities.length === 0) return '';
     const timelineGroups = groupPhoneContextItems(messages);
     const rawBlocks = timelineGroups.map(formatPhoneTimelineBlock);
     let timelineBody = rawBlocks.join('\n\n');
@@ -1166,6 +1342,7 @@ export function buildPhonePromptContext(store, limit = 12, recalledEvents = []) 
         : '';
     const eventBody = events.map(event => formatPhoneMemoryEvent(event, store)).join('\n');
     const eventText = eventBody ? `【持续有效的线上事实】\n${eventBody}` : '';
+    const activityText = formatPhoneActivitiesForPrompt(activities);
     const header = [
         '【线上通讯与手机内容】',
         '以下只记录手机中确实出现的内容、明确操作与有逐字证据的约定或反应。',
@@ -1174,11 +1351,15 @@ export function buildPhonePromptContext(store, limit = 12, recalledEvents = []) 
     let remaining = Math.max(0, PHONE_MAIN_CONTEXT_CHAR_LIMIT - header.length - PHONE_CONTEXT_GUARD.length - 10);
     const sections = [];
     if (timelineText) {
-        const eventBudget = Math.max(0, remaining - timelineText.length - 2);
-        if (eventText && eventBudget > 0) sections.push(eventText.slice(0, eventBudget));
-        sections.push(timelineText.slice(0, remaining - (sections[0]?.length ?? 0) - (sections.length ? 2 : 0)));
-    } else if (eventText) {
-        sections.push(eventText.slice(0, remaining));
+        const supplementalText = [eventText.slice(0, 5000), activityText].filter(Boolean).join('\n\n');
+        if (supplementalText) sections.push(supplementalText.slice(0, Math.min(15_000, remaining)));
+        const timelineBudget = Math.max(0, remaining - (sections[0]?.length ?? 0) - (sections.length ? 2 : 0));
+        if (timelineBudget > 0) sections.push(timelineText.length <= timelineBudget
+            ? timelineText
+            : `【最近线上记录】\n${timelineText.slice(-Math.max(0, timelineBudget - 10))}`);
+    } else {
+        const supplementalText = [eventText, activityText].filter(Boolean).join('\n\n');
+        if (supplementalText) sections.push(supplementalText.slice(-remaining));
     }
     return [header, ...sections].join('\n\n');
 }
@@ -1201,6 +1382,7 @@ export function formatPhoneContextMessage(store, limit = 12, recalledEvents = []
             [PHONE_CONTEXT_MARKER]: true,
             phone_message_ids: selection.pendingMessageIds,
             phone_event_ids: selection.pendingEventIds,
+            phone_activity_ids: selection.pendingActivityIds,
         },
     };
 }
@@ -1211,9 +1393,14 @@ export function injectPhoneContext(chat, store, limit = 12, recalledEvents = [])
     if (!message) return false;
     const chatId = cleanText(store?.chatId, 500);
     if (chatId) {
-        const prepared = preparedStoryInjections.get(chatId) ?? { messageIds: new Set(), eventIds: new Set() };
+        const prepared = preparedStoryInjections.get(chatId) ?? {
+            messageIds: new Set(),
+            eventIds: new Set(),
+            activityIds: new Set(),
+        };
         for (const id of message.extra.phone_message_ids ?? []) prepared.messageIds.add(id);
         for (const id of message.extra.phone_event_ids ?? []) prepared.eventIds.add(id);
+        for (const id of message.extra.phone_activity_ids ?? []) prepared.activityIds.add(id);
         preparedStoryInjections.set(chatId, prepared);
     }
     let insertionIndex = -1;
@@ -1236,6 +1423,7 @@ export async function consumePreparedPhoneContext(context = globalThis.SillyTave
     let changed = false;
     const changedMessages = [];
     const changedEvents = [];
+    const changedActivities = [];
     for (const conversation of store.conversations) {
         for (const message of conversation.messages) {
             if (!prepared.messageIds.has(message.id) || message.storyPending !== true) continue;
@@ -1252,11 +1440,22 @@ export async function consumePreparedPhoneContext(context = globalThis.SillyTave
         event.consumedAt = consumedAt;
         changed = true;
     }
+    for (const event of store.activity?.events ?? []) {
+        if (!prepared.activityIds?.has(event.id) || event.pending !== true) continue;
+        changedActivities.push({ event, consumedAt: event.consumedAt });
+        event.pending = false;
+        event.consumedAt = consumedAt;
+        changed = true;
+    }
     try {
         if (changed) await savePhoneStore(store, context);
     } catch (error) {
         for (const message of changedMessages) message.storyPending = true;
         for (const { event, consumedAt: previousConsumedAt } of changedEvents) {
+            event.pending = true;
+            event.consumedAt = previousConsumedAt;
+        }
+        for (const { event, consumedAt: previousConsumedAt } of changedActivities) {
             event.pending = true;
             event.consumedAt = previousConsumedAt;
         }

@@ -26,14 +26,73 @@
     </section>
     <script type="module">
         import { createPhoneLiveController } from '../phone-live.js';
-        const settings = { phone: { live: {} } };
+        import { requestPhoneLiveOperation } from '../phone-live-ai.js';
+        const settings = {
+            apis: { barrage: { url: 'https://example.invalid', apiKey: 'test', model: 'test-model' } },
+            phone: {
+                live: {},
+                profile: { nickname: '旧昵称' },
+                weibo: {
+                    profile: { nickname: '小K', bio: '今天也在认真生活。' },
+                    roleAccounts: [{
+                        id: 'role-1',
+                        nickname: '林遥',
+                        bio: '熟悉的朋友',
+                        identity: { mode: 'custom', label: '林遥', persona: '安静但会认真接话。' },
+                    }],
+                },
+            },
+        };
+        let generationCount = 0;
+        const fakeGenerate = async ({ request }) => {
+            generationCount += 1;
+            await new Promise(resolve => setTimeout(resolve, 800));
+            const id = `${request.mode}-${generationCount}`;
+            const speaker = request.participants[0]?.nickname || '小K';
+            return {
+                content: JSON.stringify({
+                    room: request.mode === 'start' ? {
+                        title: request.operation.title,
+                        summary: `围绕“${request.operation.topic}”的轻松直播。`,
+                        cover: request.operation.location || '家中书桌',
+                        initialViewers: 128,
+                    } : null,
+                    phase: {
+                        id,
+                        scenes: [
+                            { kind: 'narration', segment: request.mode === 'end' ? '准备下播' : '直播进行中', text: request.mode === 'end' ? '桌边的灯光暗了一些，主播准备结束今天的直播。' : '镜头已经稳定下来，新的直播阶段开始。' },
+                            { kind: 'dialogue', segment: request.mode === 'end' ? '告别' : '继续聊天', speaker, speakerRole: request.participants.length ? '直播参与者' : '主播', speakerType: request.participants.length ? 'participant' : 'player', text: request.mode === 'end' ? '今天就到这里，下次见。' : '这条弹幕问得很好，我们接着聊。' },
+                            { kind: 'narration', segment: '观众反应', text: '弹幕跟着这一段内容刷新，直播间气氛很轻松。' },
+                        ],
+                        barrages: Array.from({ length: 10 }, (_, index) => ({
+                            id: `${id}-b-${index + 1}`,
+                            author: `测试观众${index + 1}`,
+                            content: `${request.mode} 阶段的相关弹幕 ${index + 1}`,
+                            likes: 10 - index,
+                            replyable: true,
+                        })),
+                        gifts: [{ id: `${id}-gift`, author: '礼物观众', label: '小花束', icon: '🌷', value: 10 }],
+                        viewerDelta: request.mode === 'end' ? -130 : 6,
+                        followerDelta: request.mode === 'end' ? 0 : 2,
+                        summary: `${request.mode} 阶段完成。`,
+                    },
+                    sessionSummary: `直播已完成 ${generationCount} 个阶段。`,
+                }),
+            };
+        };
         const controller = createPhoneLiveController({
             document,
             settings,
             saveSettings: () => { globalThis.savedLiveSettings = structuredClone(settings.phone.live); },
+            liveAiReady: () => true,
+            performLiveOperation: operation => requestPhoneLiveOperation(settings, { chatId: 'live-harness', chat: [] }, operation, {
+                generateLive: fakeGenerate,
+                saveSettings: () => { globalThis.savedLiveSettings = structuredClone(settings.phone.live); },
+                now: Date.now(),
+            }),
         });
         await controller.open(document.querySelector('.memory-augment-phone-app-content'));
-        globalThis.liveHarness = { controller, settings };
+        globalThis.liveHarness = { controller, settings, get generationCount() { return generationCount; } };
     </script>
 </body>
 </html>

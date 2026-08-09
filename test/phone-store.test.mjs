@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
     addPhoneSticker,
+    appendPhoneActivityEvent,
     appendPhoneMessage,
     buildPhoneAiSnapshot,
     buildPhonePromptContext,
@@ -39,12 +40,23 @@ import {
 } from '../phone-store.js';
 import { installNativeFetch } from './native-fetch-fixture.mjs';
 
-test('phone profile is a standalone setting and does not require a chat id', () => {
+test('phone profiles normalize independently before being stored in a chat scope', () => {
     assert.deepEqual(normalizePhoneProfile({ nickname: ' 夜酱 ', avatar: 'https://example.com/me.png' }), {
+        accountId: '',
+        isMask: false,
         nickname: '夜酱',
         avatar: 'https://example.com/me.png',
+        bio: '',
+        persona: '',
     });
-    assert.deepEqual(normalizePhoneProfile(), { nickname: '我', avatar: '' });
+    assert.deepEqual(normalizePhoneProfile(), {
+        accountId: '',
+        isMask: false,
+        nickname: '我',
+        avatar: '',
+        bio: '',
+        persona: '',
+    });
 });
 
 test('phone conversations keep display names separate from real identities', () => {
@@ -64,7 +76,7 @@ test('phone conversations keep display names separate from real identities', () 
     assert.equal(normalizePhoneIdentity().mode, 'unbound');
 });
 
-test('phone conversation file stays chat-scoped and does not duplicate the standalone profile', async (context) => {
+test('the complete phone profile and app state stay inside the chat-scoped file', async (context) => {
     const originalFetch = globalThis.fetch;
     const originalSillyTavern = globalThis.SillyTavern;
     context.after(() => {
@@ -77,15 +89,19 @@ test('phone conversation file stays chat-scoped and does not duplicate the stand
     const chatContext = { getCurrentChatId: () => 'phone-persistence-test' };
     const store = createEmptyPhoneStore('phone-persistence-test');
     store.profile.nickname = '夜酱';
+    store.phone.profile.nickname = '夜酱';
+    store.phone.community = { forumThreads: [{ id: 'thread-1', title: '当前存档的话题' }] };
     createPhoneConversation(store, { type: 'direct', name: '经纪人' });
 
     await savePhoneStore(store, chatContext);
     const restored = await loadPhoneStore(chatContext, { force: true });
 
-    assert.equal(restored.profile.nickname, '我');
+    assert.equal(restored.profile.nickname, '夜酱');
+    assert.equal(restored.phone.profile.nickname, '夜酱');
+    assert.equal(restored.phone.community.forumThreads[0].title, '当前存档的话题');
     assert.equal(restored.conversations[0].name, '经纪人');
     assert.equal(fixture.files.size, 1);
-    assert.equal(Object.hasOwn([...fixture.files.values()][0], 'profile'), false);
+    assert.equal(Object.hasOwn([...fixture.files.values()][0], 'profile'), true);
 });
 
 test('phone store refuses to overwrite a different current chat', async (context) => {
@@ -467,6 +483,38 @@ test('pending phone facts are consumed only after a prepared story generation su
     assert.equal(message.storyPending, true);
     assert.equal(await consumePreparedPhoneContext(chatContext), true);
     assert.equal(store.conversations[0].messages[0].storyPending, false);
+});
+
+test('public app activity accumulates per chat, excludes mask posts, and is consumed only after story success', async (context) => {
+    const originalFetch = globalThis.fetch;
+    const originalSillyTavern = globalThis.SillyTavern;
+    context.after(() => {
+        globalThis.fetch = originalFetch;
+        globalThis.SillyTavern = originalSillyTavern;
+    });
+    const fixture = installNativeFetch();
+    globalThis.fetch = fixture.fetch;
+    globalThis.SillyTavern = { getContext: () => ({ getRequestHeaders: () => ({}) }) };
+    const chatContext = { getCurrentChatId: () => 'consume-public-phone-activity' };
+    const store = createEmptyPhoneStore('consume-public-phone-activity');
+    const mainPost = appendPhoneActivityEvent(store, {
+        app: 'weibo', tier: 'public_personal', summary: '大号发布了公开微博。', accountId: 'main',
+    });
+    assert.equal(appendPhoneActivityEvent(store, {
+        app: 'weibo', tier: 'public_personal', summary: '马甲发布了微博。', accountId: 'alt', isMask: true,
+    }), null);
+    const communityReply = appendPhoneActivityEvent(store, {
+        app: 'community', tier: 'ambient_role', summary: '在角色讨论帖回复。', isMask: true, participants: ['艾莉娅'],
+    });
+    await savePhoneStore(store, chatContext);
+
+    const generation = [{ role: 'user', content: '继续剧情' }];
+    assert.equal(injectPhoneContext(generation, store), true);
+    assert.match(generation[0].content, /大号发布了公开微博/);
+    assert.match(generation[0].content, /在角色讨论帖回复/);
+    assert.equal(await consumePreparedPhoneContext(chatContext), true);
+    assert.equal(store.activity.events.find(event => event.id === mainPost.id).pending, false);
+    assert.equal(store.activity.events.find(event => event.id === communityReply.id).pending, false);
 });
 
 test('cancelled story generation discards its prepared phone context without consuming facts', async (context) => {

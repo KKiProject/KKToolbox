@@ -419,6 +419,12 @@ export function normalizePhoneWeiboState(settings = {}) {
         ? settings.phone.profile
         : {};
     const profile = {
+        accountId: sourceProfile && Object.hasOwn(sourceProfile, 'accountId')
+            ? text(sourceProfile.accountId, 120)
+            : text(phoneProfile.accountId, 120),
+        isMask: sourceProfile && Object.hasOwn(sourceProfile, 'isMask')
+            ? Boolean(sourceProfile.isMask)
+            : Boolean(phoneProfile.isMask),
         nickname: sourceProfile && Object.hasOwn(sourceProfile, 'nickname')
             ? (text(sourceProfile.nickname, 80) || '我')
             : (text(phoneProfile.nickname, 80) || '我'),
@@ -428,6 +434,9 @@ export function normalizePhoneWeiboState(settings = {}) {
         bio: sourceProfile && Object.hasOwn(sourceProfile, 'bio')
             ? text(sourceProfile.bio, 160)
             : (text(source.profileBio, 160) || '记录故事里正在发生的新鲜事。'),
+        persona: sourceProfile && Object.hasOwn(sourceProfile, 'persona')
+            ? text(sourceProfile.persona, 12000)
+            : text(phoneProfile.persona, 12000),
     };
     const roleAccounts = buildPhoneWeiboRoleAccounts(source.roleAccounts);
     const roleAccountIds = new Set(roleAccounts.map(account => account.id));
@@ -675,7 +684,7 @@ export function createPhoneWeiboController(options = {}) {
                     label: '自定义人物设定／绑定后的补充说明',
                     type: 'textarea',
                     value: details,
-                    placeholder: '选择自定义人物时必须填写；绑定角色卡或世界书条目时可补充微博状态。',
+                    placeholder: '补充人物设定',
                 },
                 { name: 'url', label: '头像链接（可选）', type: 'url', value: account?.avatar ?? '' },
                 { name: 'file', label: '本地头像（可选）', type: 'file', accept: 'image/png,image/jpeg,image/webp,image/gif' },
@@ -719,7 +728,7 @@ export function createPhoneWeiboController(options = {}) {
             }),
         });
         if (!result) return;
-        state().profile = result;
+        state().profile = { ...current, ...result };
         persist();
         renderMain();
     }
@@ -882,7 +891,6 @@ export function createPhoneWeiboController(options = {}) {
             visual.append(
                 element(documentRef, 'i', 'fa-solid fa-image'),
                 element(documentRef, 'strong', '', visualDescription),
-                element(documentRef, 'small', '', post.imageDescription ? '微博图片描述' : '模拟图片占位'),
             );
             body.append(visual);
         }
@@ -933,7 +941,6 @@ export function createPhoneWeiboController(options = {}) {
         feature.append(
             element(documentRef, 'span', '', 'TRENDING NOW'),
             element(documentRef, 'strong', '', '此刻，全网正在讨论'),
-            element(documentRef, 'small', '', '热搜会随剧情与新帖子增量变化，旧话题会逐步下沉。'),
         );
         view.append(feature);
         const list = element(documentRef, 'div', 'memory-augment-weibo-hot-list');
@@ -1011,7 +1018,6 @@ export function createPhoneWeiboController(options = {}) {
             empty.append(
                 element(documentRef, 'i', 'fa-solid fa-feather-pointed'),
                 element(documentRef, 'strong', '', '还没有发布微博'),
-                element(documentRef, 'small', '', '发布后会先生成合理数据与评论，再完整显示。'),
             );
             const start = button(documentRef, '', '发布第一条');
             start.addEventListener('click', renderComposer);
@@ -1079,18 +1085,7 @@ export function createPhoneWeiboController(options = {}) {
         );
         const view = element(documentRef, 'main', 'memory-augment-weibo-relations-view');
         const intro = element(documentRef, 'section', 'memory-augment-weibo-relations-intro');
-        const introCopy = element(documentRef, 'div');
-        introCopy.append(
-            element(documentRef, 'strong', '', isFollowers ? '管理角色粉丝' : '管理关注角色'),
-            element(
-                documentRef,
-                'small',
-                '',
-                isFollowers
-                    ? '账号库与关注名单共用；把账号加入两边后会显示为互相关注。'
-                    : '账号库与粉丝名单共用；微博昵称和人物真实身份可以不同。',
-            ),
-        );
+        const introCopy = element(documentRef, 'strong', '', isFollowers ? '角色粉丝' : '关注角色');
         const create = button(documentRef, 'memory-augment-weibo-role-create', '新建账号', 'fa-plus');
         create.addEventListener('click', () => void editRoleAccount());
         intro.append(introCopy, create);
@@ -1106,7 +1101,6 @@ export function createPhoneWeiboController(options = {}) {
             empty.append(
                 element(documentRef, 'i', 'fa-solid fa-user-plus'),
                 element(documentRef, 'strong', '', '还没有建立微博角色账号'),
-                element(documentRef, 'small', '', '账号只需建立一次，关注和粉丝两边会共用。'),
             );
             list.append(empty);
         }
@@ -1114,7 +1108,6 @@ export function createPhoneWeiboController(options = {}) {
         others.append(
             element(documentRef, 'span', 'memory-augment-weibo-role-more-icon', '+'),
             element(documentRef, 'strong', '', `还有 ${isFollowers ? state().followerCount : OTHER_FOLLOWING_COUNT} 位其他用户`),
-            element(documentRef, 'small', '', '路人 NPC 已折叠，不逐个展示'),
         );
         list.append(others);
         view.append(list);
@@ -1166,7 +1159,7 @@ export function createPhoneWeiboController(options = {}) {
                     name: 'instruction',
                     label: '想让TA发什么（可留空）',
                     type: 'textarea',
-                    placeholder: '留空时会按照绑定人设和当前公开信息自然发挥。',
+                    placeholder: '发帖内容',
                 }],
                 onSubmit: input => text(input.instruction, 500),
             });
@@ -1204,7 +1197,6 @@ export function createPhoneWeiboController(options = {}) {
         empty.append(
             element(documentRef, 'i', 'fa-solid fa-feather-pointed'),
             element(documentRef, 'strong', '', '还没有发布微博'),
-            element(documentRef, 'small', '', '角色微博生成接入后，会显示在这个账号主页。'),
         );
         view.append(empty);
         wrapper.append(header, view);
@@ -1273,13 +1265,13 @@ export function createPhoneWeiboController(options = {}) {
         view.append(heading);
 
         const replyForm = element(documentRef, 'form', 'memory-augment-weibo-reply-form');
-        const replyHint = element(documentRef, 'small', '', '选择一条热门评论进行回复');
+        const replyHint = element(documentRef, 'small');
         const replyBox = element(documentRef, 'div');
         const replyInput = element(documentRef, 'textarea');
         replyInput.maxLength = 300;
         replyInput.rows = 1;
         replyInput.disabled = true;
-        replyInput.placeholder = '点击评论下方的“回复”';
+        replyInput.placeholder = '回复评论';
         const replySend = button(documentRef, '', '发送');
         replySend.type = 'submit';
         replySend.disabled = true;
@@ -1362,7 +1354,6 @@ export function createPhoneWeiboController(options = {}) {
             empty.append(
                 element(documentRef, 'i', 'fa-regular fa-comment-dots'),
                 element(documentRef, 'strong', '', '还没有评论'),
-                element(documentRef, 'small', '', '这条微博目前是安静的。'),
             );
             comments.append(empty);
         }
@@ -1440,7 +1431,6 @@ export function createPhoneWeiboController(options = {}) {
         header.append(
             element(documentRef, 'span', '', current.interests.length ? '调整你的推荐' : 'WELCOME TO WEIBO'),
             element(documentRef, 'strong', '', '你想看些什么？'),
-            element(documentRef, 'p', '', '选择感兴趣的内容。之后 AI 会参考这些标签，并结合正文生成你的首页推荐。'),
         );
         wrapper.append(header);
         const grid = element(documentRef, 'div', 'memory-augment-weibo-interest-grid');
@@ -1547,10 +1537,7 @@ export function createPhoneWeiboController(options = {}) {
 
         const renderCustomTopics = () => {
             topicStrip.replaceChildren();
-            if (customTopics.length === 0) {
-                topicStrip.append(element(documentRef, 'small', 'memory-augment-weibo-compose-topic-empty', '没有话题也可以直接发布。'));
-                return;
-            }
+            if (customTopics.length === 0) return;
             customTopics.forEach((topic, index) => {
                 const chip = button(documentRef, 'is-custom', `#${topic}# ×`);
                 chip.setAttribute('aria-label', `删除话题 ${topic}`);
@@ -1616,7 +1603,7 @@ export function createPhoneWeiboController(options = {}) {
             const result = await openPhoneForm(contentRoot, {
                 title: '添加微博话题',
                 submitLabel: '添加',
-                fields: [{ name: 'topic', label: '话题名称', placeholder: '不用输入井号；留空则不添加' }],
+                fields: [{ name: 'topic', label: '话题名称', placeholder: '话题名称' }],
                 onSubmit: input => text(input.topic, 50).replace(/^#+|#+$/g, ''),
             });
             if (!result) {
@@ -1696,14 +1683,9 @@ export function createPhoneWeiboController(options = {}) {
         const wrapper = element(documentRef, 'section', 'memory-augment-weibo-ai-status');
         wrapper.append(
             element(documentRef, 'i', errorMessage ? 'fa-solid fa-triangle-exclamation' : 'fa-solid fa-spinner fa-spin'),
-            element(documentRef, 'strong', '', errorMessage ? '微博初始化没有完成' : '正在生成你的微博世界…'),
-            element(
-                documentRef,
-                'p',
-                '',
-                errorMessage || '正在准备首页帖子、热搜、粉丝基线和每条帖子的评论区，完成后会一次性显示。',
-            ),
+            element(documentRef, 'strong', '', errorMessage ? '加载失败' : '正在加载…'),
         );
+        if (errorMessage) wrapper.append(element(documentRef, 'p', '', errorMessage));
         if (errorMessage) {
             const retry = button(documentRef, 'memory-augment-weibo-primary', '重新生成', 'fa-rotate-right');
             retry.addEventListener('click', () => void initializeAiFeed());

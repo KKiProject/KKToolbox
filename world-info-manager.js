@@ -2,7 +2,6 @@ import { getWorldInfoStatuses, syncWorldInfo } from './rag-client.js';
 import { normalizeBaseUrl } from './api-utils.js';
 
 const ENTRY_SEPARATOR = '::';
-const MANAGED_SUMMARY_BOOK_SUFFIX = '-自动总结';
 const MANAGED_SUMMARY_KEY_PREFIXES = ['[KKT摘要]', '[KKToolbox摘要]', '[KKT历史概括]'];
 let currentBooks = [];
 let syncQueue = Promise.resolve();
@@ -23,6 +22,10 @@ function getEmbeddingConfig(settings) {
 
 export function getWorldInfoEntryKey(world, uid) {
     return `${String(world)}${ENTRY_SEPARATOR}${String(uid)}`;
+}
+
+export function isManagedSummaryWorldInfoBookName(value) {
+    return /-自动总结(?:[1-9]\d*)?$/.test(String(value ?? '').trim());
 }
 
 export function normalizeWorldInfoEntries(entries) {
@@ -47,7 +50,7 @@ export function normalizeWorldInfoEntries(entries) {
 }
 
 export function isManagedSummaryWorldInfoBook(book) {
-    return String(book?.id ?? book?.name ?? '').endsWith(MANAGED_SUMMARY_BOOK_SUFFIX)
+    return isManagedSummaryWorldInfoBookName(book?.id ?? book?.name)
         || (Array.isArray(book?.entries) && book.entries.some(entry => entry?.managedBySummaryRag === true));
 }
 

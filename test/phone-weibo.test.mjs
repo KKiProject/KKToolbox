@@ -37,9 +37,12 @@ test('weibo keeps only known distinct interests and valid local posts', () => {
     assert.deepEqual(state.followingRoleIds, []);
     assert.deepEqual(state.followerRoleIds, []);
     assert.deepEqual(state.profile, {
+        accountId: '',
+        isMask: false,
         nickname: '聊天昵称',
         avatar: 'https://example.com/chat-avatar.png',
         bio: '记录故事里正在发生的新鲜事。',
+        persona: '',
     });
     settings.phone.profile.nickname = '后来修改的聊天昵称';
     const renormalized = normalizePhoneWeiboState(settings);
