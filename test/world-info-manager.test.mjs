@@ -5,8 +5,10 @@ import {
     applyWorldInfoVectorStatuses,
     isManagedSummaryWorldInfoBook,
     isManagedSummaryWorldInfoBookName,
+    loadAssociatedWorldInfoBooks,
     normalizeWorldInfoEntries,
     rebuildAllCurrentWorldInfo,
+    sanitizeManagedSummarySelections,
     vectorizeSelectedWorldInfo,
 } from '../world-info-manager.js';
 
@@ -49,6 +51,33 @@ test('automatic summary lorebooks are recognized by suffix or managed entry keys
     assert.equal(entry.managedBySummaryRag, true);
     assert.equal(isManagedSummaryWorldInfoBook({ id: '旧名称摘要书', entries: [entry] }), true);
     assert.equal(isManagedSummaryWorldInfoBook({ id: '普通世界书', entries: [{ managedBySummaryRag: false }] }), false);
+});
+
+test('stale summary selections are removed even when the old book is no longer active', () => {
+    const settings = { rag: {
+        semanticWorldInfoBooks: ['角色A-自动总结1', '主世界书'],
+        semanticWorldInfoEntries: ['角色A-自动总结1::7', '主世界书::2'],
+    } };
+
+    assert.equal(sanitizeManagedSummarySelections(settings, []), true);
+    assert.deepEqual(settings.rag.semanticWorldInfoBooks, ['主世界书']);
+    assert.deepEqual(settings.rag.semanticWorldInfoEntries, ['主世界书::2']);
+});
+
+test('an active book without a proven source is never mislabeled as character-bound', async () => {
+    const books = await loadAssociatedWorldInfoBooks(async () => [{
+        world: '来源未知的书',
+        uid: 1,
+        content: '仍然处于酒馆激活集合中。',
+        key: ['未知'],
+    }], {
+        characterId: 0,
+        characters: [{ avatar: '角色.png', data: { extensions: {} } }],
+        chatMetadata: {},
+    });
+
+    assert.deepEqual(books[0].bindingTypes, ['其他激活']);
+    assert.equal(books[0].linkedToCharacter, false);
 });
 
 test('automatic summary lorebooks cannot be duplicated into ordinary world-info vectors', async () => {

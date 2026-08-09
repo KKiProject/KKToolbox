@@ -60,7 +60,7 @@ function getBindingTypes(world, context, globals, personaBook, characterBooks) {
     if (String(context?.chatMetadata?.world_info ?? '') === world) types.push('聊天');
     if (String(personaBook ?? '') === world) types.push('persona');
     if (characterBooks.has(world)) types.push('角色');
-    if (types.length === 0) types.push('角色');
+    if (types.length === 0) types.push('其他激活');
     return types;
 }
 
@@ -145,19 +145,36 @@ function hasConfiguredSelection(settings, bookId) {
         || [...getSelectedEntryKeys(settings)].some(key => key.startsWith(`${bookId}${ENTRY_SEPARATOR}`));
 }
 
-function removeManagedSummarySelections(settings, context) {
-    const managedBooks = currentBooks.filter(isManagedSummaryWorldInfoBook);
-    if (managedBooks.length === 0) return false;
-    const books = getSelectedBookIds(settings);
-    const entries = getSelectedEntryKeys(settings);
-    let changed = false;
-    for (const book of managedBooks) {
-        if (books.delete(book.id)) changed = true;
-        for (const entry of book.entries) {
-            if (entries.delete(entry.key)) changed = true;
-        }
+function getEntryBookId(entryKey) {
+    const value = String(entryKey ?? '');
+    const separatorIndex = value.lastIndexOf(ENTRY_SEPARATOR);
+    return separatorIndex > 0 ? value.slice(0, separatorIndex) : '';
+}
+
+export function sanitizeManagedSummarySelections(settings, books = currentBooks) {
+    const managedBookIds = new Set((Array.isArray(books) ? books : [])
+        .filter(isManagedSummaryWorldInfoBook)
+        .map(book => String(book.id)));
+    const selectedBooks = getSelectedBookIds(settings);
+    const selectedEntries = getSelectedEntryKeys(settings);
+    const nextBooks = new Set([...selectedBooks].filter(bookId => (
+        !managedBookIds.has(bookId) && !isManagedSummaryWorldInfoBookName(bookId)
+    )));
+    const nextEntries = new Set([...selectedEntries].filter(entryKey => {
+        const bookId = getEntryBookId(entryKey);
+        return !managedBookIds.has(bookId) && !isManagedSummaryWorldInfoBookName(bookId);
+    }));
+    const changed = nextBooks.size !== selectedBooks.size || nextEntries.size !== selectedEntries.size;
+    if (changed) {
+        settings.rag.semanticWorldInfoBooks = [...nextBooks].sort();
+        settings.rag.semanticWorldInfoEntries = [...nextEntries].sort();
     }
-    if (changed) saveSelections(settings, context, books, entries);
+    return changed;
+}
+
+function removeManagedSummarySelections(settings, context) {
+    const changed = sanitizeManagedSummarySelections(settings, currentBooks);
+    if (changed) context.saveSettingsDebounced();
     return changed;
 }
 
@@ -287,10 +304,11 @@ export function renderWorldInfoSelector(settings, context) {
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         const selectedCount = getSelectedEntriesForBook(settings, book).length;
-        checkbox.checked = managedBySummaryRag || selectedBooks.has(book.id);
+        checkbox.checked = !managedBySummaryRag && selectedBooks.has(book.id);
         checkbox.disabled = managedBySummaryRag;
+        checkbox.hidden = managedBySummaryRag;
         checkbox.title = managedBySummaryRag
-            ? '自动总结已由剧情 RAG 管理，无需重复向量化'
+            ? '自动总结由剧情 RAG 独立管理；是否绑定请看右侧来源标签'
             : '勾选这里会选择整本；点击书名可以只选部分条目';
         checkbox.indeterminate = !managedBySummaryRag && !checkbox.checked && selectedCount > 0;
         checkbox.addEventListener('click', event => event.stopPropagation());

@@ -58,6 +58,7 @@ function createContext(messages = []) {
     let metadataSaves = 0;
     let worldInfoLoads = 0;
     let worldInfoListUpdates = 0;
+    let additionalBindCalls = 0;
     const calls = [];
     const reloadedWorldInfoBooks = [];
     const lorebooks = new Map();
@@ -108,6 +109,7 @@ function createContext(messages = []) {
             return entry;
         },
         async bindAdditionalWorldInfoBook(name) {
+            additionalBindCalls++;
             if (!additionalBooks.includes(name)) additionalBooks.push(name);
         },
         async executeSlashCommands(command) {
@@ -182,6 +184,9 @@ function createContext(messages = []) {
         },
         get additionalBooks() {
             return additionalBooks;
+        },
+        get additionalBindCalls() {
+            return additionalBindCalls;
         },
         get summaryBookName() {
             return bookName;
@@ -551,6 +556,19 @@ test('legacy summary migration scans the lorebook once and then stays dormant', 
     assert.equal(await migrateLegacySummaries(context), 0);
     assert.equal(context.worldInfoLoads, loadsAfterFirstMigration);
     assert.equal(context.metadataSaves, savesAfterFirstMigration);
+});
+
+test('summary binding is reconciled again when it is manually removed in the same chat', async () => {
+    const context = createContext(dialoguePairs(2));
+    await migrateLegacySummaries(context);
+    assert.deepEqual(context.additionalBooks, [context.summaryBookName]);
+    const firstBindCalls = context.additionalBindCalls;
+
+    context.additionalBooks.splice(0);
+    await migrateLegacySummaries(context);
+
+    assert.deepEqual(context.additionalBooks, [context.summaryBookName]);
+    assert.equal(context.additionalBindCalls, firstBindCalls + 1);
 });
 
 test('a new chat does not adopt the character legacy summary lorebook', async () => {

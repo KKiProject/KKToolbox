@@ -206,8 +206,8 @@ async function syncSummaryBookBinding(context, character, characterName, bookNam
         }
         Object.assign(worldModule.world_info, { charLore });
         context.saveSettingsDebounced?.();
+        await refreshSummaryBookRuntime(context, bookName, worldModule);
     }
-    await refreshSummaryBookRuntime(context, bookName, worldModule);
 }
 
 async function createSummaryBook(context, bookName) {
@@ -264,14 +264,17 @@ async function getSummaryBookName(context, create = false) {
         const bindingKey = `${String(getChatId(context) ?? '')}:${bookName}`;
         const bindingIsCurrent = activeSummaryBinding?.metadata === context.chatMetadata
             && activeSummaryBinding?.key === bindingKey;
-        if (!bindingIsCurrent) {
-            const existing = typeof context?.loadWorldInfo === 'function'
+        const existing = bindingIsCurrent
+            ? true
+            : typeof context?.loadWorldInfo === 'function'
                 ? await context.loadWorldInfo(bookName)
                 : null;
-            if (!existing) await createSummaryBook(context, bookName);
-            await bindSummaryBookToCharacter(context, current.character, bookName);
-            activeSummaryBinding = { metadata: context.chatMetadata, key: bindingKey };
-        }
+        if (!existing) await createSummaryBook(context, bookName);
+        // The runtime cache only avoids reloading the book. Always reconcile
+        // charLore so a manual unbind or an earlier failed save cannot leave
+        // the RAG state and SillyTavern's real character binding out of sync.
+        await bindSummaryBookToCharacter(context, current.character, bookName);
+        activeSummaryBinding = { metadata: context.chatMetadata, key: bindingKey };
     }
     return bookName;
 }
