@@ -1956,6 +1956,7 @@ export function createPhoneMessagesController(options = {}) {
         async open(contentRoot) {
             const sequence = ++openSequence;
             root = contentRoot;
+            root.classList.remove('is-weibo', 'is-community', 'is-live');
             root.classList.add('is-messages');
             root.innerHTML = '<div class="memory-augment-phone-message-loading"><i class="fa-solid fa-spinner fa-spin"></i> 正在读取消息…</div>';
             try {

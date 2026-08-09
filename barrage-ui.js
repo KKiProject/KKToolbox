@@ -36,6 +36,11 @@ let barrageTemplate = '';
 let regenerationBound = false;
 let statusRegenerationBound = false;
 let barrageLifecycleBound = false;
+let barrageDomObserver = null;
+let barrageDomRestoreTimer = null;
+const sideRecoveryTimers = new Set();
+const SIDE_RECOVERY_DELAYS = Object.freeze([200, 1000, 3500, 10_000]);
+const BARRAGE_DOM_RESTORE_DELAYS = Object.freeze([160, 700, 2200]);
 
 function clampInteger(value, fallback, minimum, maximum) {
     const number = Math.trunc(Number(value));
@@ -561,11 +566,12 @@ export function renderBarragePanel(messageId, content, state = 'ready') {
     panel.classList.toggle('is-error', state === 'error');
     const status = panel.querySelector('.memory-augment-barrage-status');
     const body = panel.querySelector('.memory-augment-barrage-content');
+    const nextStatus = state === 'loading' ? '生成中…' : state === 'error' ? '生成失败' : '';
     if (status) {
-        status.textContent = state === 'loading' ? '生成中…' : state === 'error' ? '生成失败' : '';
+        if (status.textContent !== nextStatus) status.textContent = nextStatus;
     }
     if (body) {
-        body.textContent = content;
+        if (body.textContent !== content) body.textContent = content;
     }
     return true;
 }
@@ -577,6 +583,70 @@ function safelyRender(render, messageId, content, state) {
         console.warn('[Memory Augment] Barrage rendering failed.', error);
         return false;
     }
+}
+
+function clearSideRecoveryTimers(clearTimer = globalThis.clearTimeout) {
+    for (const timer of sideRecoveryTimers) clearTimer?.(timer);
+    sideRecoveryTimers.clear();
+}
+
+export function scheduleSideGenerationRecovery(settings, options = {}) {
+    const contextGetter = options.contextGetter ?? (() => globalThis.SillyTavern?.getContext?.());
+    const initialContext = contextGetter();
+    const expectedChatId = getChatId(initialContext);
+    if (!initialContext) return 0;
+    clearSideRecoveryTimers(options.clearTimeout);
+    const setTimer = options.setTimeout ?? globalThis.setTimeout;
+    const delays = Array.isArray(options.delays) && options.delays.length > 0
+        ? options.delays
+        : SIDE_RECOVERY_DELAYS;
+    const run = options.run ?? ((context) => scheduleLatestSideGeneration(settings, context, {
+        requireVisibleOutput: false,
+    }));
+    for (const delay of delays) {
+        const timer = setTimer?.(() => {
+            sideRecoveryTimers.delete(timer);
+            const currentContext = contextGetter();
+            if (!currentContext || getChatId(currentContext) !== expectedChatId) return;
+            run(currentContext);
+        }, Math.max(0, Number(delay) || 0));
+        if (timer !== undefined && timer !== null) sideRecoveryTimers.add(timer);
+    }
+    return sideRecoveryTimers.size;
+}
+
+function scheduleBarrageDomRestore(settings, expectedChatId = getChatId(globalThis.SillyTavern?.getContext?.())) {
+    if (typeof document === 'undefined') return;
+    for (const delay of BARRAGE_DOM_RESTORE_DELAYS) {
+        setTimeout(() => {
+            try {
+                const currentContext = globalThis.SillyTavern?.getContext?.();
+                if (!currentContext || getChatId(currentContext) !== expectedChatId) return;
+                restoreStoredBarrages(currentContext, settings);
+            } catch (error) {
+                console.warn('[Memory Augment] Delayed barrage DOM restoration failed.', error);
+            }
+        }, delay);
+    }
+}
+
+function bindBarrageDomRecovery(settings) {
+    if (barrageDomObserver || typeof MutationObserver === 'undefined') return;
+    const chat = document.querySelector('#chat');
+    if (!chat) return;
+    barrageDomObserver = new MutationObserver(() => {
+        clearTimeout(barrageDomRestoreTimer);
+        barrageDomRestoreTimer = setTimeout(() => {
+            barrageDomRestoreTimer = null;
+            try {
+                const context = globalThis.SillyTavern?.getContext?.();
+                if (context) restoreStoredBarrages(context, settings);
+            } catch (error) {
+                console.warn('[Memory Augment] Barrage DOM recovery failed.', error);
+            }
+        }, 240);
+    });
+    barrageDomObserver.observe(chat, { childList: true, subtree: true });
 }
 
 function showSideGenerationDiagnostic(context, message, { preserveStatus = true } = {}) {
@@ -659,7 +729,10 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
         && (!statusEnabled || cachedStatus)
         && (!developmentEnabled || developmentProcessed);
     if (!options.force && !options.forceStatus && options.refreshDerived !== true && hasRequiredCache) {
-        if (barrageEnabled) safelyRender(render, numericId, cached.content, 'ready');
+        if (barrageEnabled) {
+            safelyRender(render, numericId, cached.content, 'ready');
+            if (render === renderBarragePanel) scheduleBarrageDomRestore(settings, chatId);
+        }
         refreshStoryStatusUi(context);
         refreshCharacterDevelopmentUi(context);
         return { generated: false, cached: true };
@@ -854,6 +927,9 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
         } catch (error) {
             console.warn('[Memory Augment] Barrage metadata save failed.', error);
         }
+        if (barrageEnabled && content && render === renderBarragePanel) {
+            scheduleBarrageDomRestore(settings, chatId);
+        }
         refreshStoryStatusUi(currentContext);
         if (requestStatus && !finalStatus) {
             const detail = String(statusRecoveryError?.message ?? '副 API 没有返回有效的剧情状态。').trim();
@@ -888,6 +964,7 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
                 } catch (saveError) {
                     console.warn('[Memory Augment] Barrage failure metadata save failed.', saveError);
                 }
+                if (render === renderBarragePanel) scheduleBarrageDomRestore(settings, chatId);
             } else if (barrageEnabled && cached?.content) {
                 safelyRender(render, numericId, cached.content, 'ready');
             }
@@ -1170,9 +1247,7 @@ export async function initializeBarrageUi(settings, options = {}) {
             scheduleBarrageGeneration(messageId, settings);
         });
 
-        const recoverLatest = () => scheduleLatestSideGeneration(settings, SillyTavern.getContext(), {
-            requireVisibleOutput: false,
-        });
+        const recoverLatest = () => scheduleSideGenerationRecovery(settings);
         if (generationEnded) context.eventSource.on(generationEnded, recoverLatest);
         if (generationStopped) context.eventSource.on(generationStopped, recoverLatest);
     }
@@ -1215,8 +1290,10 @@ export async function initializeBarrageUi(settings, options = {}) {
 
     if (!barrageLifecycleBound && chatChanged) {
         context.eventSource.on(chatChanged, () => {
+            clearSideRecoveryTimers();
             setTimeout(() => {
                 try {
+                    bindBarrageDomRecovery(settings);
                     restoreStoredBarrages(SillyTavern.getContext(), settings);
                 } catch (error) {
                     console.warn('[Memory Augment] Stored barrage restoration failed.', error);
@@ -1227,6 +1304,7 @@ export async function initializeBarrageUi(settings, options = {}) {
 
     bindRegeneration(settings);
     bindStatusRegeneration(settings);
+    bindBarrageDomRecovery(settings);
     try {
         restoreStoredBarrages(context, settings);
     } catch (error) {

@@ -130,6 +130,15 @@ export const defaultSettings = Object.freeze({
             lastError: '',
             profileBio: '记录故事里正在发生的新鲜事。',
         },
+        community: {
+            forumThreads: [],
+            cpRankings: [],
+            fanWorks: [],
+        },
+        live: {
+            streams: [],
+            followedStreamIds: [],
+        },
     },
 });
 

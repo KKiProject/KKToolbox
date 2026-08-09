@@ -990,6 +990,18 @@
     overscroll-behavior: contain;
 }
 
+#memory_augment_story_status_view,
+#memory_augment_character_development_view {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: contain;
+    touch-action: pan-y !important;
+}
+
+#memory_augment_story_status_view input[type="range"],
+#memory_augment_character_development_view input[type="range"] {
+    touch-action: none;
+}
+
 #memory_augment_story_map_view {
     display: flex;
     flex-direction: column;
@@ -2263,6 +2275,8 @@
 .memory-augment-weibo-role-profile-view,
 .memory-augment-weibo-onboarding,
 .memory-augment-weibo-composer,
+.memory-augment-community-view,
+.memory-augment-live-view,
 .memory-augment-phone-memory-list {
     -webkit-overflow-scrolling: touch;
     overscroll-behavior-y: contain;
@@ -4654,6 +4668,1117 @@
     display: flex;
     gap: 0.5rem;
     justify-content: space-between;
+}
+
+/* Community: forum, weekly CP chart, and fanworks share one lightweight app. */
+.memory-augment-phone-app-content.is-community {
+    background: #f5f4f8;
+    overflow: hidden;
+    padding: 0;
+}
+
+.memory-augment-community-view {
+    box-sizing: border-box;
+    color: #211e28;
+    font-weight: 500;
+    height: 100%;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding-bottom: 1rem;
+}
+
+.memory-augment-community-tabs {
+    background: rgb(255 255 255 / 96%);
+    border-bottom: 1px solid rgb(82 73 111 / 10%);
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    position: sticky;
+    top: 0;
+    z-index: 4;
+}
+
+.memory-augment-community-tabs > button {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    color: #5f596b;
+    display: flex;
+    font-size: 0.78rem;
+    font-weight: 650;
+    gap: 0.28rem;
+    justify-content: center;
+    min-height: 2.55rem;
+    padding: 0;
+    position: relative;
+}
+
+.memory-augment-community-tabs > button.is-active {
+    color: #5969a7;
+    font-weight: 800;
+}
+
+.memory-augment-community-tabs > button.is-active::after {
+    background: #6678bd;
+    border-radius: 999px;
+    bottom: 0;
+    content: '';
+    height: 0.16rem;
+    left: 28%;
+    position: absolute;
+    right: 28%;
+}
+
+.memory-augment-community-hero {
+    color: #fff;
+    display: grid;
+    gap: 0.22rem;
+    margin: 0.65rem 0.65rem 0.5rem;
+    min-height: 5.4rem;
+    overflow: hidden;
+    padding: 0.85rem 0.9rem;
+    position: relative;
+}
+
+.memory-augment-community-hero::after {
+    border: 1rem solid rgb(255 255 255 / 12%);
+    border-radius: 50%;
+    content: '';
+    height: 6rem;
+    position: absolute;
+    right: -2rem;
+    top: -2.5rem;
+    width: 6rem;
+}
+
+.memory-augment-community-hero.is-forum {
+    background: linear-gradient(135deg, #5267a1, #8898cc);
+    border-radius: 0.35rem 1.2rem 0.35rem 1.2rem;
+}
+
+.memory-augment-community-hero.is-cp {
+    background: linear-gradient(135deg, #b95177, #e08c9d);
+    border-radius: 1.2rem 0.35rem 1.2rem 0.35rem;
+}
+
+.memory-augment-community-hero.is-fanworks {
+    background: linear-gradient(135deg, #66538f, #a18bc2);
+    border-radius: 0.35rem 1.2rem 0.35rem 1.2rem;
+}
+
+.memory-augment-community-hero > small {
+    font-size: 0.64rem;
+    font-weight: 800;
+    letter-spacing: 0.12em;
+    opacity: 0.92;
+}
+
+.memory-augment-community-hero > strong {
+    font-size: 1.15rem;
+    line-height: 1.25;
+}
+
+.memory-augment-community-hero > span {
+    font-size: 0.7rem;
+    font-weight: 600;
+    line-height: 1.4;
+    opacity: 0.94;
+}
+
+.memory-augment-community-filters {
+    display: flex;
+    gap: 0.35rem;
+    overflow-x: auto;
+    padding: 0.08rem 0.65rem 0.52rem;
+    scrollbar-width: none;
+    touch-action: pan-x;
+}
+
+.memory-augment-community-filters::-webkit-scrollbar {
+    display: none;
+}
+
+.memory-augment-community-filters > button {
+    background: #fff;
+    border: 1px solid rgb(82 73 111 / 10%);
+    border-radius: 999px;
+    color: #4f4a57;
+    flex: 0 0 auto;
+    font-size: 0.7rem;
+    font-weight: 650;
+    min-height: 2rem;
+    padding: 0 0.65rem;
+    white-space: nowrap;
+}
+
+.memory-augment-community-filters > button.is-active {
+    background: #6374b5;
+    border-color: #6374b5;
+    color: #fff;
+}
+
+.memory-augment-community-thread-list,
+.memory-augment-community-cp-list,
+.memory-augment-community-fan-list {
+    display: grid;
+    gap: 0.48rem;
+    padding: 0 0.65rem;
+}
+
+.memory-augment-community-thread {
+    background: #fff;
+    border: 1px solid rgb(82 73 111 / 8%);
+    border-radius: 0.78rem;
+    box-shadow: 0 0.18rem 0.65rem rgb(64 54 88 / 5%);
+    color: inherit;
+    display: grid;
+    gap: 0.38rem;
+    padding: 0.72rem;
+    text-align: left;
+    width: 100%;
+}
+
+.memory-augment-community-thread > header,
+.memory-augment-community-thread > footer,
+.memory-augment-community-fan-card footer {
+    align-items: center;
+    display: flex;
+    gap: 0.45rem;
+    justify-content: space-between;
+}
+
+.memory-augment-community-thread > header > span,
+.memory-augment-community-detail-tag {
+    background: #eef0fa;
+    border-radius: 999px;
+    color: #596aa8;
+    font-size: 0.63rem;
+    font-weight: 800;
+    padding: 0.17rem 0.42rem;
+}
+
+.memory-augment-community-thread > header > small,
+.memory-augment-community-thread > footer,
+.memory-augment-community-fan-card footer {
+    color: #67616e;
+    font-size: 0.68rem;
+    font-weight: 600;
+}
+
+.memory-augment-community-thread > strong {
+    font-size: 0.85rem;
+    font-weight: 800;
+    line-height: 1.45;
+}
+
+.memory-augment-phone-app-content .memory-augment-community-thread > p,
+.memory-augment-phone-app-content .memory-augment-community-fan-card p {
+    color: #4d4854;
+    display: -webkit-box;
+    font-size: 0.76rem;
+    font-weight: 500;
+    line-height: 1.55;
+    margin: 0;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+
+.memory-augment-community-cp-row {
+    align-items: center;
+    background: #fff;
+    border: 1px solid rgb(82 73 111 / 8%);
+    border-radius: 0.8rem;
+    color: inherit;
+    display: grid;
+    gap: 0.55rem;
+    grid-template-columns: 1.6rem minmax(0, 1fr) auto;
+    padding: 0.65rem 0.6rem;
+    text-align: left;
+    width: 100%;
+}
+
+.memory-augment-community-cp-row.is-top {
+    background: linear-gradient(100deg, #fff8fa, #fff);
+    border-color: rgb(209 96 132 / 20%);
+}
+
+.memory-augment-community-rank {
+    color: #8b8791;
+    font-family: Georgia, serif;
+    font-size: 1rem;
+    font-style: italic;
+    text-align: center;
+}
+
+.memory-augment-community-cp-row.is-top .memory-augment-community-rank {
+    color: #ce587f;
+    font-size: 1.2rem;
+    font-weight: 700;
+}
+
+.memory-augment-community-cp-row > div {
+    display: grid;
+    gap: 0.2rem;
+    min-width: 0;
+}
+
+.memory-augment-community-cp-row > div > header {
+    align-items: center;
+    display: flex;
+    gap: 0.35rem;
+}
+
+.memory-augment-community-cp-row > div strong {
+    font-size: 0.87rem;
+    font-weight: 800;
+}
+
+.memory-augment-community-cp-row em {
+    border-radius: 999px;
+    font-size: 0.57rem;
+    font-weight: 800;
+    font-style: normal;
+    padding: 0.1rem 0.28rem;
+}
+
+.memory-augment-community-cp-row em.is-up,
+.memory-augment-community-cp-row em.is-new {
+    background: #fff0f3;
+    color: #d65378;
+}
+
+.memory-augment-community-cp-row em.is-down {
+    background: #eef4ff;
+    color: #5374b5;
+}
+
+.memory-augment-community-cp-row em.is-same {
+    background: #f0eff2;
+    color: #8c8791;
+}
+
+.memory-augment-community-cp-row > div > small {
+    color: #6f6975;
+    font-size: 0.68rem;
+    font-weight: 600;
+}
+
+.memory-augment-phone-app-content .memory-augment-community-cp-row p {
+    color: #48434e;
+    font-size: 0.73rem;
+    font-weight: 500;
+    line-height: 1.4;
+    margin: 0;
+}
+
+.memory-augment-community-cp-heat {
+    align-items: flex-end;
+    color: #cc5b7c;
+    display: flex;
+    flex-direction: column;
+}
+
+.memory-augment-community-cp-heat > strong {
+    font-size: 0.7rem;
+    font-weight: 800;
+}
+
+.memory-augment-community-cp-heat > small {
+    color: #756f79;
+    font-size: 0.62rem;
+    font-weight: 600;
+}
+
+.memory-augment-community-fan-card {
+    background: #fff;
+    border: 1px solid rgb(82 73 111 / 8%);
+    border-radius: 0.82rem;
+    color: inherit;
+    display: grid;
+    grid-template-columns: 4.5rem minmax(0, 1fr);
+    overflow: hidden;
+    padding: 0;
+    text-align: left;
+    width: 100%;
+}
+
+.memory-augment-community-fan-cover {
+    align-items: center;
+    background: linear-gradient(145deg, #6d5a98, #afa1cd);
+    color: #fff;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    justify-content: center;
+    min-height: 6.4rem;
+    padding: 0.45rem;
+}
+
+.memory-augment-community-fan-card.is-article .memory-augment-community-fan-cover { background: linear-gradient(145deg, #826d55, #c2a77f); }
+.memory-augment-community-fan-card.is-art .memory-augment-community-fan-cover { background: linear-gradient(145deg, #3e6783, #78a7b4); }
+.memory-augment-community-fan-card.is-video .memory-augment-community-fan-cover { background: linear-gradient(145deg, #75485f, #c17c94); }
+.memory-augment-community-fan-card.is-au .memory-augment-community-fan-cover { background: linear-gradient(145deg, #4c746a, #8eb4a5); }
+.memory-augment-community-fan-card.is-discussion .memory-augment-community-fan-cover { background: linear-gradient(145deg, #5e557b, #948cae); }
+
+.memory-augment-community-fan-cover > i {
+    font-size: 1.25rem;
+}
+
+.memory-augment-community-fan-cover > span {
+    font-size: 0.67rem;
+    font-weight: 800;
+}
+
+.memory-augment-community-fan-card > div:last-child {
+    display: grid;
+    gap: 0.32rem;
+    min-width: 0;
+    padding: 0.6rem;
+}
+
+.memory-augment-community-fan-card > div > small {
+    color: #66606c;
+    font-size: 0.68rem;
+    font-weight: 600;
+}
+
+.memory-augment-community-fan-card > div > strong {
+    font-size: 0.81rem;
+    font-weight: 800;
+    line-height: 1.4;
+}
+
+.memory-augment-community-detail {
+    box-sizing: border-box;
+    min-height: 100%;
+    padding: 0.65rem;
+}
+
+.memory-augment-community-detail-back {
+    align-items: center;
+    background: transparent;
+    border: 0;
+    color: #403a4b;
+    display: inline-flex;
+    font-size: 0.72rem;
+    font-weight: 750;
+    gap: 0.28rem;
+    margin: -0.15rem 0 0.7rem;
+    padding: 0;
+}
+
+.memory-augment-community-detail > h2 {
+    font-size: 1.08rem;
+    font-weight: 800;
+    line-height: 1.48;
+    margin: 0.55rem 0 0.35rem;
+}
+
+.memory-augment-community-detail-byline {
+    color: #625c68;
+    font-size: 0.69rem;
+    font-weight: 600;
+    margin-bottom: 0.8rem;
+}
+
+.memory-augment-phone-app-content .memory-augment-community-detail-body {
+    background: #fff;
+    border-radius: 0.8rem;
+    color: #2d2932;
+    font-size: 0.79rem;
+    font-weight: 500;
+    line-height: 1.8;
+    margin: 0;
+    padding: 0.8rem;
+    white-space: pre-wrap;
+}
+
+.memory-augment-community-cp-spotlight,
+.memory-augment-community-work-preview {
+    background: #fff;
+    border: 1px solid rgb(82 73 111 / 8%);
+    border-radius: 0.85rem;
+    padding: 0.85rem;
+}
+
+.memory-augment-community-cp-spotlight {
+    background: linear-gradient(140deg, #fff7f9, #fff);
+    border-color: rgb(204 91 124 / 16%);
+}
+
+.memory-augment-community-cp-spotlight > small,
+.memory-augment-community-work-preview > small {
+    color: #c25579;
+    font-size: 0.65rem;
+    font-weight: 800;
+}
+
+.memory-augment-phone-app-content .memory-augment-community-cp-spotlight > p,
+.memory-augment-phone-app-content .memory-augment-community-work-preview > p {
+    color: #312c36;
+    font-size: 0.79rem;
+    font-weight: 500;
+    line-height: 1.75;
+    margin: 0.45rem 0 0;
+}
+
+.memory-augment-community-work-preview.is-article {
+    background: linear-gradient(145deg, #fffdf8, #fbf7ef);
+    border-color: rgb(145 113 72 / 16%);
+}
+
+.memory-augment-community-work-preview > strong {
+    color: #9b784f;
+    display: block;
+    font-size: 0.68rem;
+    font-weight: 800;
+    margin-top: 0.55rem;
+    text-align: right;
+}
+
+.memory-augment-community-detail-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin-top: 0.65rem;
+}
+
+.memory-augment-community-detail-tags > span {
+    background: #fff;
+    border-radius: 999px;
+    color: #b04e70;
+    font-size: 0.67rem;
+    font-weight: 700;
+    padding: 0.25rem 0.5rem;
+}
+
+.memory-augment-community-comments {
+    display: grid;
+    gap: 0;
+    margin-top: 0.85rem;
+}
+
+.memory-augment-community-comments > header {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+    padding: 0 0.15rem 0.45rem;
+}
+
+.memory-augment-community-comments > header > strong {
+    font-size: 0.82rem;
+    font-weight: 800;
+}
+
+.memory-augment-community-comments > header > small {
+    color: #67616d;
+    font-size: 0.66rem;
+    font-weight: 600;
+}
+
+.memory-augment-community-comment {
+    background: #fff;
+    border-bottom: 1px solid rgb(82 73 111 / 8%);
+    display: grid;
+    gap: 0.5rem;
+    grid-template-columns: 1.75rem minmax(0, 1fr);
+    padding: 0.68rem;
+}
+
+.memory-augment-community-comment:first-of-type {
+    border-radius: 0.75rem 0.75rem 0 0;
+}
+
+.memory-augment-community-comment:last-child {
+    border-bottom: 0;
+    border-radius: 0 0 0.75rem 0.75rem;
+}
+
+.memory-augment-community-mini-avatar {
+    align-items: center;
+    background: linear-gradient(145deg, #7180b6, #a9b2d2);
+    border-radius: 50%;
+    color: #fff;
+    display: flex;
+    font-size: 0.66rem;
+    font-weight: 700;
+    height: 1.75rem;
+    justify-content: center;
+    width: 1.75rem;
+}
+
+.memory-augment-community-comment > div > header {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+}
+
+.memory-augment-community-comment > div > header > strong {
+    color: #485578;
+    font-size: 0.68rem;
+    font-weight: 800;
+}
+
+.memory-augment-community-comment > div > header > small {
+    color: #706a73;
+    font-size: 0.64rem;
+    font-weight: 600;
+}
+
+.memory-augment-phone-app-content .memory-augment-community-comment p {
+    color: #37323c;
+    font-size: 0.76rem;
+    font-weight: 500;
+    line-height: 1.55;
+    margin: 0.25rem 0 0;
+}
+
+/* Live: official broadcasts and private streams share one room shell. */
+.memory-augment-phone-app-content.is-live {
+    background: #f5f3f7;
+    overflow: hidden;
+    padding: 0;
+}
+
+.memory-augment-live-view {
+    box-sizing: border-box;
+    color: #211e27;
+    font-weight: 500;
+    height: 100%;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding-bottom: 0.8rem;
+}
+
+.memory-augment-live-channels {
+    background: rgb(255 255 255 / 97%);
+    border-bottom: 1px solid rgb(74 58 84 / 10%);
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    position: sticky;
+    top: 0;
+    z-index: 5;
+}
+
+.memory-augment-live-channels > button {
+    background: transparent;
+    border: 0;
+    color: #615a68;
+    font-size: 0.78rem;
+    font-weight: 700;
+    min-height: 2.65rem;
+    padding: 0;
+    position: relative;
+}
+
+.memory-augment-live-channels > button.is-active {
+    color: #c44870;
+    font-weight: 850;
+}
+
+.memory-augment-live-channels > button.is-active::after {
+    background: #dc567e;
+    border-radius: 999px;
+    bottom: 0;
+    content: '';
+    height: 0.16rem;
+    left: 34%;
+    position: absolute;
+    right: 34%;
+}
+
+.memory-augment-live-hero {
+    color: #fff;
+    display: grid;
+    gap: 0.26rem;
+    margin: 0.68rem;
+    min-height: 5.6rem;
+    overflow: hidden;
+    padding: 0.85rem 0.9rem;
+    position: relative;
+}
+
+.memory-augment-live-hero::after {
+    background: rgb(255 255 255 / 10%);
+    border-radius: 50%;
+    content: '';
+    height: 7.5rem;
+    position: absolute;
+    right: -2rem;
+    top: -3rem;
+    width: 7.5rem;
+}
+
+.memory-augment-live-hero.is-official {
+    background: linear-gradient(135deg, #8e314e, #d45b7d);
+    border-radius: 1.15rem 0.38rem 1.15rem 0.38rem;
+}
+
+.memory-augment-live-hero.is-private {
+    background: linear-gradient(135deg, #5d477f, #9677ae);
+    border-radius: 0.38rem 1.15rem 0.38rem 1.15rem;
+}
+
+.memory-augment-live-dot {
+    background: rgb(255 255 255 / 18%);
+    border: 1px solid rgb(255 255 255 / 32%);
+    border-radius: 999px;
+    font-size: 0.6rem;
+    font-weight: 850;
+    justify-self: start;
+    letter-spacing: 0.08em;
+    padding: 0.16rem 0.4rem;
+}
+
+.memory-augment-live-hero > strong {
+    font-size: 1.1rem;
+    font-weight: 850;
+}
+
+.memory-augment-live-hero > small {
+    font-size: 0.71rem;
+    font-weight: 600;
+    opacity: 0.94;
+}
+
+.memory-augment-live-list {
+    display: grid;
+    gap: 0.58rem;
+    padding: 0 0.68rem;
+}
+
+.memory-augment-live-card {
+    background: #fff;
+    border: 1px solid rgb(74 58 84 / 9%);
+    border-radius: 0.85rem;
+    box-shadow: 0 0.2rem 0.7rem rgb(57 43 69 / 6%);
+    color: inherit;
+    display: grid;
+    grid-template-columns: 6.3rem minmax(0, 1fr);
+    overflow: hidden;
+    padding: 0;
+    text-align: left;
+    width: 100%;
+}
+
+.memory-augment-live-card-cover {
+    background: linear-gradient(145deg, #6d263e, #d15c7d);
+    color: #fff;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    min-height: 7.2rem;
+    overflow: hidden;
+    padding: 0.6rem;
+    position: relative;
+}
+
+.memory-augment-live-card-cover::before {
+    border: 1.3rem solid rgb(255 255 255 / 9%);
+    border-radius: 50%;
+    content: '';
+    height: 5.5rem;
+    position: absolute;
+    right: -2.4rem;
+    top: -2.8rem;
+    width: 5.5rem;
+}
+
+.memory-augment-live-card-cover.is-private {
+    background: linear-gradient(145deg, #51406d, #9c7cad);
+}
+
+.memory-augment-live-card-cover > span {
+    background: #f24870;
+    border-radius: 0.25rem;
+    font-size: 0.58rem;
+    font-weight: 800;
+    left: 0.5rem;
+    padding: 0.13rem 0.3rem;
+    position: absolute;
+    top: 0.5rem;
+}
+
+.memory-augment-live-card-cover > strong {
+    font-size: 0.78rem;
+    font-weight: 850;
+    line-height: 1.35;
+}
+
+.memory-augment-live-card-cover > small {
+    font-size: 0.62rem;
+    font-weight: 600;
+    margin-top: 0.18rem;
+    opacity: 0.92;
+}
+
+.memory-augment-live-card > div:last-child {
+    display: grid;
+    gap: 0.36rem;
+    min-width: 0;
+    padding: 0.65rem;
+}
+
+.memory-augment-live-badge {
+    background: #fff0f3;
+    border-radius: 999px;
+    color: #c34268;
+    font-size: 0.61rem;
+    font-weight: 800;
+    justify-self: start;
+    padding: 0.15rem 0.38rem;
+}
+
+.memory-augment-live-badge.is-private {
+    background: #f0ebf6;
+    color: #71518b;
+}
+
+.memory-augment-live-card > div > strong {
+    font-size: 0.84rem;
+    font-weight: 850;
+    line-height: 1.4;
+}
+
+.memory-augment-phone-app-content .memory-augment-live-card p {
+    color: #504956;
+    display: -webkit-box;
+    font-size: 0.73rem;
+    font-weight: 500;
+    line-height: 1.55;
+    margin: 0;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+
+.memory-augment-live-card > div:last-child > small {
+    color: #68616d;
+    font-size: 0.66rem;
+    font-weight: 650;
+}
+
+.memory-augment-live-room {
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+}
+
+.memory-augment-live-room-header {
+    align-items: center;
+    background: #fff;
+    display: grid;
+    gap: 0.5rem;
+    grid-template-columns: 1.8rem minmax(0, 1fr) auto;
+    padding: 0.55rem 0.65rem;
+}
+
+.memory-augment-live-room-header > button {
+    background: transparent;
+    border: 0;
+    color: #3d3744;
+    min-height: 1.8rem;
+    padding: 0;
+}
+
+.memory-augment-live-room-header > div {
+    display: grid;
+    gap: 0.08rem;
+    min-width: 0;
+}
+
+.memory-augment-live-room-header > div > strong {
+    font-size: 0.76rem;
+    font-weight: 850;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.memory-augment-live-room-header > div > small {
+    color: #655e69;
+    font-size: 0.62rem;
+    font-weight: 650;
+}
+
+.memory-augment-live-room-header > button:last-child {
+    background: #eb537a;
+    border-radius: 999px;
+    color: #fff;
+    font-size: 0.64rem;
+    font-weight: 800;
+    padding: 0 0.65rem;
+}
+
+.memory-augment-live-room-header > button:last-child.is-followed {
+    background: #eeeaf0;
+    color: #5f5864;
+}
+
+.memory-augment-live-stage {
+    background: radial-gradient(circle at 70% 22%, #734b59, #17151c 62%);
+    color: #fff;
+    min-height: 14.5rem;
+    overflow: hidden;
+    padding: 0.7rem;
+    position: relative;
+}
+
+.memory-augment-live-stage.is-private {
+    background: radial-gradient(circle at 24% 20%, #655170, #1a171f 65%);
+}
+
+.memory-augment-live-stage > header {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+    position: relative;
+    z-index: 2;
+}
+
+.memory-augment-live-stage > header > span {
+    background: #ed426b;
+    border-radius: 0.25rem;
+    font-size: 0.6rem;
+    font-weight: 850;
+    padding: 0.15rem 0.35rem;
+}
+
+.memory-augment-live-stage > header > small {
+    background: rgb(0 0 0 / 26%);
+    border-radius: 999px;
+    font-size: 0.61rem;
+    font-weight: 650;
+    padding: 0.2rem 0.42rem;
+}
+
+.memory-augment-phone-app-content .memory-augment-live-stage > p {
+    background: rgb(9 8 12 / 48%);
+    border: 1px solid rgb(255 255 255 / 12%);
+    border-radius: 0.75rem;
+    bottom: 0.72rem;
+    font-size: 0.77rem;
+    font-weight: 600;
+    left: 0.7rem;
+    line-height: 1.68;
+    margin: 0;
+    padding: 0.68rem;
+    position: absolute;
+    right: 0.7rem;
+    text-shadow: 0 1px 2px rgb(0 0 0 / 50%);
+    z-index: 2;
+}
+
+.memory-augment-live-floating-barrages {
+    inset: 2.55rem 0 7.7rem;
+    overflow: hidden;
+    pointer-events: none;
+    position: absolute;
+    z-index: 3;
+}
+
+.memory-augment-live-floating-barrages > span {
+    animation: memory-augment-live-barrage 7s linear infinite;
+    background: rgb(0 0 0 / 42%);
+    border-radius: 999px;
+    color: #fff;
+    font-size: 0.65rem;
+    font-weight: 750;
+    left: 100%;
+    max-width: 82%;
+    padding: 0.18rem 0.42rem;
+    position: absolute;
+    white-space: nowrap;
+}
+
+.memory-augment-live-floating-barrages > span.is-lane-1 { animation-delay: -1s; top: 0.1rem; }
+.memory-augment-live-floating-barrages > span.is-lane-2 { animation-delay: -3.5s; top: 1.55rem; }
+.memory-augment-live-floating-barrages > span.is-lane-3 { animation-delay: -5s; top: 3rem; }
+
+@keyframes memory-augment-live-barrage {
+    from { transform: translateX(0); }
+    to { transform: translateX(calc(-100% - 24rem)); }
+}
+
+.memory-augment-live-official-notice {
+    align-items: center;
+    background: #fff2f5;
+    color: #91435c;
+    display: flex;
+    font-size: 0.66rem;
+    font-weight: 700;
+    gap: 0.38rem;
+    padding: 0.48rem 0.68rem;
+}
+
+.memory-augment-live-chat {
+    background: #f7f5f8;
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-height: 7rem;
+    padding: 0.62rem 0.68rem;
+}
+
+.memory-augment-live-chat > header {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 0.35rem;
+}
+
+.memory-augment-live-chat > header > strong {
+    font-size: 0.76rem;
+    font-weight: 850;
+}
+
+.memory-augment-live-chat > header > small {
+    color: #645d68;
+    font-size: 0.61rem;
+    font-weight: 650;
+}
+
+.memory-augment-live-chat-list {
+    display: grid;
+    gap: 0.25rem;
+    max-height: 7.4rem;
+    overflow-y: auto;
+}
+
+.memory-augment-phone-app-content .memory-augment-live-chat-list > p {
+    color: #3d3741;
+    font-size: 0.69rem;
+    font-weight: 550;
+    line-height: 1.5;
+    margin: 0;
+    padding: 0.12rem 0.25rem;
+}
+
+.memory-augment-live-chat-list > p > strong {
+    color: #675482;
+    font-weight: 800;
+}
+
+.memory-augment-phone-app-content .memory-augment-live-chat-list > p.is-gift {
+    background: linear-gradient(90deg, #fff2dc, transparent);
+    border-radius: 0.35rem;
+    color: #8a5a17;
+}
+
+.memory-augment-live-chat-list > p.is-mine > strong {
+    color: #d24770;
+}
+
+.memory-augment-live-composer {
+    align-items: center;
+    background: #fff;
+    border-top: 1px solid rgb(74 58 84 / 10%);
+    display: grid;
+    gap: 0.4rem;
+    grid-template-columns: minmax(0, 1fr) 2rem auto;
+    padding: 0.52rem 0.6rem;
+}
+
+.memory-augment-live-composer > input {
+    background: #f2eff4;
+    border: 1px solid transparent;
+    border-radius: 999px;
+    box-sizing: border-box;
+    caret-color: #e04e75;
+    color: #27222b;
+    font-size: 0.72rem;
+    font-weight: 600;
+    min-height: 2rem;
+    outline: none;
+    padding: 0 0.72rem;
+    width: 100%;
+}
+
+.memory-augment-live-composer > input:focus {
+    background: #fff;
+    border-color: #dc567e;
+    box-shadow: 0 0 0 0.15rem rgb(220 86 126 / 15%);
+}
+
+.memory-augment-live-composer > button {
+    border: 0;
+    font-size: 0.68rem;
+    font-weight: 800;
+    min-height: 2rem;
+}
+
+.memory-augment-live-composer > button.is-gift {
+    background: #fff3db;
+    border-radius: 50%;
+    padding: 0;
+}
+
+.memory-augment-live-composer > button.is-send {
+    background: #e14f77;
+    border-radius: 999px;
+    color: #fff;
+    padding: 0 0.65rem;
+}
+
+.memory-augment-live-gift-tray {
+    background: #fff;
+    border-top: 1px solid rgb(74 58 84 / 10%);
+    padding: 0.55rem 0.65rem;
+}
+
+.memory-augment-live-gift-tray > header {
+    align-items: center;
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 0.42rem;
+}
+
+.memory-augment-live-gift-tray > header > strong {
+    font-size: 0.74rem;
+    font-weight: 850;
+}
+
+.memory-augment-live-gift-tray > header > button {
+    background: transparent;
+    border: 0;
+    color: #675f6a;
+    font-size: 0.64rem;
+    font-weight: 700;
+}
+
+.memory-augment-live-gift-tray > div {
+    display: grid;
+    gap: 0.4rem;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.memory-augment-live-gift-tray > div > button {
+    align-items: center;
+    background: #faf7fb;
+    border: 1px solid rgb(74 58 84 / 9%);
+    border-radius: 0.65rem;
+    color: #3d3742;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    min-width: 0;
+    padding: 0.35rem 0.15rem;
+}
+
+.memory-augment-live-gift-tray > div > button > span {
+    font-size: 1.1rem;
+}
+
+.memory-augment-live-gift-tray > div > button > strong {
+    font-size: 0.6rem;
+    font-weight: 800;
+}
+
+.memory-augment-live-gift-tray > div > button > small {
+    color: #756d78;
+    font-size: 0.52rem;
+    font-weight: 650;
 }
 
 @media (max-width: 600px) {

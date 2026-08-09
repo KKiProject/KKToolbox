@@ -1,5 +1,7 @@
 import { createPhoneMessagesController } from './phone-messages.js';
 import { createPhoneWeiboController } from './phone-weibo.js';
+import { createPhoneCommunityController } from './phone-community.js';
+import { createPhoneLiveController } from './phone-live.js';
 import {
     isPhoneWeiboAiReady,
     requestPhoneWeiboBootstrap,
@@ -38,7 +40,7 @@ function setPhoneScreen(root, screen, title = '') {
 }
 
 function renderPlaceholder(content, title) {
-    content.classList.remove('is-messages');
+    content.classList.remove('is-messages', 'is-weibo', 'is-community', 'is-live');
     content.innerHTML = `
         <div class="memory-augment-phone-placeholder-heading"></div>
         <div class="memory-augment-phone-placeholder-card"></div>
@@ -122,23 +124,29 @@ export function initializePhoneShellUi(settings = {}, context = globalThis.Silly
     appControllers = {
         messages: createPhoneMessagesController(controllerOptions),
         weibo: createPhoneWeiboController(controllerOptions),
+        community: createPhoneCommunityController(controllerOptions),
+        live: createPhoneLiveController(controllerOptions),
     };
 
     root.querySelectorAll('[data-phone-app]').forEach(button => button.addEventListener('click', () => {
+        appControllers[activeApp]?.close?.();
         activeApp = button.dataset.phoneApp;
         setPhoneScreen(root, 'app', button.dataset.phoneLabel);
         const content = root.querySelector('.memory-augment-phone-app-content');
         if (!content) return;
+        content.classList.remove('is-messages', 'is-weibo', 'is-community', 'is-live');
         const controller = appControllers[activeApp];
         if (controller) void controller.open(content);
         else renderPlaceholder(content, button.dataset.phoneLabel);
     }));
     root.querySelector('[data-phone-back]')?.addEventListener('click', () => {
         if (appControllers[activeApp]?.back?.()) return;
+        appControllers[activeApp]?.close?.();
         activeApp = '';
         setPhoneScreen(root, 'home');
     });
     root.querySelector('[data-phone-home]')?.addEventListener('click', () => {
+        appControllers[activeApp]?.close?.();
         activeApp = '';
         setPhoneScreen(root, 'home');
     });

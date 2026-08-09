@@ -751,7 +751,7 @@ export function createPhoneWeiboController(options = {}) {
 
     function prepareRoot() {
         if (!contentRoot) return null;
-        contentRoot.classList.remove('is-messages');
+        contentRoot.classList.remove('is-messages', 'is-community', 'is-live');
         contentRoot.classList.add('is-weibo');
         contentRoot.replaceChildren();
         return contentRoot;

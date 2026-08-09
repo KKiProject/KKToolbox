@@ -158,6 +158,47 @@ test('desktop phone view grows and scales its contents without changing the mobi
     assert.match(mobile, /\.memory-augment-phone-device[\s\S]*?max-width:\s*none/);
 });
 
+test('community renders forum, CP ranking, fanwork previews, and internal details inside the phone', async () => {
+    const [source, css] = await Promise.all([
+        readFile(new URL('../phone-community.js', import.meta.url), 'utf8'),
+        readFile(new URL('../style.css', import.meta.url), 'utf8'),
+    ]);
+    assert.match(source, /id: 'forum', label: '论坛'/);
+    assert.match(source, /id: 'cp', label: 'CP榜'/);
+    assert.match(source, /id: 'fanworks', label: '同人区'/);
+    assert.match(source, /匿名爆料/);
+    assert.match(source, /本周嗑点/);
+    assert.match(source, /约 100 字试读/);
+    assert.match(source, /作品文字预览/);
+    assert.match(source, /热门回复/);
+    assert.match(css, /\.memory-augment-phone-app-content\.is-community/);
+    assert.match(css, /\.memory-augment-community-tabs/);
+    assert.match(css, /\.memory-augment-community-filters/);
+    assert.match(css, /touch-action:\s*pan-x/);
+    assert.match(css, /\.memory-augment-community-cp-row/);
+    assert.match(css, /\.memory-augment-community-work-preview/);
+});
+
+test('live app shares a room shell while keeping official and private interactions distinct', async () => {
+    const [source, css] = await Promise.all([
+        readFile(new URL('../phone-live.js', import.meta.url), 'utf8'),
+        readFile(new URL('../style.css', import.meta.url), 'utf8'),
+    ]);
+    assert.match(source, /\['official', '官方直播'/);
+    assert.match(source, /\['private', '私人直播'/);
+    assert.match(source, /官方直播以现场画面与观众弹幕为主/);
+    assert.match(source, /和主播说点什么/);
+    assert.match(source, /打开礼物区/);
+    assert.match(source, /renderFloatingBarrages/);
+    assert.match(source, /setInterval/);
+    assert.match(source, /stopPlayback/);
+    assert.match(css, /\.memory-augment-phone-app-content\.is-live/);
+    assert.match(css, /\.memory-augment-live-stage/);
+    assert.match(css, /@keyframes memory-augment-live-barrage/);
+    assert.match(css, /\.memory-augment-live-composer/);
+    assert.match(css, /\.memory-augment-live-gift-tray/);
+});
+
 test('phone forms keep validation inside the simulated phone and conversation headers stay immersive', async () => {
     const source = await readFile(new URL('../phone-messages.js', import.meta.url), 'utf8');
     assert.match(source, /form\.noValidate = true/);

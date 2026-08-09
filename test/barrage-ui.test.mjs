@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFile } from 'node:fs/promises';
 import {
     BARRAGE_METADATA_KEY,
     clearDeletedBarrageRecords,
@@ -7,6 +8,7 @@ import {
     findLatestEligibleAssistantMessageId,
     handleCharacterMessageRendered,
     restoreStoredBarrages,
+    scheduleSideGenerationRecovery,
 } from '../barrage-ui.js';
 import { hashStorySource, STORY_STATUS_METADATA_KEY } from '../story-status.js';
 import { getCharacterDevelopmentSnapshot } from '../character-development.js';
@@ -78,6 +80,39 @@ test('latest recovery skips streaming placeholders and finds the newest finished
     assert.equal(findLatestEligibleAssistantMessageId(context), 5);
     context.chat.push({ is_user: false, is_system: false, mes: 'finished reply' });
     assert.equal(findLatestEligibleAssistantMessageId(context), 8);
+});
+
+test('generation-end recovery checks the settled assistant floor more than once without crossing chats', () => {
+    let context = createContext();
+    const scheduled = [];
+    const runs = [];
+    const count = scheduleSideGenerationRecovery(createSettings(), {
+        contextGetter: () => context,
+        delays: [200, 1000, 3500],
+        setTimeout(callback, delay) {
+            const timer = { callback, delay };
+            scheduled.push(timer);
+            return timer;
+        },
+        clearTimeout() {},
+        run: current => runs.push(current.chatId),
+    });
+    assert.equal(count, 3);
+    assert.deepEqual(scheduled.map(item => item.delay), [200, 1000, 3500]);
+    scheduled[0].callback();
+    scheduled[1].callback();
+    assert.deepEqual(runs, ['barrage-chat', 'barrage-chat']);
+    context = { ...context, chatId: 'another-chat' };
+    scheduled[2].callback();
+    assert.deepEqual(runs, ['barrage-chat', 'barrage-chat']);
+});
+
+test('barrage lifecycle restores panels after mobile DOM rebuilds', async () => {
+    const source = await readFile(new URL('../barrage-ui.js', import.meta.url), 'utf8');
+    assert.match(source, /new MutationObserver/);
+    assert.match(source, /scheduleBarrageDomRestore/);
+    assert.match(source, /SIDE_RECOVERY_DELAYS/);
+    assert.match(source, /10_000/);
 });
 
 test('barrage generation renders and caches without mutating context.chat', async () => {

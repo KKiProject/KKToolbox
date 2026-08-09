@@ -24,6 +24,14 @@ test('switching floating pages reclamps the resized panel into the viewport', as
     assert.match(setViewBody, /clampStoryPanelToViewport\(root\)/);
 });
 
+test('status and development pages explicitly accept mobile finger scrolling', async () => {
+    const css = await readFile(new URL('../style.css', import.meta.url), 'utf8');
+    const rule = css.match(/#memory_augment_story_status_view,\s*#memory_augment_character_development_view\s*\{([\s\S]*?)\}/)?.[1] ?? '';
+    assert.match(rule, /-webkit-overflow-scrolling:\s*touch/);
+    assert.match(rule, /touch-action:\s*pan-y\s*!important/);
+    assert.match(rule, /overscroll-behavior-y:\s*contain/);
+});
+
 function status(label) {
     return {
         environment: { time: label, location: '王城 → 酒馆', season: '冬季', weather: '雪' },

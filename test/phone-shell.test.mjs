@@ -24,6 +24,9 @@ test('phone shell delegates message data and API work to the message controller'
     assert.doesNotMatch(source, /generatePhoneCompletion|loadPhoneStore|savePhoneStore/);
     assert.match(source, /createPhoneMessagesController/);
     assert.match(source, /createPhoneWeiboController/);
+    assert.match(source, /createPhoneCommunityController/);
+    assert.match(source, /createPhoneLiveController/);
+    assert.match(source, /appControllers\[activeApp\]\?\.close\?\.\(\)/);
     assert.match(source, /CHAT_CHANGED/);
     assert.match(source, /appControllers\.messages\.open\(content\)/);
 });

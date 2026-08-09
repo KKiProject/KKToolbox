@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+    <title>KKToolbox Status Touch Harness</title>
+    <style>
+        :root {
+            --SmartThemeQuoteColor: #6977ba;
+            --SmartThemeBlurTintColor: #f6f4fa;
+            --SmartThemeBorderColor: #c9c3d1;
+            --SmartThemeBodyColor: #29252e;
+        }
+        body { background: #ddd9e8; font-family: sans-serif; margin: 0; min-height: 100vh; }
+        #touch-diagnostic { background: #fff; font-size: 14px; left: 8px; padding: 8px; position: fixed; top: 8px; z-index: 2147483647; }
+    </style>
+    <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+    <div id="touch-diagnostic">正在检查…</div>
+    <div id="memory_augment_story_status_root" data-story-view="status" style="left: 12px; top: 70px; right: auto; bottom: auto;">
+        <button type="button" id="memory_augment_story_status_ball">状</button>
+        <aside id="memory_augment_story_status_panel" style="bottom: auto; left: 0; right: auto; top: 0; height: min(74vh, 42rem);">
+            <header><strong>KKToolbox</strong><button type="button" id="memory_augment_story_status_close">×</button></header>
+            <nav class="memory-augment-story-tabs"><button type="button" class="is-active">剧情状态</button><button type="button">人物发展</button><button type="button">地图册</button><button type="button">手机</button></nav>
+            <div id="memory_augment_story_status_view" data-story-page="status">
+                <div style="padding: 12px; display: grid; gap: 10px;">
+                    <label>测试拉条 <input type="range" min="0" max="100" value="50"></label>
+                    <div id="status-long-content"></div>
+                </div>
+            </div>
+        </aside>
+    </div>
+    <script>
+        const longContent = document.querySelector('#status-long-content');
+        for (let index = 1; index <= 28; index++) {
+            const card = document.createElement('section');
+            card.style.cssText = 'background:#fff;border:1px solid #d5cfda;border-radius:10px;margin:0 0 8px;padding:10px;line-height:1.6';
+            card.textContent = `状态记录 ${index}：这里是用于验证手机手指纵向滑动的长内容。`;
+            longContent.append(card);
+        }
+        const view = document.querySelector('#memory_augment_story_status_view');
+        requestAnimationFrame(() => {
+            const style = getComputedStyle(view);
+            document.querySelector('#touch-diagnostic').textContent = `touch-action=${style.touchAction} · overflow-y=${style.overflowY} · scrollable=${view.scrollHeight > view.clientHeight}`;
+        });
+    </script>
+</body>
+</html>
