@@ -1,6 +1,6 @@
 import { cleanPhoneText as cleanText } from './phone-utils.js';
 
-export const PHONE_STORE_VERSION = 5;
+export const PHONE_STORE_VERSION = 6;
 export const PHONE_MESSAGE_TYPES = Object.freeze([
     'text',
     'voice',
@@ -82,6 +82,17 @@ export function createEmptyPhoneStore(chatId = '') {
         phone: createEmptyScopedPhoneState(profile),
         activity: { events: [] },
         storyBatches: [],
+        worldGeneration: {
+            status: 'idle',
+            messageId: '',
+            swipeIndex: 0,
+            sourceKey: '',
+            modules: [],
+            warnings: [],
+            lastError: '',
+            startedAt: 0,
+            completedAt: 0,
+        },
         scopedInitialized: false,
         updatedAt: 0,
     };
@@ -387,6 +398,22 @@ export function normalizePhoneStore(value, chatId = '') {
                 ])),
                 createdAt: Number(batch?.createdAt) || Date.now(),
             })).filter(batch => batch.sourceKey).slice(-200),
+        worldGeneration: {
+            status: ['idle', 'generating', 'ready', 'partial', 'error'].includes(store?.worldGeneration?.status)
+                ? store.worldGeneration.status
+                : 'idle',
+            messageId: cleanText(store?.worldGeneration?.messageId, 120),
+            swipeIndex: Math.max(0, Math.trunc(Number(store?.worldGeneration?.swipeIndex) || 0)),
+            sourceKey: cleanText(store?.worldGeneration?.sourceKey, 500),
+            modules: Array.isArray(store?.worldGeneration?.modules)
+                ? [...new Set(store.worldGeneration.modules.map(item => cleanText(item, 40)).filter(Boolean))]
+                : [],
+            warnings: (Array.isArray(store?.worldGeneration?.warnings) ? store.worldGeneration.warnings : [])
+                .map(item => cleanText(item, 300)).filter(Boolean).slice(0, 30),
+            lastError: cleanText(store?.worldGeneration?.lastError, 1000),
+            startedAt: Math.max(0, Number(store?.worldGeneration?.startedAt) || 0),
+            completedAt: Math.max(0, Number(store?.worldGeneration?.completedAt) || 0),
+        },
         scopedInitialized: store.scopedInitialized === true,
         updatedAt: Number(store.updatedAt) || 0,
     };

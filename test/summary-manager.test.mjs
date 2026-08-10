@@ -613,6 +613,63 @@ test('an existing legacy chat keeps its original unsuffixed summary lorebook', a
     assert.equal((await getSummaries(context))[0].summary, '这个旧档自己的总结。');
 });
 
+test('a migrated chat recovers its populated legacy book instead of keeping an empty numbered shell', async () => {
+    const context = createContext(dialoguePairs(15));
+    const emptyNumberedBook = context.summaryBookName;
+    const legacyBookName = '金钰琳-自动总结';
+    context.chatMetadata[SUMMARY_STATE_KEY] = {
+        migrationVersion: 1,
+        bookName: emptyNumberedBook,
+        lastSummarizedMessageIndex: 9,
+        entries: [{ uid: '8', start: 0, end: 9, bookName: emptyNumberedBook, createdAt: '' }],
+        overviewGroups: [],
+    };
+    context.lorebooks.set(emptyNumberedBook, { entries: {} });
+    context.lorebooks.set(legacyBookName, { entries: {
+        3: { uid: 3, key: [`${SUMMARY_KEY_PREFIX}[第1-10楼]`], content: '跨版本前已经保存的真实总结。' },
+    } });
+
+    await migrateLegacySummaries(context);
+
+    const state = context.chatMetadata[SUMMARY_STATE_KEY];
+    assert.equal(state.bookName, legacyBookName);
+    assert.equal(state.lastSummarizedMessageIndex, 9);
+    assert.deepEqual(state.entries.map(entry => entry.uid), ['3']);
+    assert.equal((await getSummaries(context))[0].summary, '跨版本前已经保存的真实总结。');
+    assert.ok(context.additionalBooks.includes(legacyBookName));
+});
+
+test('orphaned summary progress is reset so an old chat can backfill from its first missing floor', async () => {
+    const context = createContext(dialoguePairs(15));
+    const bookName = context.summaryBookName;
+    context.chatMetadata[SUMMARY_STATE_KEY] = {
+        migrationVersion: 1,
+        bookName,
+        lastSummarizedMessageIndex: 9,
+        entries: [{ uid: '8', start: 0, end: 9, bookName, createdAt: '' }],
+        overviewGroups: [],
+    };
+    context.lorebooks.set(bookName, { entries: {} });
+
+    const result = await summarizePendingMessages(
+        { context: { recentMessages: 20, summaryBatchSize: 10 } },
+        context,
+        {
+            getCurrentContext: () => context,
+            generateSummary: async prompt => {
+                assert.match(prompt, /\[第 1 楼\].*dialogue 0/);
+                assert.match(prompt, /\[第 10 楼\].*dialogue 9/);
+                return '[事件1]\n重要度：3\n时间：当天\n涉及角色：A\n地点：室内\n事件概述：旧档成功从缺失的第一段重新补总结。';
+            },
+        },
+    );
+
+    assert.equal(result.created, 1);
+    assert.equal(result.start, 0);
+    assert.equal(context.chatMetadata[SUMMARY_STATE_KEY].lastSummarizedMessageIndex, 9);
+    assert.equal((await getSummaries(context))[0].summary.includes('重新补总结'), true);
+});
+
 test('existing unstructured KKT lorebook entries remain readable without changing their key', async () => {
     const context = createContext(dialoguePairs(2));
     const bookName = context.summaryBookName;

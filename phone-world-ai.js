@@ -22,6 +22,7 @@ const WORLD_MODULES = Object.freeze(['weibo', 'community', 'live', 'messages']);
 
 let lifecycleBound = false;
 let updateQueue = Promise.resolve();
+const worldUpdateInFlight = new Map();
 
 function clone(value) {
     if (typeof globalThis.structuredClone === 'function') return globalThis.structuredClone(value);
@@ -90,16 +91,57 @@ function scanJsonObjects(raw) {
 export function parsePhoneWorldRecords(raw) {
     const records = new Map();
     const errors = [];
-    for (const candidate of scanJsonObjects(raw)) {
+    const inferModule = (value, fallback = '') => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return '';
+        if (Array.isArray(value.posts) || Array.isArray(value.hotTopics)) return 'weibo';
+        if (Array.isArray(value.forumThreads) || Array.isArray(value.cpRankings) || Array.isArray(value.fanWorks)) return 'community';
+        if (Array.isArray(value.official) || Array.isArray(value.private)) return 'live';
+        if (Array.isArray(value.conversations) || Object.hasOwn(value, 'evidenceQuote')) return 'messages';
+        return WORLD_MODULES.includes(fallback) ? fallback : '';
+    };
+    const accept = (value, fallbackModule = '') => {
+        if (Array.isArray(value)) {
+            value.forEach((item, index) => accept(item, WORLD_MODULES[index]));
+            return;
+        }
+        if (!value || typeof value !== 'object') return;
+        const module = text(value.module, 40);
+        if (WORLD_MODULES.includes(module) && value.data) {
+            if (!records.has(module)) records.set(module, value.data);
+            return;
+        }
+        if (Array.isArray(value.modules)) {
+            value.modules.forEach((item, index) => accept(item, WORLD_MODULES[index]));
+            return;
+        }
+        let directModuleFound = false;
+        for (const name of WORLD_MODULES) {
+            if (records.has(name) || !value[name] || typeof value[name] !== 'object') continue;
+            records.set(name, value[name].data && typeof value[name].data === 'object'
+                ? value[name].data
+                : value[name]);
+            directModuleFound = true;
+        }
+        if (directModuleFound) return;
+        const inferred = inferModule(value, fallbackModule);
+        if (inferred && !records.has(inferred)) records.set(inferred, value);
+    };
+    const source = String(raw ?? '').trim().replace(/^```(?:json|jsonl)?\s*/i, '').replace(/\s*```$/i, '');
+    let wholeResponseError = null;
+    try {
+        accept(JSON.parse(source));
+    } catch (error) {
+        wholeResponseError = error;
+    }
+    const candidates = scanJsonObjects(source);
+    candidates.forEach((candidate, index) => {
         try {
-            const parsed = JSON.parse(candidate);
-            const module = text(parsed?.module, 40);
-            if (!WORLD_MODULES.includes(module) || !parsed?.data || records.has(module)) continue;
-            records.set(module, parsed.data);
+            accept(JSON.parse(candidate), candidates.length > 1 ? WORLD_MODULES[index] : '');
         } catch (error) {
             errors.push(error);
         }
-    }
+    });
+    if (records.size === 0 && errors.length === 0 && wholeResponseError) errors.push(wholeResponseError);
     if (records.size === 0) {
         const detail = errors[0]?.message ? `：${errors[0].message}` : '';
         throw new Error(`手机世界 API 没有返回可用的模块记录${detail}`);
@@ -141,19 +183,21 @@ function buildWorldPrompt(request) {
     return [
         '根据最新正文更新同一部虚构故事里的手机世界。四个功能共用下面的设定、信息边界和正文，不要把它们当成彼此无关的世界。',
         '只输出 JSONL：每个模块恰好一行一个完整 JSON 对象，不要 Markdown，不要解释。某模块没有内容也必须按规则返回空结构。',
-        '四行的 module 依次为 weibo、community、live、messages；每一行都必须能单独 JSON.parse，禁止跨行共用括号或逗号。',
+        '四行依次为 weibo、community、live、messages；每行完整外壳必须是 {"module":"weibo","data":{...}}（替换对应模块名与 data），并且必须能单独 JSON.parse，禁止省略 module/data、跨行共用括号或逗号。',
         '',
         '【共同硬规则】',
-        '1. 最新正文是本轮唯一新增事实。相关公开内容优先承接正文；没有适合公开生成的内容时，微博、社区和直播仍要用既有设定生成自然的世界背景动态。',
+        '1. 最新正文是本轮唯一新增事实。相关公开内容优先承接正文；没有适合公开生成的内容时，微博、社区和直播仍要用既有设定、玩家兴趣或新建的虚构公共人物与作品生成自然的世界背景动态。',
+        '1a. 微博、社区和直播是独立运转的公共生态，不是主角专属应援墙。若正文没有适合公开讨论的事件，就生成与主角和本轮正文无关的行业新闻、虚构作品、圈内讨论、日常热点或陌生主播；不得为了承接正文强行让全网围着玩家转。',
+        '1b. “当前公共内容摘要”是查重清单，不是让你仿写的题库。新内容不得照抄已有标题，也不得重复已有 CP 的同一成员组合、同人梗或直播主题。',
         '2. 路人只知道公开可见的信息。私人场景不得凭空泄露；目击、传闻、猜测必须明确标成目击、传闻或猜测，不能写成实锤。',
         '3. 数量、热度、点赞、转发、在线人数要符合人物身份和事件规模，不得整齐复制。所有评论和弹幕都必须紧贴各自内容。',
         '4. 已创建角色账号才允许以该角色账号发微博；且最新正文必须明确给出该角色动作或处境依据。仅提到名字不够。',
         '5. messages 最严格：只有最新正文明确写明某人发来／发出消息时才能生成。详细写出内容或只写“发来消息后被看了一眼”都算；没有明确发送行为就必须返回空 conversations。',
-        '6. messages.evidenceQuote 必须逐字摘自最新正文并直接证明消息确实发送或到达。插件会逐字核对；禁止根据人设或剧情需要偷偷补消息。',
+        '6. messages.evidenceQuote 必须逐字摘自最新正文并直接证明消息确实发送或到达。插件会逐字核对；禁止根据人设或剧情需要偷偷补消息。正文写明玩家发给联系人的消息也必须记录，并标记 fromUser=true；联系人发给玩家则为 false。',
         '',
         '【微博模块】',
         'data 必须使用结构：{"posts":[{"id":"唯一ID","authorType":"npc|role","authorId":"角色账号ID或空","author":"公开昵称","badge":"身份标签","tone":"rose","kind":"original","content":"正文","topics":[],"customTopics":[],"imageDescription":"可空","location":"可空","mentions":[],"source":null,"createdAt":0,"metrics":{"reposts":0,"comments":0,"likes":0},"storyEvidence":"角色帖的正文逐字依据，否则为空","hotComments":[{"id":"唯一ID","author":"网友昵称","content":"相关热评","likes":0,"createdAt":0,"tone":"violet"}]}],"hotTopics":[{"id":"唯一ID","title":"热搜标题","postId":"本批帖子ID","heat":0,"mark":"爆|沸|热|新|"}],"reply":null,"followerDelta":0,"followerReason":""}。',
-        '生成 5–8 条新首页帖子。每帖字段与既有微博一致，并恰好带 5 条高度相关的 hotComments。热搜只指向本批真实 postId；不要求所有新帖上榜。',
+        '生成 5–8 条新首页帖子。每帖字段与既有微博一致，并恰好带 5 条高度相关的 hotComments。topics 只能填写 entertainment、film、music、variety、fashion、game、anime、sports、society、finance、technology、reading、food、travel、campus、emotion、pets 这些分类 ID；中文话题词必须放入 customTopics，禁止输出 undefined。热搜生成 3–5 条且只指向本批真实 postId，其余榜位由插件从旧帖补齐。',
         request.weiboMode === 'bootstrap'
             ? '这是该存档首次初始化：根据玩家设定给出合理的初始粉丝基线，followerDelta 必须是大于 0 的初始总量；普通人通常个位或十位，名人按设定可达百万千万。'
             : 'followerDelta 只是本轮增减量；只有玩家或角色相关公开事件才调整，普通互动小幅变化，爆款或名人事件才可明显变化。',
@@ -162,8 +206,8 @@ function buildWorldPrompt(request) {
         '【社区模块】',
         'data 结构：{"forumThreads":[3条],"cpRankings":[3条],"fanWorks":[3条]}。三个板块各生成恰好 3 条，每条恰好 5 条相关热评。',
         '论坛字段：id,category,tag,time,title,excerpt,body,author,views,replies,comments。内容可为匿名爆料、扒帖、角色讨论、粉圈争执或剧情分析。',
-        'CP榜字段：id,rank,name,kind(directional|group|pun|allx),kindLabel,left,right,pairing,members,target,series,trend(new|up|down|same),change,heat,weekly,comments。榜名是 CP 名，不是作品名。',
-        '左右逆序是两对不同 CP，绝不能合并 tag。普通左右名、关系型“xx组”、姓名谐音梗和 all× 要自然混排；“xx组”按关系命名，不是在左右名后机械加“组”，并明确所属作品。',
+        'CP榜字段：id,rank,name,kind(directional|group|pun|allx),kindLabel,left,right,pairing,members,target,series,trend(new|up|down|same),change,heat,weekly,comments。榜名是 CP 名，不是作品名。series 必须填写具体的已有或新编虚构作品名，禁止留空、写“未注明作品”“未知作品”或其他占位词；背景板作品可以自由编造。',
+        '左右逆序是两对不同 CP，绝不能合并 tag。普通左右名、关系型“xx组”、姓名谐音梗和 all× 要自然混排；“xx组”按关系命名，不是在左右名后机械加“组”，并明确所属作品。同一成员组合在本批只能出现一次，也不得换名字、换作品名后重复当前榜里已有的同一对；若正文没有适合的 CP 素材，就新建别的虚构作品和人物组合。weekly 必须是本周嗑点的文字描述，绝不能填数字。',
         '同人字段：id,type(article|art|video|au|discussion),typeLabel,title,creator,cpName,pairing,series,characters,tags,time,likes,comments,summary,preview,commentsList。',
         '同人区每条必须带 tags，至少含作品名、两位角色名和唯一 CP 名。逆家不得共用 CP tag；一对 CP 只给一个 CP 名。图、剪辑、视频只写文字描述；同人文 preview 约一百字后自然省略。',
         '',
@@ -173,12 +217,13 @@ function buildWorldPrompt(request) {
         'scene 为 {kind:narration|dialogue,segment,speaker,speakerRole,text}。官方直播大场景旁白更多，夹主持、采访或节目内容；私人直播主播说话更多，夹少量旁白。不要立绘、不要左右站位。',
         '',
         '【通讯模块】',
-        'data 结构：{"evidenceQuote":"正文逐字证据或空","conversations":[{"conversationId":"现有会话ID","messages":[{"sender":"发送者","type":"text|voice|image|redpacket|group_redpacket|location|sticker","content":"内容","duration":1,"amount":0,"recipient":"","count":0,"stickerName":""}]}]}。',
+        'data 结构：{"evidenceQuote":"正文逐字证据或空","conversations":[{"conversationId":"现有会话ID","messages":[{"sender":"发送者","fromUser":false,"type":"text|voice|image|redpacket|group_redpacket|location|sticker","content":"内容","duration":1,"amount":0,"recipient":"","count":0,"stickerName":""}]}]}。',
         '只能写入现有会话 ID；未建立联系人或群聊时宁可不显示。内容可以对正文明确写出的消息适度展开，但不得改变正文事实或补写未发送的消息。',
         '',
         `【最新正文】\n${request.storyText}`,
         `【共同故事与世界设定】\n${sharedContext || '（无额外设定）'}`,
         `【现有手机会话】\n${JSON.stringify(request.conversations)}`,
+        `【当前聊天身份】\n${JSON.stringify(request.messageProfile)}`,
         `【已创建角色公共账号】\n${JSON.stringify(request.roleAccounts)}`,
         `【玩家公开资料】\n${JSON.stringify(request.profile)}`,
         `【玩家兴趣】\n${JSON.stringify(request.interests)}`,
@@ -187,24 +232,30 @@ function buildWorldPrompt(request) {
     ].join('\n');
 }
 
-function requireArray(value, length, label) {
-    if (!Array.isArray(value) || value.length !== length) throw new Error(`${label}必须恰好有 ${length} 条。`);
-    return value;
+function collectPartialItems(value, expected, label, warnings) {
+    const items = (Array.isArray(value) ? value : [])
+        .filter(item => item && typeof item === 'object' && !Array.isArray(item))
+        .slice(0, expected);
+    if (items.length !== expected) warnings.push(`${label}返回了 ${items.length} 条，已保留可用内容。`);
+    return items;
 }
 
-function requireFiveComments(item, field, label) {
-    const comments = item?.[field];
-    if (!Array.isArray(comments) || comments.length !== 5) throw new Error(`${label}必须恰好有 5 条热评。`);
+function notePartialComments(items, field, label, warnings) {
+    items.forEach((item, index) => {
+        const count = Array.isArray(item?.[field]) ? item[field].length : 0;
+        if (count !== 5) warnings.push(`第 ${index + 1} 条${label}返回了 ${count} 条热评，已保留可用评论。`);
+    });
 }
 
 function applyCommunityModule(settings, data, sourceKey, now) {
     const state = normalizePhoneCommunityState(settings);
-    const forum = requireArray(data?.forumThreads, 3, '论坛更新');
-    const cp = requireArray(data?.cpRankings, 3, 'CP榜更新');
-    const fanworks = requireArray(data?.fanWorks, 3, '同人区更新');
-    forum.forEach((item, index) => requireFiveComments(item, 'comments', `第 ${index + 1} 条论坛`));
-    cp.forEach((item, index) => requireFiveComments(item, 'comments', `第 ${index + 1} 条CP榜`));
-    fanworks.forEach((item, index) => requireFiveComments(item, 'commentsList', `第 ${index + 1} 条同人`));
+    const warnings = [];
+    const forum = collectPartialItems(data?.forumThreads, 3, '论坛更新', warnings);
+    const cp = collectPartialItems(data?.cpRankings, 3, 'CP榜更新', warnings);
+    const fanworks = collectPartialItems(data?.fanWorks, 3, '同人区更新', warnings);
+    notePartialComments(forum, 'comments', '论坛', warnings);
+    notePartialComments(cp, 'comments', 'CP榜', warnings);
+    notePartialComments(fanworks, 'commentsList', '同人', warnings);
     const occupiedIds = new Set([
         ...state.forumThreads.map(item => item.id),
         ...state.cpRankings.map(item => item.id),
@@ -234,18 +285,22 @@ function applyCommunityModule(settings, data, sourceKey, now) {
         communityForum: normalized.forumThreads.filter(item => item.generationSourceKey === sourceKey).map(item => item.id),
         communityCp: normalized.cpRankings.filter(item => item.generationSourceKey === sourceKey).map(item => item.id),
         communityFanwork: normalized.fanWorks.filter(item => item.generationSourceKey === sourceKey).map(item => item.id),
+        warnings,
     };
 }
 
 function applyLiveModule(settings, data, sourceKey, now) {
     const state = normalizePhoneLiveState(settings);
-    const official = requireArray(data?.official, 1, '官方直播更新');
-    const privateStreams = requireArray(data?.private, 1, '私人直播更新');
+    const warnings = [];
+    const official = collectPartialItems(data?.official, 1, '官方直播更新', warnings);
+    const privateStreams = collectPartialItems(data?.private, 1, '私人直播更新', warnings);
     const occupiedIds = new Set(state.streams.map(item => item.id));
     const generated = [...official.map(item => ({ ...item, type: 'official' })), ...privateStreams.map(item => ({ ...item, type: 'private' }))]
         .map((item, index) => {
-            if (!Array.isArray(item.scenes) || item.scenes.length < 4) throw new Error('新直播至少需要 4 个画面阶段。');
-            if (!Array.isArray(item.barrages) || item.barrages.length < 8) throw new Error('新直播至少需要 8 条弹幕。');
+            const sceneCount = Array.isArray(item.scenes) ? item.scenes.length : 0;
+            const barrageCount = Array.isArray(item.barrages) ? item.barrages.length : 0;
+            if (sceneCount < 4) warnings.push(`“${text(item.title, 80) || `第 ${index + 1} 场直播`}”只有 ${sceneCount} 个画面阶段。`);
+            if (barrageCount < 8) warnings.push(`“${text(item.title, 80) || `第 ${index + 1} 场直播`}”只有 ${barrageCount} 条弹幕。`);
             let id = text(item.id, 120) || `live-${now}-${index + 1}`;
             if (occupiedIds.has(id)) id = makeId('live');
             occupiedIds.add(id);
@@ -265,7 +320,10 @@ function applyLiveModule(settings, data, sourceKey, now) {
         ],
     };
     const normalized = normalizePhoneLiveState(settings);
-    return { live: normalized.streams.filter(item => item.generationSourceKey === sourceKey).map(item => item.id) };
+    return {
+        live: normalized.streams.filter(item => item.generationSourceKey === sourceKey).map(item => item.id),
+        warnings,
+    };
 }
 
 function applyMessagesModule(store, data, story, sourceKey) {
@@ -273,7 +331,7 @@ function applyMessagesModule(store, data, story, sourceKey) {
     if (conversations.length === 0) return { messages: [] };
     const evidence = text(data?.evidenceQuote, 500);
     if (!evidence || !story.includes(evidence)) throw new Error('通讯模块没有提供正文中真实存在的发送证据。');
-    const explicitTransfer = /(发来|发去|发出|发送|传来|收到|收到了|回了|回复了|信息|消息|短信|私信|微信|群里).{0,24}(消息|信息|短信|私信|微信|发|回复|弹出|跳出|送达|响|亮|一句|说|：|:)|(?:消息|信息|短信|私信|微信|群里).{0,24}(发来|发去|发出|发送|传来|收到|回复|弹出|跳出|送达|响|亮)|给.{1,20}发(?:了|去|出|送)/u;
+    const explicitTransfer = /(发来|发去|发出|发送|传来|收到|收到了|回了|回复了|信息|消息|短信|私信|微信|群里).{0,24}(消息|信息|短信|私信|微信|发|回复|弹出|跳出|送达|响|亮|一句|说|：|:)|(?:消息|信息|短信|私信|微信|群里).{0,24}(发来|发去|发出|发送|传来|收到|回复|弹出|跳出|送达|响|亮)|给.{1,20}发(?:了|去|出|送)|发给.{1,30}/u;
     if (!explicitTransfer.test(evidence)) throw new Error('通讯证据没有明确表明消息已发送或到达。');
     const appended = [];
     for (const value of conversations) {
@@ -281,11 +339,16 @@ function applyMessagesModule(store, data, story, sourceKey) {
         if (!conversation) continue;
         const roundId = createPhoneRoundId();
         for (const message of (Array.isArray(value?.messages) ? value.messages : []).slice(0, 8)) {
+            const requestedSender = text(message?.sender, 80);
+            const fromUser = message?.fromUser === true
+                || message?.direction === 'outgoing'
+                || requestedSender === text(store.profile?.nickname, 80);
             const saved = appendPhoneMessage(store, conversation.id, {
                 ...message,
                 id: makeId('story-phone-message'),
+                sender: fromUser ? text(store.profile?.nickname, 80) || '我' : requestedSender || conversation.name,
                 roundId,
-                fromUser: false,
+                fromUser,
                 queued: false,
                 storyPending: false,
                 timestamp: Date.now() + appended.length,
@@ -340,7 +403,7 @@ export function removePhoneWorldStoryBatch(store, settings, messageId) {
     return batches.length;
 }
 
-export async function requestPhoneWorldStoryUpdate(phoneSession, context, messageId, options = {}) {
+async function performPhoneWorldStoryUpdate(phoneSession, context, messageId, options = {}) {
     if (!phoneSession || !isPhoneWeiboAiReady(phoneSession.settings)) throw new Error('请先配置弹幕/手机共用的 API。');
     const store = await phoneSession.ensure();
     const settings = phoneSession.settings;
@@ -353,6 +416,19 @@ export async function requestPhoneWorldStoryUpdate(phoneSession, context, messag
     const sourceKey = `${chatId}:${messageId}:${swipeIndex}:${hashText(latestStory)}:phone-world`;
     if (store.storyBatches?.some(batch => batch.sourceKey === sourceKey)) return { duplicate: true };
 
+    const startedAt = Date.now();
+    store.worldGeneration = {
+        status: 'generating',
+        messageId: String(messageId),
+        swipeIndex,
+        sourceKey,
+        modules: [],
+        warnings: [],
+        lastError: '',
+        startedAt,
+        completedAt: 0,
+    };
+    try {
     removePhoneWorldStoryBatch(store, settings, messageId);
     await phoneSession.save();
 
@@ -393,6 +469,7 @@ export async function requestPhoneWorldStoryUpdate(phoneSession, context, messag
         profile: weiboRequest.profile,
         interests: weiboRequest.interests,
         currentState: summarizeCurrentState(settings),
+        messageProfile: settings.phone?.profile ?? store.profile,
         weiboMode: weiboRequest.mode,
         now: Date.now(),
     };
@@ -406,13 +483,26 @@ export async function requestPhoneWorldStoryUpdate(phoneSession, context, messag
     const appliedModules = [];
     const items = {};
     const moduleErrors = [];
+    const moduleWarnings = parsed.errors.map(error => `外层记录已跳过：${error.message}`);
+    for (const module of WORLD_MODULES) {
+        if (!parsed.records.has(module)) moduleWarnings.push(`返回内容缺少 ${module} 模块。`);
+    }
 
     const weiboData = parsed.records.get('weibo');
     if (weiboData) {
         try {
-            const batch = parsePhoneWeiboAiBatch(JSON.stringify(weiboData), weiboRequest);
+            const partialRequest = { ...weiboRequest, allowPartial: true };
+            const batch = parsePhoneWeiboAiBatch(JSON.stringify(weiboData), partialRequest);
+            const existingPostIds = new Set((settings.phone.weibo?.posts ?? []).map(post => post.id));
+            const conflictingPostIds = new Set(batch.posts.filter(post => existingPostIds.has(post.id)).map(post => post.id));
+            if (conflictingPostIds.size > 0) {
+                batch.posts = batch.posts.filter(post => !conflictingPostIds.has(post.id));
+                batch.hotTopics = batch.hotTopics.filter(topic => !conflictingPostIds.has(topic.postId));
+                batch.validationWarnings.push(`有 ${conflictingPostIds.size} 条微博 ID 与旧内容重复，已单独跳过。`);
+            }
             applyPhoneWeiboBatch(settings.phone.weibo, batch, weiboRequest);
             items.weibo = batch.posts.map(post => post.id);
+            moduleWarnings.push(...batch.validationWarnings.map(message => `weibo：${message}`));
             appliedModules.push('weibo');
         } catch (error) {
             moduleErrors.push({ module: 'weibo', error });
@@ -421,7 +511,9 @@ export async function requestPhoneWorldStoryUpdate(phoneSession, context, messag
     const communityData = parsed.records.get('community');
     if (communityData) {
         try {
-            Object.assign(items, applyCommunityModule(settings, communityData, sourceKey, request.now));
+            const { warnings, ...communityItems } = applyCommunityModule(settings, communityData, sourceKey, request.now);
+            Object.assign(items, communityItems);
+            moduleWarnings.push(...warnings.map(message => `community：${message}`));
             appliedModules.push('community');
         } catch (error) {
             moduleErrors.push({ module: 'community', error });
@@ -430,7 +522,9 @@ export async function requestPhoneWorldStoryUpdate(phoneSession, context, messag
     const liveData = parsed.records.get('live');
     if (liveData) {
         try {
-            Object.assign(items, applyLiveModule(settings, liveData, sourceKey, request.now));
+            const { warnings, ...liveItems } = applyLiveModule(settings, liveData, sourceKey, request.now);
+            Object.assign(items, liveItems);
+            moduleWarnings.push(...warnings.map(message => `live：${message}`));
             appliedModules.push('live');
         } catch (error) {
             moduleErrors.push({ module: 'live', error });
@@ -446,7 +540,10 @@ export async function requestPhoneWorldStoryUpdate(phoneSession, context, messag
         }
     }
     if (appliedModules.length === 0) {
-        const details = moduleErrors.map(item => `${item.module}: ${item.error.message}`).join('；');
+        const details = [
+            ...moduleErrors.map(item => `${item.module}: ${item.error.message}`),
+            ...moduleWarnings,
+        ].join('；');
         throw new Error(`手机世界更新没有可保存的模块${details ? `（${details}）` : ''}`);
     }
     store.storyBatches.push({
@@ -457,6 +554,20 @@ export async function requestPhoneWorldStoryUpdate(phoneSession, context, messag
         items,
         createdAt: request.now,
     });
+    store.worldGeneration = {
+        status: moduleErrors.length > 0 || moduleWarnings.length > 0 ? 'partial' : 'ready',
+        messageId: String(messageId),
+        swipeIndex,
+        sourceKey,
+        modules: appliedModules,
+        warnings: [
+            ...moduleWarnings,
+            ...moduleErrors.map(item => `${item.module}：${item.error.message}`),
+        ],
+        lastError: '',
+        startedAt,
+        completedAt: Date.now(),
+    };
     await phoneSession.save();
     if (moduleErrors.length > 0) {
         console.warn('[Memory Augment] 手机世界部分模块未通过校验，其他模块已独立保存。', moduleErrors);
@@ -469,7 +580,45 @@ export async function requestPhoneWorldStoryUpdate(phoneSession, context, messag
             detail: { mode: 'story', messageId, swipeIndex },
         }));
     }
-    return { modules: appliedModules, moduleErrors };
+    return { modules: appliedModules, moduleErrors, moduleWarnings };
+    } catch (error) {
+        store.worldGeneration = {
+            status: 'error',
+            messageId: String(messageId),
+            swipeIndex,
+            sourceKey,
+            modules: [],
+            warnings: [],
+            lastError: text(error?.message ?? error, 1000),
+            startedAt,
+            completedAt: Date.now(),
+        };
+        try {
+            await phoneSession.save();
+        } catch (saveError) {
+            console.warn('[Memory Augment] 手机世界失败状态保存失败。', saveError);
+        }
+        throw error;
+    }
+}
+
+export function requestPhoneWorldStoryUpdate(phoneSession, context, messageId, options = {}) {
+    const message = context?.chat?.[Number(messageId)];
+    const latestStory = storyText(message);
+    if (!phoneSession || !message || message.is_user || !latestStory) {
+        return performPhoneWorldStoryUpdate(phoneSession, context, messageId, options);
+    }
+    const sourceKey = [
+        getPhoneChatId(context),
+        messageId,
+        selectedSwipeIndex(message),
+        hashText(latestStory),
+    ].join(':');
+    if (worldUpdateInFlight.has(sourceKey)) return worldUpdateInFlight.get(sourceKey);
+    const task = performPhoneWorldStoryUpdate(phoneSession, context, messageId, options)
+        .finally(() => worldUpdateInFlight.delete(sourceKey));
+    worldUpdateInFlight.set(sourceKey, task);
+    return task;
 }
 
 export function initializePhoneWorldLifecycle(phoneSession, context = globalThis.SillyTavern?.getContext?.()) {

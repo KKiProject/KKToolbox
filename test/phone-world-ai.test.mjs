@@ -16,6 +16,32 @@ test('phone world JSONL keeps valid modules when a neighboring module is malform
     assert.equal(parsed.errors.length, 1);
 });
 
+test('phone world parser accepts arrays, module wrappers, and direct four-module objects', () => {
+    const direct = parsePhoneWorldRecords(JSON.stringify({
+        weibo: { posts: [] },
+        community: { forumThreads: [] },
+        live: { official: [], private: [] },
+        messages: { conversations: [] },
+    }));
+    assert.deepEqual([...direct.records.keys()], ['weibo', 'community', 'live', 'messages']);
+
+    const wrapped = parsePhoneWorldRecords(JSON.stringify({
+        modules: [
+            { module: 'weibo', data: { posts: [] } },
+            { module: 'messages', data: { conversations: [] } },
+        ],
+    }));
+    assert.deepEqual([...wrapped.records.keys()], ['weibo', 'messages']);
+
+    const bareJsonl = parsePhoneWorldRecords([
+        JSON.stringify({ posts: [], hotTopics: [] }),
+        JSON.stringify({ forumThreads: [], cpRankings: [], fanWorks: [] }),
+        JSON.stringify({ official: [], private: [] }),
+        JSON.stringify({ evidenceQuote: '', conversations: [] }),
+    ].join('\n'));
+    assert.deepEqual([...bareJsonl.records.keys()], ['weibo', 'community', 'live', 'messages']);
+});
+
 test('removing a story batch clears only that swipe-derived phone data in every app', () => {
     const store = createEmptyPhoneStore('phone-world-cleanup');
     const conversation = createPhoneConversation(store, { type: 'direct', name: '沈越' });
@@ -142,4 +168,188 @@ test('one story-side request updates all public apps and only imports evidence-b
     assert.equal(store.conversations[0].messages.at(-1).content, '今晚十点开会。');
     assert.equal(store.conversations[0].messages.at(-1).storyPending, false);
     assert.equal(store.storyBatches.length, 1);
+});
+
+test('story-side phone update preserves usable partial content and records validation warnings', async () => {
+    const store = createEmptyPhoneStore('phone-world-partial');
+    store.scopedInitialized = true;
+    store.phone.profile = { nickname: '夜酱', accountId: 'main', isMask: false };
+    store.phone.weibo = { initialized: true, interests: [], posts: [], feedPostIds: [], hotTopics: [], roleAccounts: [] };
+    store.phone.community = {};
+    store.phone.live = {};
+    const settings = {
+        apis: { barrage: { url: 'https://example.com/v1', apiKey: 'key', model: 'model' } },
+        development: { enabled: false },
+        map: { includeInPrompt: false },
+        phone: store.phone,
+    };
+    const context = {
+        getCurrentChatId: () => store.chatId,
+        name1: '夜酱',
+        name2: '艾莉娅',
+        characterId: 0,
+        characters: [{ name: '艾莉娅', description: '演员。', data: {} }],
+        chatMetadata: {},
+        chat: [{ is_user: false, mes: '夜幕降临，城市仍然热闹。' }],
+    };
+    const response = {
+        weibo: {
+            posts: [{
+                id: 'partial-post', authorType: 'npc', author: '路人', content: '夜晚随手拍。',
+                hotComments: [{ content: '灯光很好看。' }],
+            }],
+            hotTopics: [{ title: '无效热搜会单独跳过', postId: 'missing-post' }],
+        },
+        community: {
+            forumThreads: [{ id: 'partial-forum', title: '夜聊楼', comments: [{ content: '来啦。' }] }],
+            cpRankings: [],
+            fanWorks: [],
+        },
+        live: {
+            official: [{ id: 'partial-live', title: '夜间直播', scenes: [{ text: '镜头扫过夜景。' }], barrages: ['晚安'] }],
+            private: [],
+        },
+        messages: { evidenceQuote: '', conversations: [] },
+    };
+    const phoneSession = { settings, ensure: async () => store, save: async () => store };
+
+    const result = await requestPhoneWorldStoryUpdate(phoneSession, context, 0, {
+        generate: async () => ({ content: JSON.stringify(response) }),
+        contextClients: {
+            getPowerUser: () => ({ persona_description: '普通用户。' }),
+            getMaxContextSize: () => 32768,
+            getWorldInfoPrompt: async () => ({}),
+            retrieveAndInject: async () => undefined,
+        },
+    });
+
+    assert.deepEqual(result.modules, ['weibo', 'community', 'live', 'messages']);
+    assert.equal(settings.phone.weibo.posts.some(post => post.id === 'partial-post'), true);
+    assert.equal(settings.phone.community.forumThreads.some(item => item.id === 'partial-forum'), true);
+    assert.equal(settings.phone.live.streams.some(item => item.id === 'partial-live'), true);
+    assert.equal(store.worldGeneration.status, 'partial');
+    assert.ok(store.worldGeneration.warnings.length >= 4);
+});
+
+test('story-side phone update persists its real failure reason in the chat-scoped phone store', async () => {
+    const store = createEmptyPhoneStore('phone-world-error');
+    store.scopedInitialized = true;
+    store.phone.weibo = { initialized: true, roleAccounts: [] };
+    const settings = {
+        apis: { barrage: { url: 'https://example.com/v1', apiKey: 'key', model: 'model' } },
+        development: { enabled: false },
+        map: { includeInPrompt: false },
+        phone: store.phone,
+    };
+    const context = {
+        getCurrentChatId: () => store.chatId,
+        chatMetadata: {},
+        chat: [{ is_user: false, mes: '正文继续。' }],
+    };
+    let saves = 0;
+    const phoneSession = { settings, ensure: async () => store, save: async () => { saves++; return store; } };
+
+    await assert.rejects(() => requestPhoneWorldStoryUpdate(phoneSession, context, 0, {
+        generate: async () => ({ content: '{"unexpected":true}' }),
+        contextClients: {
+            getPowerUser: () => ({}),
+            getMaxContextSize: () => 32768,
+            getWorldInfoPrompt: async () => ({}),
+            retrieveAndInject: async () => undefined,
+        },
+    }), /没有返回可用的模块记录/);
+
+    assert.equal(store.worldGeneration.status, 'error');
+    assert.match(store.worldGeneration.lastError, /没有返回可用的模块记录/);
+    assert.ok(saves >= 2);
+});
+
+test('the same story source shares one in-flight phone request across duplicate lifecycle events', async () => {
+    const store = createEmptyPhoneStore('phone-world-in-flight');
+    store.scopedInitialized = true;
+    store.phone.weibo = { initialized: true, roleAccounts: [] };
+    const settings = {
+        apis: { barrage: { url: 'https://example.com/v1', apiKey: 'key', model: 'model' } },
+        development: { enabled: false },
+        map: { includeInPrompt: false },
+        phone: store.phone,
+    };
+    const context = {
+        getCurrentChatId: () => store.chatId,
+        chatMetadata: {},
+        chat: [{ is_user: false, mes: '同一条正文只应更新一次手机。' }],
+    };
+    let calls = 0;
+    let release;
+    const responseReady = new Promise(resolve => { release = resolve; });
+    const options = {
+        generate: async () => {
+            calls++;
+            await responseReady;
+            return { content: JSON.stringify({ evidenceQuote: '', conversations: [] }) };
+        },
+        contextClients: {
+            getPowerUser: () => ({}),
+            getMaxContextSize: () => 32768,
+            getWorldInfoPrompt: async () => ({}),
+            retrieveAndInject: async () => undefined,
+        },
+    };
+    const phoneSession = { settings, ensure: async () => store, save: async () => store };
+
+    const first = requestPhoneWorldStoryUpdate(phoneSession, context, 0, options);
+    const second = requestPhoneWorldStoryUpdate(phoneSession, context, 0, options);
+    assert.equal(first, second);
+    release();
+    await Promise.all([first, second]);
+
+    assert.equal(calls, 1);
+    assert.equal(store.storyBatches.length, 1);
+    assert.equal(store.worldGeneration.status, 'partial');
+});
+
+test('evidence-backed story messages preserve whether the player sent or received them', async () => {
+    const store = createEmptyPhoneStore('phone-world-direction');
+    store.scopedInitialized = true;
+    store.profile.nickname = '季宁';
+    store.phone.profile = { nickname: '季宁', accountId: 'main', isMask: false };
+    store.phone.weibo = { initialized: true, roleAccounts: [] };
+    const conversation = createPhoneConversation(store, { type: 'direct', name: '张伯' });
+    const settings = {
+        apis: { barrage: { url: 'https://example.com/v1', apiKey: 'key', model: 'model' } },
+        development: { enabled: false },
+        map: { includeInPrompt: false },
+        phone: store.phone,
+    };
+    const context = {
+        getCurrentChatId: () => store.chatId,
+        chatMetadata: {},
+        chat: [{ is_user: false, mes: '季宁用手机发给张伯：“给她介绍个工作。”' }],
+    };
+    const record = {
+        module: 'messages',
+        data: {
+            evidenceQuote: '季宁用手机发给张伯',
+            conversations: [{
+                conversationId: conversation.id,
+                messages: [{ sender: '季宁', fromUser: true, type: 'text', content: '给她介绍个工作。' }],
+            }],
+        },
+    };
+    const phoneSession = { settings, ensure: async () => store, save: async () => store };
+
+    await requestPhoneWorldStoryUpdate(phoneSession, context, 0, {
+        generate: async () => ({ content: JSON.stringify(record) }),
+        contextClients: {
+            getPowerUser: () => ({}),
+            getMaxContextSize: () => 32768,
+            getWorldInfoPrompt: async () => ({}),
+            retrieveAndInject: async () => undefined,
+        },
+    });
+
+    const saved = store.conversations[0].messages.at(-1);
+    assert.equal(saved.sender, '季宁');
+    assert.equal(saved.fromUser, true);
+    assert.equal(saved.content, '给她介绍个工作。');
 });

@@ -304,6 +304,15 @@ export function createPhoneLiveController(options = {}) {
     let stagePanelOpen = false;
     let selectedRecordId = '';
     let selectedBarrageIds = new Set();
+    const scrollPositions = new Map();
+    const chatScrollPositions = new Map();
+
+    function viewKey() {
+        if (activeStreamId) return `room:${activeStreamId}`;
+        if (viewMode === 'setup') return 'setup';
+        if (viewMode === 'record') return `record:${selectedRecordId}`;
+        return `home:${activeChannel}`;
+    }
 
     function ownStream() {
         const own = state.ownLive;
@@ -774,15 +783,14 @@ export function createPhoneLiveController(options = {}) {
     }
 
     function fillChatList(list, stream) {
+        const previousScrollTop = list.scrollTop;
         list.replaceChildren();
         for (const item of liveChatItems(stream)) {
             const row = element(documentRef, 'p', item.kind === 'gift' ? 'is-gift' : item.mine ? 'is-mine' : '');
             row.append(element(documentRef, 'strong', '', item.mine ? '我' : text(item.author, 50)), documentRef.createTextNode(` ${text(item.content, 180)}`));
             list.append(row);
         }
-        (globalThis.requestAnimationFrame ?? globalThis.setTimeout)(() => {
-            list.scrollTop = stream.type === 'private' && !stream.isOwn ? list.scrollHeight : 0;
-        }, 0);
+        list.scrollTop = previousScrollTop;
     }
 
     function renderChatList(container, stream) {
@@ -1097,16 +1105,34 @@ export function createPhoneLiveController(options = {}) {
     function render() {
         if (!root) return;
         stopPlayback();
+        const previousView = root.querySelector('.memory-augment-live-view');
+        const previousKey = previousView?.dataset?.phoneScrollKey;
+        if (previousKey) {
+            scrollPositions.set(previousKey, previousView.scrollTop);
+            const previousChat = previousView.querySelector('.memory-augment-live-chat-list');
+            if (previousChat) chatScrollPositions.set(previousKey, previousChat.scrollTop);
+        }
         root.replaceChildren();
         root.classList.remove('is-messages', 'is-weibo', 'is-community', 'is-live');
         root.classList.add('is-live');
         const view = element(documentRef, 'div', 'memory-augment-live-view');
+        const nextKey = viewKey();
+        view.dataset.phoneScrollKey = nextKey;
         const stream = currentStream();
         if (stream) renderRoom(view, stream);
         else if (viewMode === 'setup') renderOwnSetup(view);
         else if (viewMode === 'record') renderRecordDetail(view);
         else renderHome(view);
         root.append(view);
+        const savedScrollTop = scrollPositions.get(nextKey);
+        const savedChatScrollTop = chatScrollPositions.get(nextKey);
+        if (Number.isFinite(savedScrollTop) || Number.isFinite(savedChatScrollTop)) {
+            (globalThis.requestAnimationFrame ?? globalThis.setTimeout)(() => {
+                if (Number.isFinite(savedScrollTop)) view.scrollTop = savedScrollTop;
+                const chat = view.querySelector('.memory-augment-live-chat-list');
+                if (chat && Number.isFinite(savedChatScrollTop)) chat.scrollTop = savedChatScrollTop;
+            }, 0);
+        }
         if (stream?.isOwn && state.ownLive.status === 'live' && stagePanelOpen) renderOwnStagePanel(root);
         if (stream) startPlayback();
     }

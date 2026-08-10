@@ -273,6 +273,52 @@ function normalizeComments(value, fallback, ownerId) {
     return unique;
 }
 
+function cpIdentityPart(value) {
+    return text(value, 80).normalize('NFKC').toLocaleLowerCase().replace(/[\s《》「」『』【】()（）·・._-]/gu, '');
+}
+
+function fictionalSeriesName(item = {}) {
+    const existing = text(item.series, 60);
+    const isPlaceholder = ['未注明作品', '未知作品', '未提供', '无'].includes(existing);
+    const duplicatesCpName = existing && cpIdentityPart(existing) === cpIdentityPart(item.name);
+    if (existing && !isPlaceholder && !duplicatesCpName) return existing;
+    const titles = ['雾港来信', '长街未眠', '逆光航线', '第七封信', '深蓝回声', '夏夜失焦', '白昼边缘', '月落之前', '无声回廊', '零点剧场', '昨日晴空', '星河旧梦'];
+    const memberNames = Array.isArray(item.members) ? item.members : [];
+    const seed = `${text(item.id, 120)}|${text(item.name, 60)}|${memberNames.join('|')}`;
+    let hash = 2166136261;
+    for (const character of seed) {
+        hash ^= character.codePointAt(0);
+        hash = Math.imul(hash, 16777619);
+    }
+    return titles[(hash >>> 0) % titles.length];
+}
+
+function cpIdentityKey(item = {}) {
+    const members = (Array.isArray(item.members) ? item.members : [])
+        .map(cpIdentityPart).filter(Boolean);
+    const left = cpIdentityPart(item.left);
+    const right = cpIdentityPart(item.right);
+    if (item.kind === 'allx') {
+        const target = cpIdentityPart(item.target) || members.at(-1) || '';
+        const others = members.filter(member => member !== target).sort();
+        if (target && others.length > 0) return `allx:${others.join('+')}>${target}`;
+    }
+    if (['directional', 'pun'].includes(item.kind) && left && right) return `pair:${left}>${right}`;
+    if (members.length >= 2) return `members:${[...new Set(members)].sort().join('+')}`;
+    if (left && right) return `pair:${left}>${right}`;
+    return `named:${cpIdentityPart(item.series)}:${cpIdentityPart(item.name)}`;
+}
+
+function dedupeCpRankings(items = []) {
+    const seen = new Set();
+    return items.filter(item => {
+        const key = cpIdentityKey(item);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    }).map((item, index) => ({ ...item, rank: index + 1 }));
+}
+
 function mergeKnownItems(value, fallback, kind) {
     const source = Array.isArray(value) && value.length > 0 ? clone(value) : clone(fallback);
     const seeds = new Map(fallback.map(item => [item.id, item]));
@@ -305,15 +351,21 @@ function mergeKnownItems(value, fallback, kind) {
                 ? upgraded.members.map(name => text(name, 50)).filter(Boolean).slice(0, 8)
                 : names;
             const { reverse: _legacyReverse, group: _legacyGroup, tags: _legacyTags, ...cleaned } = upgraded;
+            const name = text(upgraded?.name, 60) || names.map(value => value.slice(0, 1)).join('') || '未命名CP';
+            const rawWeekly = text(upgraded?.weekly, 400);
+            const weekly = rawWeekly && !/^\d+(?:\.\d+)?(?:万|亿)?$/u.test(rawWeekly)
+                ? rawWeekly
+                : `${name}相关讨论本周持续升温。`;
             return {
                 ...cleaned,
                 id,
-                name: text(upgraded?.name, 60) || names.map(name => name.slice(0, 1)).join('') || '未命名CP',
+                name,
                 kind: normalizedKind,
                 kindLabel: text(upgraded?.kindLabel, 30) || kindLabels[normalizedKind],
                 pairing: text(upgraded?.pairing, 100) || names.join(' × '),
                 members,
-                series: text(upgraded?.series, 60) || '未注明作品',
+                series: fictionalSeriesName(upgraded),
+                weekly,
                 comments: normalizeComments(item?.comments, seed?.comments, id),
             };
         }
@@ -368,7 +420,7 @@ export function normalizePhoneCommunityState(settings = {}) {
     const state = {
         profile,
         forumThreads: mergeKnownItems(source.forumThreads, SAMPLE_FORUM_THREADS, 'forum'),
-        cpRankings: mergeKnownItems(source.cpRankings, SAMPLE_CP_RANKINGS, 'cp'),
+        cpRankings: dedupeCpRankings(mergeKnownItems(source.cpRankings, SAMPLE_CP_RANKINGS, 'cp')),
         fanWorks: mergeKnownItems(source.fanWorks, SAMPLE_FAN_WORKS, 'fanwork'),
         commentReplies: Array.isArray(source.commentReplies)
             ? source.commentReplies.map(reply => ({
@@ -492,10 +544,10 @@ function renderComments(documentRef, comments = [], options = {}) {
             form.append(input, submit);
             form.addEventListener('submit', (event) => {
                 event.preventDefault();
-                if (!options.onSubmitReply?.(comment.id, input.value)) input.focus();
+                if (!options.onSubmitReply?.(comment.id, input.value)) input.focus({ preventScroll: true });
             });
             copy.append(form);
-            (globalThis.requestAnimationFrame ?? globalThis.setTimeout)(() => input.focus(), 0);
+            (globalThis.requestAnimationFrame ?? globalThis.setTimeout)(() => input.focus({ preventScroll: true }), 0);
         }
         row.append(avatar, copy);
         section.append(row);
@@ -515,6 +567,13 @@ export function createPhoneCommunityController(options = {}) {
     let fanFilter = 'all';
     let detail = null;
     let replyTarget = null;
+    const scrollPositions = new Map();
+
+    function viewKey() {
+        if (detail) return `detail:${detail.type}:${detail.id}`;
+        const filter = activeTab === 'forum' ? forumFilter : activeTab === 'fanworks' ? fanFilter : 'all';
+        return `list:${activeTab}:${filter}`;
+    }
 
     function persist() {
         settings.phone.community = state;
@@ -748,12 +807,14 @@ export function createPhoneCommunityController(options = {}) {
     function render() {
         if (!root) return;
         const previousView = root.querySelector('.memory-augment-community-view');
-        const restoreDetailPosition = Boolean(detail && previousView?.querySelector('.memory-augment-community-detail'));
-        const previousScrollTop = restoreDetailPosition ? previousView.scrollTop : 0;
+        const previousKey = previousView?.dataset?.phoneScrollKey;
+        if (previousKey) scrollPositions.set(previousKey, previousView.scrollTop);
         root.replaceChildren();
         root.classList.remove('is-messages', 'is-weibo', 'is-community', 'is-live');
         root.classList.add('is-community');
         const page = element(documentRef, 'div', 'memory-augment-community-view');
+        const nextKey = viewKey();
+        page.dataset.phoneScrollKey = nextKey;
         if (detail) renderDetail(page);
         else {
             renderTabs(page);
@@ -762,7 +823,10 @@ export function createPhoneCommunityController(options = {}) {
             else renderFanworks(page);
         }
         root.append(page);
-        if (restoreDetailPosition) (globalThis.requestAnimationFrame ?? globalThis.setTimeout)(() => { page.scrollTop = previousScrollTop; }, 0);
+        const savedScrollTop = scrollPositions.get(nextKey);
+        if (Number.isFinite(savedScrollTop)) {
+            (globalThis.requestAnimationFrame ?? globalThis.setTimeout)(() => { page.scrollTop = savedScrollTop; }, 0);
+        }
     }
 
     globalThis.addEventListener?.('memory-augment-phone-world-updated', event => {

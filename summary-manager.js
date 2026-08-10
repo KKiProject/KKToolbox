@@ -17,7 +17,7 @@ const HISTORICAL_OVERVIEW_KEY = '[KKT历史概括]';
 const HISTORICAL_OVERVIEW_GROUP_SIZE = 5;
 const HISTORICAL_OVERVIEW_ORDER = 99;
 const WORLD_INFO_POSITION_AT_DEPTH = 4;
-const SUMMARY_MIGRATION_VERSION = 1;
+const SUMMARY_MIGRATION_VERSION = 2;
 const MAX_AUTOMATIC_BACKFILL_BATCHES = 3;
 let summaryQueue = Promise.resolve();
 const summaryRuntimeByChat = new Map();
@@ -264,7 +264,10 @@ async function getSummaryBookName(context, create = false) {
         const bindingKey = `${String(getChatId(context) ?? '')}:${bookName}`;
         const bindingIsCurrent = activeSummaryBinding?.metadata === context.chatMetadata
             && activeSummaryBinding?.key === bindingKey;
-        const existing = bindingIsCurrent
+        const knownBookNames = bindingIsCurrent
+            ? await listWorldInfoBookNames(context)
+            : null;
+        const existing = bindingIsCurrent && knownBookNames?.includes(bookName)
             ? true
             : typeof context?.loadWorldInfo === 'function'
                 ? await context.loadWorldInfo(bookName)
@@ -1135,6 +1138,75 @@ async function migrateLegacyLorebookEntries(context, state) {
     return migrated;
 }
 
+async function reconcileLegacySummaryBook(context, state) {
+    const current = getCurrentCharacter(context);
+    if (!current || typeof context?.loadWorldInfo !== 'function') {
+        return false;
+    }
+
+    const claimedHistory = Boolean(
+        state.entries.length
+        || state.overviewGroups.length
+        || state.lastSummarizedMessageIndex >= 0,
+    );
+    const entryBookNames = state.entries
+        .map(entry => String(entry?.bookName ?? '').trim())
+        .filter(Boolean);
+    const chatBoundBookName = isSummaryBookForCharacter(
+        context?.chatMetadata?.world_info,
+        current.name,
+    ) ? String(context.chatMetadata.world_info).trim() : '';
+    const primaryCandidates = [...new Set([
+        ...entryBookNames,
+        state.bookName,
+        chatBoundBookName,
+    ].filter(name => isSummaryBookForCharacter(name, current.name)))];
+
+    let populatedBookName = '';
+    for (const candidate of primaryCandidates) {
+        const data = await context.loadWorldInfo(candidate);
+        if (Object.values(data?.entries ?? {}).some(isManagedSummaryEntry)) {
+            populatedBookName = candidate;
+            break;
+        }
+    }
+
+    // Only a chat which already carries summary progress may claim the old,
+    // unsuffixed lorebook. A new chat must never adopt another save's history.
+    if (!populatedBookName && claimedHistory) {
+        const legacyBookName = `${current.name}${SUMMARY_BOOK_SUFFIX}`;
+        if (!primaryCandidates.includes(legacyBookName)) {
+            const legacyData = await context.loadWorldInfo(legacyBookName);
+            if (Object.values(legacyData?.entries ?? {}).some(isManagedSummaryEntry)) {
+                populatedBookName = legacyBookName;
+            }
+        }
+    }
+
+    if (populatedBookName) {
+        const changed = state.bookName !== populatedBookName
+            || state.entries.length > 0
+            || state.lastSummarizedMessageIndex >= 0;
+        state.bookName = populatedBookName;
+        // Rebuild these two fields from the entries which really exist in the
+        // selected lorebook. This removes stale UIDs and impossible progress.
+        state.entries = [];
+        state.lastSummarizedMessageIndex = -1;
+        return changed;
+    }
+
+    if (claimedHistory) {
+        // The metadata says old floors were summarized, but no safe candidate
+        // contains a summary. Keep the allocated name, discard only the false
+        // progress, and let normal backfill recreate summaries from this chat.
+        state.entries = [];
+        state.overviewGroups = [];
+        state.lastSummarizedMessageIndex = -1;
+        return true;
+    }
+    return false;
+}
+
 export async function migrateLegacySummaries(context) {
     const metadata = context?.chatMetadata;
     if (!metadata) {
@@ -1144,8 +1216,12 @@ export async function migrateLegacySummaries(context) {
         && (Object.hasOwn(metadata[SUMMARY_STATE_KEY], 'aiRepliesSinceLastSummary')
             || Object.hasOwn(metadata[SUMMARY_STATE_KEY], 'lastCountedReplySignature')));
     const state = getSummaryState(metadata, true);
+    const previousBookName = state.bookName;
+    const reconciliationChanged = state.migrationVersion < SUMMARY_MIGRATION_VERSION
+        ? await reconcileLegacySummaryBook(context, state)
+        : false;
     const selectedBookName = await getSummaryBookName(context, true);
-    const selectionChanged = Boolean(selectedBookName && state.bookName !== selectedBookName);
+    const selectionChanged = Boolean(selectedBookName && previousBookName !== selectedBookName);
     if (selectionChanged) state.bookName = selectedBookName;
     const legacyStore = metadata[LEGACY_SUMMARY_METADATA_KEY];
     if (state.migrationVersion >= SUMMARY_MIGRATION_VERSION
@@ -1181,7 +1257,7 @@ export async function migrateLegacySummaries(context) {
         delete metadata[LEGACY_SUMMARY_METADATA_KEY];
     }
     state.migrationVersion = SUMMARY_MIGRATION_VERSION;
-    if (migrated > 0 || hadLegacyCounters || needsVersionSave || selectionChanged) {
+    if (migrated > 0 || hadLegacyCounters || needsVersionSave || selectionChanged || reconciliationChanged) {
         await context.saveMetadata?.();
     }
     return migrated;

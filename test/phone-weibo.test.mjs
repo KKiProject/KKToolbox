@@ -50,6 +50,33 @@ test('weibo keeps only known distinct interests and valid local posts', () => {
     assert.equal(settings.phone.weibo, renormalized);
 });
 
+test('generated Chinese topics become visible hashtags and hot search fills ten distinct saved posts', () => {
+    const posts = Array.from({ length: 12 }, (_, index) => ({
+        id: `generated-${index}`,
+        authorType: 'npc',
+        author: `路人${index}`,
+        content: `这是第${index + 1}条可以进入热搜的公共帖子。`,
+        topics: index === 0 ? ['午休吃瓜'] : ['society'],
+        customTopics: [],
+        createdAt: 100 - index,
+        likes: 100 + index,
+        comments: 20 + index,
+        reposts: 5 + index,
+    }));
+    const settings = { phone: { weibo: {
+        posts,
+        feedPostIds: posts.map(post => post.id),
+        hotTopics: [{ id: 'provided-hot', title: '已有热搜', postId: 'generated-0', heat: 5000, mark: '热' }],
+    } } };
+    const state = normalizePhoneWeiboState(settings);
+    assert.deepEqual(state.posts[0].topics, []);
+    assert.deepEqual(state.posts[0].customTopics, ['午休吃瓜']);
+    assert.equal(state.hotTopics.length, 10);
+    assert.equal(new Set(state.hotTopics.map(topic => topic.postId)).size, 10);
+    assert.equal(state.hotTopics.every(topic => state.feedPostIds.includes(topic.postId)), true);
+    assert.equal(state.hotTopics.some(topic => topic.title.includes('undefined')), false);
+});
+
 test('weibo role accounts use a shared explicit registry with separate public nicknames', () => {
     const accounts = buildPhoneWeiboRoleAccounts([
         {

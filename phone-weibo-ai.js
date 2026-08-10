@@ -1,7 +1,11 @@
 import { generateWeiboCompletion } from './rag-client.js';
 import { getPhoneChatId } from './phone-store.js';
 import { cleanPhoneText as text } from './phone-utils.js';
-import { normalizePhoneWeiboState } from './phone-weibo.js';
+import {
+    completePhoneWeiboHotTopics,
+    normalizePhoneWeiboPost,
+    normalizePhoneWeiboState,
+} from './phone-weibo.js';
 
 export const PHONE_WEIBO_FEED_LIMIT = 30;
 export const PHONE_WEIBO_STORY_POST_MIN = 5;
@@ -35,9 +39,14 @@ function parseJsonObject(raw) {
     return parsed;
 }
 
-function finiteInteger(value, label, { minimum = 0, maximum = 100_000_000 } = {}) {
+function finiteInteger(value, label, { minimum = 0, maximum = 100_000_000, fallback } = {}) {
     const number = Number(value);
-    if (!Number.isFinite(number)) throw new Error(`${label} 必须是数字。`);
+    if (!Number.isFinite(number)) {
+        if (Number.isFinite(Number(fallback))) {
+            return Math.max(minimum, Math.min(maximum, Math.trunc(Number(fallback))));
+        }
+        throw new Error(`${label} 必须是数字。`);
+    }
     return Math.max(minimum, Math.min(maximum, Math.trunc(number)));
 }
 
@@ -47,23 +56,25 @@ function requiredText(value, label, maximum = 500) {
     return result;
 }
 
-function normalizeAiComment(value, index, postId, now) {
+function normalizeAiComment(value, index, postId, now, tolerant = false) {
     return {
         id: text(value?.id, 120) || `${postId}-comment-${index + 1}`,
-        author: requiredText(value?.author, `第 ${index + 1} 条热评作者`, 80),
+        author: tolerant ? text(value?.author, 80) || '微博用户' : requiredText(value?.author, `第 ${index + 1} 条热评作者`, 80),
         content: requiredText(value?.content, `第 ${index + 1} 条热评内容`, 300),
-        likes: finiteInteger(value?.likes, `第 ${index + 1} 条热评点赞数`),
+        likes: finiteInteger(value?.likes, `第 ${index + 1} 条热评点赞数`, { fallback: tolerant ? 0 : undefined }),
         createdAt: Number.isFinite(Number(value?.createdAt)) ? Number(value.createdAt) : now - ((index + 1) * 60_000),
         tone: text(value?.tone, 20) || ['violet', 'orange', 'cyan', 'rose', 'green'][index % 5],
     };
 }
 
-function normalizeAiPost(value, index, request, now) {
+function normalizeAiPost(value, index, request, now, warnings = []) {
+    const tolerant = request.allowPartial === true;
     const id = text(value?.id, 120) || makeId('weibo-post');
     const authorType = ['npc', 'role', 'player'].includes(value?.authorType) ? value.authorType : 'npc';
     const roleId = authorType === 'role' ? requiredText(value?.authorId, `第 ${index + 1} 条角色微博的账号 ID`, 120) : '';
-    const comments = Array.isArray(value?.hotComments) ? value.hotComments : [];
-    if (comments.length !== 5) throw new Error(`第 ${index + 1} 条微博必须恰好带 5 条高度相关的热评。`);
+    const comments = (Array.isArray(value?.hotComments) ? value.hotComments : []).slice(0, 5);
+    if (!tolerant && comments.length !== 5) throw new Error(`第 ${index + 1} 条微博必须恰好带 5 条高度相关的热评。`);
+    if (tolerant && comments.length !== 5) warnings.push(`第 ${index + 1} 条微博只返回了 ${comments.length} 条热评。`);
     const roleAccount = roleId
         ? request.roleAccounts.find(account => account.id === roleId)
         : null;
@@ -79,8 +90,19 @@ function normalizeAiPost(value, index, request, now) {
     }
     const metrics = value?.metrics && typeof value.metrics === 'object' ? value.metrics : value;
     const content = requiredText(value?.content, `第 ${index + 1} 条微博正文`, 500);
-    const commentCount = finiteInteger(metrics?.comments, `第 ${index + 1} 条微博评论数`);
-    if (commentCount < comments.length) throw new Error(`第 ${index + 1} 条微博的评论总数小于已生成热评数。`);
+    const normalizedComments = [];
+    comments.forEach((comment, commentIndex) => {
+        try {
+            normalizedComments.push(normalizeAiComment(comment, commentIndex, id, now, tolerant));
+        } catch (error) {
+            if (!tolerant) throw error;
+            warnings.push(`第 ${index + 1} 条微博的第 ${commentIndex + 1} 条热评已跳过：${error.message}`);
+        }
+    });
+    const commentCount = finiteInteger(metrics?.comments, `第 ${index + 1} 条微博评论数`, {
+        fallback: tolerant ? normalizedComments.length : undefined,
+    });
+    if (!tolerant && commentCount < normalizedComments.length) throw new Error(`第 ${index + 1} 条微博的评论总数小于已生成热评数。`);
     return {
         id,
         kind: value?.kind === 'repost' && value?.source ? 'repost' : 'original',
@@ -88,7 +110,9 @@ function normalizeAiPost(value, index, request, now) {
         authorId: roleId,
         author: authorType === 'player'
             ? request.profile.nickname
-            : authorType === 'role' ? roleAccount.nickname : requiredText(value?.author, `第 ${index + 1} 条微博作者`, 80),
+            : authorType === 'role' ? roleAccount.nickname : tolerant
+                ? text(value?.author, 80) || '微博用户'
+                : requiredText(value?.author, `第 ${index + 1} 条微博作者`, 80),
         avatar: authorType === 'role' ? roleAccount.avatar : text(value?.avatar, 4000),
         badge: text(value?.badge, 80) || (authorType === 'player' ? 'KK PHONE 用户' : authorType === 'role' ? '角色账号' : '微博用户'),
         tone: text(value?.tone, 20) || 'rose',
@@ -103,23 +127,23 @@ function normalizeAiPost(value, index, request, now) {
         })).filter(mention => mention.id && mention.nickname),
         source: value?.source && typeof value.source === 'object' ? clone(value.source) : null,
         createdAt: Number.isFinite(Number(value?.createdAt)) ? Number(value.createdAt) : now - (index * 60_000),
-        reposts: finiteInteger(metrics?.reposts, `第 ${index + 1} 条微博转发数`),
-        comments: commentCount,
-        likes: finiteInteger(metrics?.likes, `第 ${index + 1} 条微博点赞数`),
-        hotComments: comments.map((comment, commentIndex) => normalizeAiComment(comment, commentIndex, id, now)),
+        reposts: finiteInteger(metrics?.reposts, `第 ${index + 1} 条微博转发数`, { fallback: tolerant ? 0 : undefined }),
+        comments: Math.max(commentCount, normalizedComments.length),
+        likes: finiteInteger(metrics?.likes, `第 ${index + 1} 条微博点赞数`, { fallback: tolerant ? 0 : undefined }),
+        hotComments: normalizedComments,
         generationBatchId: request.batchId,
         storyEvidence: text(value?.storyEvidence, 300),
     };
 }
 
-function normalizeHotTopic(value, index, postIds) {
+function normalizeHotTopic(value, index, postIds, tolerant = false) {
     const postId = requiredText(value?.postId, `第 ${index + 1} 个热搜关联微博`, 120);
     if (!postIds.has(postId)) throw new Error(`第 ${index + 1} 个热搜没有指向本批次的有效微博。`);
     return {
         id: text(value?.id, 120) || makeId('weibo-hot'),
         title: requiredText(value?.title, `第 ${index + 1} 个热搜标题`, 80),
         postId,
-        heat: finiteInteger(value?.heat, `第 ${index + 1} 个热搜热度`, { maximum: 1_000_000_000 }),
+        heat: finiteInteger(value?.heat, `第 ${index + 1} 个热搜热度`, { maximum: 1_000_000_000, fallback: tolerant ? 0 : undefined }),
         mark: ['爆', '沸', '热', '新', ''].includes(value?.mark) ? value.mark : '',
     };
 }
@@ -127,7 +151,9 @@ function normalizeHotTopic(value, index, postIds) {
 export function parsePhoneWeiboAiBatch(raw, request = {}) {
     const parsed = parseJsonObject(raw);
     const values = Array.isArray(parsed.posts) ? parsed.posts : [];
-    if (request.mode === 'story' || request.mode === 'bootstrap') {
+    const tolerant = request.allowPartial === true;
+    const validationWarnings = [];
+    if ((request.mode === 'story' || request.mode === 'bootstrap') && !tolerant) {
         if (values.length < PHONE_WEIBO_STORY_POST_MIN || values.length > PHONE_WEIBO_STORY_POST_MAX) {
             throw new Error(`正文更新微博时必须生成 ${PHONE_WEIBO_STORY_POST_MIN}–${PHONE_WEIBO_STORY_POST_MAX} 条帖子。`);
         }
@@ -137,7 +163,29 @@ export function parsePhoneWeiboAiBatch(raw, request = {}) {
         throw new Error('回复评论时不能额外生成新帖子。');
     }
     const now = Number(request.now) || Date.now();
-    const posts = values.map((value, index) => normalizeAiPost(value, index, request, now));
+    if (tolerant && (values.length < PHONE_WEIBO_STORY_POST_MIN || values.length > PHONE_WEIBO_STORY_POST_MAX)) {
+        validationWarnings.push(`微博返回了 ${values.length} 条帖子，已保留其中可用内容。`);
+    }
+    let posts = [];
+    values.slice(0, PHONE_WEIBO_STORY_POST_MAX).forEach((value, index) => {
+        try {
+            posts.push(normalizeAiPost(value, index, request, now, validationWarnings));
+        } catch (error) {
+            if (!tolerant) throw error;
+            validationWarnings.push(`第 ${index + 1} 条微博已跳过：${error.message}`);
+        }
+    });
+    if (tolerant) {
+        const seenPostIds = new Set();
+        posts = posts.filter((post, index) => {
+            if (!seenPostIds.has(post.id)) {
+                seenPostIds.add(post.id);
+                return true;
+            }
+            validationWarnings.push(`第 ${index + 1} 条微博 ID 重复，已单独跳过。`);
+            return false;
+        });
+    }
     if (['player_post', 'player_repost'].includes(request.mode)) {
         if (posts[0]?.authorType !== 'player') throw new Error('玩家发布操作返回的帖子作者不是玩家。');
         const expectedContent = text(request.operation?.content, 500) || (request.mode === 'player_repost' ? '转发微博' : '');
@@ -165,9 +213,16 @@ export function parsePhoneWeiboAiBatch(raw, request = {}) {
         throw new Error('角色发帖操作返回了错误的微博账号。');
     }
     const postIds = new Set(posts.map(post => post.id));
-    if (postIds.size !== posts.length) throw new Error('微博 API 返回了重复的帖子 ID。');
-    const hotTopics = (Array.isArray(parsed.hotTopics) ? parsed.hotTopics : [])
-        .map((value, index) => normalizeHotTopic(value, index, postIds));
+    if (!tolerant && postIds.size !== posts.length) throw new Error('微博 API 返回了重复的帖子 ID。');
+    const hotTopics = [];
+    (Array.isArray(parsed.hotTopics) ? parsed.hotTopics : []).forEach((value, index) => {
+        try {
+            hotTopics.push(normalizeHotTopic(value, index, postIds, tolerant));
+        } catch (error) {
+            if (!tolerant) throw error;
+            validationWarnings.push(`第 ${index + 1} 个热搜已跳过：${error.message}`);
+        }
+    });
     const reply = request.mode === 'player_reply' ? {
         id: text(parsed?.reply?.id, 120) || makeId('weibo-reply'),
         postId: requiredText(parsed?.reply?.postId, '回复对应的微博 ID', 120),
@@ -192,6 +247,7 @@ export function parsePhoneWeiboAiBatch(raw, request = {}) {
         reply,
         followerDelta,
         followerReason: text(parsed.followerReason, 160),
+        validationWarnings,
     };
 }
 
@@ -238,6 +294,7 @@ export function applyPhoneWeiboBatch(state, batch, request = {}) {
         replaced.forEach(item => removeBatch(working, item));
         working.generationBatches = working.generationBatches.filter(item => item.messageId !== request.messageId);
     }
+    batch.posts = batch.posts.map(normalizePhoneWeiboPost).filter(Boolean);
     const existingIds = new Set(working.posts.map(post => post.id));
     if (batch.posts.some(post => existingIds.has(post.id))) throw new Error('新微博 ID 与已有帖子冲突，整批内容未保存。');
     working.posts.push(...batch.posts);
@@ -262,6 +319,7 @@ export function applyPhoneWeiboBatch(state, batch, request = {}) {
         working.followerHistory = working.followerHistory.slice(0, 100);
     }
     const retention = enforceFeedLimit(working);
+    working.hotTopics = completePhoneWeiboHotTopics(working);
     working.initialized = true;
     working.initializing = false;
     working.lastError = '';

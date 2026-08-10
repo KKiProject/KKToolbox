@@ -15,9 +15,9 @@ import {
 import { isPhoneLiveAiReady, requestPhoneLiveOperation } from './phone-live-ai.js';
 
 export const PHONE_APP_SHELLS = Object.freeze([
-    { id: 'messages', label: '消息', icon: 'fa-envelope', tone: 'green' },
+    { id: 'messages', label: '消息', icon: 'fa-comments', tone: 'green' },
     { id: 'weibo', label: '微博', icon: 'fa-fire', tone: 'rose' },
-    { id: 'community', label: '社区', icon: 'fa-comments', tone: 'blue' },
+    { id: 'community', label: '社区', icon: 'fa-people-group', tone: 'blue' },
     { id: 'live', label: '直播', icon: 'fa-video', tone: 'pink' },
     { id: 'settings', label: '设置', icon: 'fa-gear', tone: 'sand' },
 ]);

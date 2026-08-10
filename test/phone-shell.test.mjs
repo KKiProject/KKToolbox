@@ -6,6 +6,13 @@ import { PHONE_APP_SHELLS } from '../phone-shell.js';
 test('phone shell exposes a small removable app registry without story data', () => {
     assert.deepEqual(PHONE_APP_SHELLS.map(app => app.label), ['消息', '微博', '社区', '直播', '设置']);
     assert.equal(PHONE_APP_SHELLS.every(app => app.id && app.icon && app.tone), true);
+    assert.deepEqual(Object.fromEntries(PHONE_APP_SHELLS.map(app => [app.id, app.icon])), {
+        messages: 'fa-comments',
+        weibo: 'fa-fire',
+        community: 'fa-people-group',
+        live: 'fa-video',
+        settings: 'fa-gear',
+    });
 });
 
 test('floating panel provides a real phone page and keeps every top tab horizontal', async () => {

@@ -30,6 +30,7 @@ export const PHONE_WEIBO_INTERESTS = Object.freeze([
 const INTEREST_IDS = new Set(PHONE_WEIBO_INTERESTS.map(item => item.id));
 const INTEREST_LABELS = new Map(PHONE_WEIBO_INTERESTS.map(item => [item.id, item.label]));
 const OTHER_FOLLOWING_COUNT = 2;
+export const PHONE_WEIBO_HOT_LIMIT = 10;
 
 const SAMPLE_POSTS = Object.freeze([
     {
@@ -313,12 +314,17 @@ function normalizePostSource(value = {}) {
     };
 }
 
-function normalizePost(value = {}) {
+export function normalizePhoneWeiboPost(value = {}) {
     const topic = INTEREST_IDS.has(value?.topic) ? value.topic : '';
     const content = text(value?.content, 500);
     const legacyCustomTopic = text(value?.customTopic, 50).replace(/^#+|#+$/g, '');
+    const rawTopics = (Array.isArray(value?.topics) ? value.topics : [topic])
+        .map(item => text(item, 40).replace(/^#+|#+$/g, '')).filter(Boolean);
+    const topics = [...new Set(rawTopics.filter(item => INTEREST_IDS.has(item)))];
+    const generatedCustomTopics = rawTopics.filter(item => !INTEREST_IDS.has(item));
     const customTopics = [...new Set([
         ...(Array.isArray(value?.customTopics) ? value.customTopics : []),
+        ...generatedCustomTopics,
         legacyCustomTopic,
     ].map(item => text(item, 50).replace(/^#+|#+$/g, '')).filter(Boolean))];
     const source = normalizePostSource(value?.source);
@@ -335,8 +341,7 @@ function normalizePost(value = {}) {
         tone: text(value?.tone, 20) || 'rose',
         content: content || '转发微博',
         topic,
-        topics: [...new Set((Array.isArray(value?.topics) ? value.topics : [topic])
-            .map(item => text(item, 40)).filter(Boolean))],
+        topics,
         customTopics,
         imageDescription: text(value?.imageDescription, 240),
         location: text(value?.location, 120),
@@ -360,6 +365,74 @@ function normalizePost(value = {}) {
         generationBatchId: text(value?.generationBatchId, 120),
         storyEvidence: text(value?.storyEvidence, 300),
     };
+}
+
+function postHotTitle(post = {}, usedTitles = new Set()) {
+    const customTopic = text(post.customTopics?.[0], 40).replace(/^#+|#+$/g, '');
+    const sentence = text(post.content, 100).split(/[。！？!?\n]/u)[0].trim();
+    const shortSentence = sentence.length > 24 ? `${sentence.slice(0, 24)}…` : sentence;
+    const category = INTEREST_LABELS.get(post.topics?.[0]);
+    const candidates = [customTopic, shortSentence, category, `${customTopic || category || '实时讨论'}·${text(post.author, 20)}`]
+        .map(value => text(value, 80)).filter(Boolean);
+    return candidates.find(value => !usedTitles.has(value)) || `实时讨论·${text(post.id, 24)}`;
+}
+
+function postHotHeat(post = {}) {
+    const likes = Math.max(0, Number(post.likes) || 0);
+    const comments = Math.max(0, Number(post.comments) || 0);
+    const reposts = Math.max(0, Number(post.reposts) || 0);
+    return Math.max(1_000, Math.trunc((likes * 120) + (comments * 180) + (reposts * 240)));
+}
+
+export function completePhoneWeiboHotTopics(state = {}, limit = PHONE_WEIBO_HOT_LIMIT) {
+    const postsById = new Map((Array.isArray(state.posts) ? state.posts : []).map(post => [post.id, post]));
+    const feedIds = [...new Set(Array.isArray(state.feedPostIds) ? state.feedPostIds : [])]
+        .filter(id => postsById.has(id));
+    const candidatePosts = (feedIds.length > 0
+        ? feedIds.map(id => postsById.get(id))
+        : [...postsById.values()].sort((left, right) => Number(right.createdAt || 0) - Number(left.createdAt || 0)))
+        .slice(0, 30);
+    const result = [];
+    const usedPostIds = new Set();
+    const usedTitles = new Set();
+    for (const value of Array.isArray(state.hotTopics) ? state.hotTopics : []) {
+        const postId = text(value?.postId, 120);
+        const post = postsById.get(postId);
+        if (!post || usedPostIds.has(postId)) continue;
+        const requestedTitle = text(value?.title, 80);
+        const title = requestedTitle && !usedTitles.has(requestedTitle)
+            ? requestedTitle
+            : postHotTitle(post, usedTitles);
+        result.push({
+            id: text(value?.id, 120) || `weibo-hot-${postId}`,
+            title,
+            postId,
+            heat: Math.max(0, Math.trunc(Number(value?.heat) || postHotHeat(post))),
+            mark: ['爆', '沸', '热', '新', ''].includes(value?.mark) ? value.mark : '',
+            category: INTEREST_IDS.has(value?.category) ? value.category : (post.topics?.find(item => INTEREST_IDS.has(item)) || ''),
+        });
+        usedPostIds.add(postId);
+        usedTitles.add(title);
+        if (result.length >= limit) return result;
+    }
+    const remaining = candidatePosts
+        .filter(post => !usedPostIds.has(post.id))
+        .sort((left, right) => postHotHeat(right) - postHotHeat(left));
+    for (const post of remaining) {
+        const title = postHotTitle(post, usedTitles);
+        result.push({
+            id: `weibo-hot-${post.id}`,
+            title,
+            postId: post.id,
+            heat: postHotHeat(post),
+            mark: result.length < 3 ? '热' : (Date.now() - Number(post.createdAt || 0) < 3_600_000 ? '新' : ''),
+            category: post.topics?.find(item => INTEREST_IDS.has(item)) || '',
+        });
+        usedPostIds.add(post.id);
+        usedTitles.add(title);
+        if (result.length >= limit) break;
+    }
+    return result;
 }
 
 function normalizeCommentReply(value = {}) {
@@ -444,7 +517,7 @@ export function normalizePhoneWeiboState(settings = {}) {
         interests: [...new Set((Array.isArray(source.interests) ? source.interests : [])
             .map(value => text(value, 40))
             .filter(value => INTEREST_IDS.has(value)))],
-        posts: (Array.isArray(source.posts) ? source.posts : []).map(normalizePost).filter(Boolean),
+        posts: (Array.isArray(source.posts) ? source.posts : []).map(normalizePhoneWeiboPost).filter(Boolean),
         likedPostIds: [...new Set((Array.isArray(source.likedPostIds) ? source.likedPostIds : [])
             .map(value => text(value, 120)).filter(Boolean))],
         commentReplies: (Array.isArray(source.commentReplies) ? source.commentReplies : [])
@@ -472,6 +545,7 @@ export function normalizePhoneWeiboState(settings = {}) {
         lastError: text(source.lastError, 500),
         profile,
     };
+    state.hotTopics = completePhoneWeiboHotTopics(state);
     settings.phone.weibo = state;
     return state;
 }
@@ -493,7 +567,7 @@ export function buildPhoneWeiboFeed(state = {}, activeInterest = '') {
 }
 
 export function createPhoneWeiboPost(state, input = {}, now = Date.now()) {
-    const post = normalizePost({
+    const post = normalizePhoneWeiboPost({
         id: input.id,
         content: input.content,
         topic: input.topic,
@@ -509,7 +583,7 @@ export function createPhoneWeiboPost(state, input = {}, now = Date.now()) {
 }
 
 export function createPhoneWeiboRepost(state, input = {}, now = Date.now()) {
-    const post = normalizePost({
+    const post = normalizePhoneWeiboPost({
         id: input.id,
         kind: 'repost',
         content: text(input.content, 500) || '转发微博',
@@ -838,7 +912,7 @@ export function createPhoneWeiboController(options = {}) {
         const author = element(documentRef, 'strong', '', `@${source.author}`);
         if (source.badge) author.append(element(documentRef, 'small', '', ` · ${source.badge}`));
         card.append(author);
-        if (source.topic) card.append(element(documentRef, 'span', '', `#${INTEREST_LABELS.get(source.topic)}#`));
+        if (source.topic) card.append(element(documentRef, 'span', '', `#${INTEREST_LABELS.get(source.topic) || source.topic}#`));
         card.append(element(documentRef, 'p', '', source.content));
         if (source.visual) {
             const visual = element(documentRef, 'div', 'memory-augment-weibo-repost-visual');
@@ -871,7 +945,7 @@ export function createPhoneWeiboController(options = {}) {
         const body = element(documentRef, 'div', 'memory-augment-weibo-post-body');
         const topic = post.topic || post.topics?.[0];
         if (topic) {
-            body.append(element(documentRef, 'span', 'memory-augment-weibo-topic-label', `#${INTEREST_LABELS.get(topic)}#`));
+            body.append(element(documentRef, 'span', 'memory-augment-weibo-topic-label', `#${INTEREST_LABELS.get(topic) || topic}#`));
         }
         if (Array.isArray(post.customTopics) && post.customTopics.length > 0) {
             post.customTopics.forEach(customTopic => {

@@ -8,6 +8,7 @@ import {
     generateAtlasCompletion,
     generateBarrageCompletion,
     generatePhoneCompletion,
+    generatePhoneWorldCompletion,
     generateSummaryCompletion,
     rerankCandidates,
 } from '../browser-api-client.js';
@@ -51,6 +52,25 @@ function response(payload, status = 200) {
         headers: { get: () => null },
         async text() {
             return JSON.stringify(payload);
+        },
+    };
+}
+
+function streamingResponse(contents) {
+    const encoder = new TextEncoder();
+    const chunks = contents.map(content => encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content } }] })}\n\n`));
+    let index = 0;
+    return {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        headers: { get: name => String(name).toLowerCase() === 'content-type' ? 'text/event-stream' : null },
+        body: {
+            getReader: () => ({
+                async read() {
+                    return index < chunks.length ? { done: false, value: chunks[index++] } : { done: true, value: undefined };
+                },
+            }),
         },
     };
 }
@@ -191,6 +211,25 @@ test('phone generation uses one simple JSON request without repair modes', async
         '你负责模拟虚构故事人物的手机消息。保持人物设定，只输出指定 JSON，不续写手机之外的正文。',
     );
     assert.match(requestBody.messages[1].content, /返回1至5条自然的联系人回复/);
+});
+
+test('phone world generation streams long structured output instead of waiting on an idle connection', async () => {
+    let requestBody;
+    const expected = '{"module":"messages","data":{"evidenceQuote":"","conversations":[]}}';
+    const result = await generatePhoneWorldCompletion({
+        barrage: { baseUrl: 'https://provider.example', apiKey: 'secret', model: 'chat-model' },
+        prompt: '生成手机世界。',
+        maxTokens: 32000,
+    }, {
+        fetchImpl: async (_url, options) => {
+            requestBody = JSON.parse(options.body);
+            return streamingResponse([expected.slice(0, 24), expected.slice(24)]);
+        },
+    });
+
+    assert.equal(requestBody.stream, true);
+    assert.equal(requestBody.max_tokens, 32000);
+    assert.equal(result.content, expected);
 });
 
 test('development output defaults to empty and gives direct player canon highest priority', async () => {

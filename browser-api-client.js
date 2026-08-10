@@ -127,6 +127,104 @@ async function postJson(endpoint, body, config, options = {}) {
     throw new Error('API 请求多次重试后仍然失败。');
 }
 
+function streamContentText(value) {
+    if (typeof value === 'string') return value;
+    if (!Array.isArray(value)) return '';
+    return value.map(part => typeof part === 'string' ? part : part?.text ?? part?.content ?? '').join('');
+}
+
+async function postStreamingChatCompletion(endpoint, body, config, options = {}) {
+    const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+    if (typeof fetchImpl !== 'function') throw new Error('当前浏览器不支持网络请求。');
+    const maxRetries = options.maxRetries ?? 1;
+    const timeoutMs = options.timeoutMs ?? 300_000;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+        try {
+            const response = await fetchImpl(endpoint, {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${config.apiKey}`,
+                    'Content-Type': 'application/json',
+                    Accept: 'text/event-stream, application/json',
+                },
+                body: JSON.stringify({ ...body, stream: true }),
+                signal: controller.signal,
+            });
+            const retryable = response.status === 429 || [502, 503, 504].includes(response.status);
+            if (retryable && attempt < maxRetries) {
+                await sleep(getRetryDelay(response, attempt));
+                continue;
+            }
+            if (!response.ok) {
+                const { payload, raw } = await readResponsePayload(response);
+                throw new Error(`API 返回 ${response.status}：${errorDetail(payload, raw, response.statusText)}`);
+            }
+            const contentType = String(response.headers?.get?.('content-type') ?? '').toLowerCase();
+            if (!contentType.includes('text/event-stream') || typeof response.body?.getReader !== 'function') {
+                const { payload } = await readResponsePayload(response);
+                if (payload === null) throw new Error('API 返回的不是有效 JSON。');
+                if (payload?.error) throw new Error(`API 返回错误：${errorDetail(payload, '', '')}`);
+                return payload;
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let content = '';
+            let reasoning = '';
+            const consumeLine = (line) => {
+                const trimmed = String(line ?? '').trim();
+                if (!trimmed.startsWith('data:')) return;
+                const data = trimmed.slice(5).trim();
+                if (!data || data === '[DONE]') return;
+                let payload;
+                try {
+                    payload = JSON.parse(data);
+                } catch {
+                    return;
+                }
+                if (payload?.error) throw new Error(`API 返回错误：${errorDetail(payload, data, '')}`);
+                const choice = payload?.choices?.[0];
+                content += streamContentText(choice?.delta?.content ?? choice?.message?.content ?? choice?.text);
+                reasoning += streamContentText(choice?.delta?.reasoning_content
+                    ?? choice?.delta?.reasoning
+                    ?? choice?.message?.reasoning_content
+                    ?? choice?.message?.reasoning);
+            };
+            while (true) {
+                const { done, value } = await reader.read();
+                buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+                const lines = buffer.split(/\r?\n/);
+                buffer = done ? '' : lines.pop() ?? '';
+                lines.forEach(consumeLine);
+                if (done) {
+                    if (buffer) consumeLine(buffer);
+                    break;
+                }
+            }
+            if (!content.trim() && !reasoning.trim()) throw new Error('手机世界更新 API 的流式响应没有返回正文。');
+            return { choices: [{ message: { content, reasoning_content: reasoning } }] };
+        } catch (error) {
+            if (error?.name === 'AbortError') throw new Error(`请求超过 ${Math.ceil(timeoutMs / 1000)} 秒仍未完成。`);
+            const detail = String(error?.message ?? error);
+            const connectionInterrupted = /failed to fetch|networkerror|load failed|fetch failed|terminated/i.test(detail);
+            if (connectionInterrupted && attempt < maxRetries) {
+                await sleep(getRetryDelay(null, attempt));
+                continue;
+            }
+            if (connectionInterrupted) {
+                throw new Error('浏览器与 API 的连接中断（可能是跨域限制、网关超时或中转主动断开）。');
+            }
+            throw error;
+        } finally {
+            clearTimeout(timeout);
+        }
+    }
+    throw new Error('API 请求多次重试后仍然失败。');
+}
+
 export async function createEmbeddings(input, rawConfig, options = {}) {
     const texts = Array.isArray(input) ? input.map(value => String(value)) : [];
     if (texts.length === 0) return [];
@@ -779,8 +877,8 @@ export function buildWeiboUserContent(payload = {}) {
         player_repost: '只生成 1 条 authorType=player、kind=repost 的完整帖子，必须忠实保留 operation 中的转发文字与原帖 source。',
         player_reply: 'posts 必须为空。reply 的 postId、commentId、content 必须逐字对应 operation；根据这次公开回复只调整合理的粉丝变化和现有公共热度。',
         role_post: '只生成 1 条 authorType=role 的完整帖子，authorId 必须等于 operation.roleId。内容由该账号绑定人设、operation.instruction 与现有公共信息共同决定。',
-        bootstrap: '生成 5–8 条初始首页帖子。若没有正文事件，则按玩家兴趣生成自然、互不重复的世界日常；同时根据玩家设定给出合理的初始粉丝基线（通过 followerDelta 返回）。',
-        story: '根据本次正文新增 5–8 条首页帖子。确实没有适合公开讨论的剧情时，才按玩家兴趣补足世界日常。热搜增量更新，不要求每条新帖都上热搜。',
+        bootstrap: '生成 5–8 条初始首页帖子。若没有正文事件，则按玩家兴趣生成自然、互不重复且不围绕玩家的公共世界日常；同时根据玩家设定给出合理的初始粉丝基线（通过 followerDelta 返回）。',
+        story: '根据本次正文新增 5–8 条首页帖子。没有适合公开讨论的剧情时，必须按玩家兴趣生成与主角无关的行业、作品、生活或陌生人公共动态，不能因此少生成。热搜增量生成 3–5 条，其余榜位由插件从旧帖补齐。',
     };
     return [
         '你负责模拟虚构故事世界里的公共微博。只输出合法 JSON，不要 Markdown，不要解释。',
@@ -801,6 +899,8 @@ export function buildWeiboUserContent(payload = {}) {
         '8. 热搜只能指向本批 posts 中真实存在的 postId。没有值得上榜的内容可以返回空数组。',
         '9. followerDelta 表示本次增减量而非粉丝总数。普通互动通常小幅变化，爆款或名人事件才允许大幅变化，并给出简短原因。',
         '10. 若玩家微博资料 isMask=true，这是未绑定玩家真实身份的匿名马甲。网友、角色和参与者不得凭系统背景自动知道账号主人；只有公开帖子、互动或正文明确提供线索时才能有根据地猜测，而且猜测不能写成已确认。',
+        '11. topics 只能填写 entertainment、film、music、variety、fashion、game、anime、sports、society、finance、technology、reading、food、travel、campus、emotion、pets 这些分类 ID；中文话题词必须放进 customTopics。',
+        '12. 当前首页和热搜摘要只用于避免重复，不是仿写题库；公共微博生态不能默认围绕玩家或正文角色运转。',
         '',
         `玩家微博资料：${JSON.stringify(request.profile ?? {})}`,
         `玩家设定：${String(request.userPersona ?? '').slice(0, 12000) || '未提供；按普通人处理'}`,
@@ -903,7 +1003,7 @@ export async function generatePhoneWorldCompletion(payload, options = {}) {
     const prompt = String(payload?.prompt ?? '').trim();
     if (!prompt) throw new Error('手机世界更新没有收到生成规则。');
     const maxTokens = Math.max(8192, Math.min(48_000, Math.trunc(Number(payload?.maxTokens) || 32_000)));
-    const response = await postJson(endpoint, {
+    const response = await postStreamingChatCompletion(endpoint, {
         model: config.model,
         messages: [
             {
@@ -913,7 +1013,7 @@ export async function generatePhoneWorldCompletion(payload, options = {}) {
             { role: 'user', content: prompt },
         ],
         max_tokens: maxTokens,
-    }, config, { timeoutMs: 240_000, ...options });
+    }, config, { timeoutMs: 300_000, maxRetries: 1, ...options });
     return { content: extractChatContent(response, '手机世界更新 API') };
 }
 

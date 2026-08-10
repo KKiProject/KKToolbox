@@ -37,6 +37,8 @@ test('community seeds complete lightweight content without overwriting saved con
     const normalized = normalizePhoneCommunityState(saved);
     assert.equal(normalized.forumThreads[0].id, 'saved');
     assert.equal(normalized.cpRankings[0].id, 'cp');
+    assert.ok(normalized.cpRankings[0].series);
+    assert.notEqual(normalized.cpRankings[0].series, '未注明作品');
     assert.equal(normalized.fanWorks[0].id, 'fan');
     assert.equal(normalized.fanWorks[0].series, '原创世界');
     assert.ok(normalized.fanWorks[0].tags.includes('未命名CP'));
@@ -51,6 +53,23 @@ test('community keeps player comment replies and drops incomplete records', () =
     assert.deepEqual(state.commentReplies, [{
         id: 'ok', targetType: 'forum', targetId: 'thread-1', commentId: 'comment-1', accountId: '', author: '我', content: '我也觉得。', createdAt: 123,
     }]);
+});
+
+test('CP chart keeps one name per pairing while preserving the reverse direction', () => {
+    const settings = { phone: { community: {
+        cpRankings: [
+            { id: 'new-forward', rank: 1, name: '星遥', kind: 'directional', left: '顾星野', right: '沈知遥', pairing: '顾星野 × 沈知遥', members: ['顾星野', '沈知遥'], series: '星遥', weekly: 45000 },
+            { id: 'renamed-forward', rank: 2, name: '遥星之光', kind: 'pun', left: '顾星野', right: '沈知遥', pairing: '顾星野 × 沈知遥', members: ['顾星野', '沈知遥'], series: '另一个错误作品名', weekly: '另一条重复记录' },
+            { id: 'reverse', rank: 3, name: '遥星', kind: 'directional', left: '沈知遥', right: '顾星野', pairing: '沈知遥 × 顾星野', members: ['沈知遥', '顾星野'], series: '深空', weekly: '本周逆向有了新粮。' },
+        ],
+        forumThreads: [{ id: 'forum' }],
+        fanWorks: [{ id: 'fan' }],
+    } } };
+    const state = normalizePhoneCommunityState(settings);
+    assert.deepEqual(state.cpRankings.map(item => item.id), ['new-forward', 'reverse']);
+    assert.deepEqual(state.cpRankings.map(item => item.rank), [1, 2]);
+    assert.notEqual(state.cpRankings[0].series, '星遥');
+    assert.equal(state.cpRankings[0].weekly, '星遥相关讨论本周持续升温。');
 });
 
 test('horizontal strips distinguish a tap from an actual drag', () => {

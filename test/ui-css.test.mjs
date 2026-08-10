@@ -176,6 +176,8 @@ test('community renders forum, CP ranking, fanwork previews, and internal detail
     assert.match(source, /setPointerCapture/);
     assert.match(source, /stopImmediatePropagation/);
     assert.match(source, /commentReplies/);
+    assert.match(source, /scrollPositions/);
+    assert.match(source, /preventScroll: true/);
     assert.match(source, /kindLabel: '关系组'/);
     assert.match(source, /kindLabel: '谐音CP'/);
     assert.match(source, /kindLabel: 'All×'/);
@@ -188,6 +190,7 @@ test('community renders forum, CP ranking, fanwork previews, and internal detail
     assert.match(css, /\.memory-augment-community-work-preview/);
     assert.match(css, /\.memory-augment-community-fan-tags/);
     assert.match(css, /\.memory-augment-community-reply-form/);
+    assert.match(css, /\.memory-augment-community-view\s*\{[\s\S]*?overflow-anchor:\s*none;/);
     assert.match(css, /\.memory-augment-phone-app-content\.is-community p\s*\{[\s\S]*?opacity:\s*1;[\s\S]*?text-align:\s*left;/);
 });
 
@@ -219,9 +222,12 @@ test('live app shares a room shell while keeping official and private interactio
     assert.match(source, /selectedBarrageIds/);
     assert.match(source, /生成下一阶段/);
     assert.match(source, /自然收束本场直播/);
+    assert.match(source, /chatScrollPositions/);
+    assert.doesNotMatch(source, /list\.scrollTop\s*=\s*stream\.type[^;]+scrollHeight/);
     assert.doesNotMatch(source, /barrageOffset = \(barrageOffset \+ 1\)[\s\S]{0,120}render\(\)/);
     assert.match(css, /\.memory-augment-phone-app-content\.is-live/);
     assert.match(css, /\.memory-augment-live-stage/);
+    assert.match(css, /\.memory-augment-live-view\s*\{[\s\S]*?overflow-anchor:\s*none;/);
     assert.doesNotMatch(source, /live-speaker-portrait|scene\.position/);
     assert.doesNotMatch(css, /\.memory-augment-live-speaker-portrait/);
     assert.match(css, /\.memory-augment-live-stage-copy/);
