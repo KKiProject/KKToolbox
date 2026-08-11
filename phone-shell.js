@@ -4,15 +4,20 @@ import { createPhoneCommunityController } from './phone-community.js';
 import { createPhoneLiveController } from './phone-live.js';
 import { createPhoneSettingsController, syncPhoneAccountProfiles } from './phone-settings.js';
 import { createPhoneSession } from './phone-session.js';
-import { appendPhoneActivityEvent } from './phone-store.js';
+import { appendPhoneActivityEvent, getPhoneChatId } from './phone-store.js';
 import { cleanPhoneText as text } from './phone-utils.js';
 import { preparePhoneStoryContext } from './phone-context.js';
+import { getLatestStoryStatus } from './story-status.js';
 import {
     isPhoneWeiboAiReady,
     requestPhoneWeiboBootstrap,
     requestPhoneWeiboOperation,
 } from './phone-weibo-ai.js';
 import { isPhoneLiveAiReady, requestPhoneLiveOperation } from './phone-live-ai.js';
+import {
+    isPhoneWorldStoryUpdateInFlight,
+    requestPhoneWorldStoryUpdate,
+} from './phone-world-ai.js';
 
 export const PHONE_APP_SHELLS = Object.freeze([
     { id: 'messages', label: '消息', icon: 'fa-comments', tone: 'green' },
@@ -25,6 +30,63 @@ export const PHONE_APP_SHELLS = Object.freeze([
 let phoneShellBound = false;
 let appControllers = {};
 let activeApp = '';
+
+const PHONE_WORLD_MODULE_NOTICES = Object.freeze({
+    messages: '有新的消息',
+    weibo: '微博有新内容',
+    community: '社区有新内容',
+    live: '直播有新内容',
+});
+
+export function parsePhoneClockMinutes(value) {
+    const source = text(value, 300);
+    if (!source) return null;
+    const matches = [...source.matchAll(/(?:^|\D)([01]?\d|2[0-3])\s*[:：]\s*([0-5]\d)(?!\d)/gu)];
+    const match = matches.at(-1)
+        ?? source.match(/(?:^|\D)([01]?\d|2[0-3])\s*时\s*([0-5]?\d)\s*分/gu)?.at(-1)?.match(/([01]?\d|2[0-3])\s*时\s*([0-5]?\d)/u);
+    if (!match) return null;
+    return Number(match[1]) * 60 + Number(match[2]);
+}
+
+export function formatPhoneClockMinutes(value) {
+    const minutes = Number(value);
+    if (!Number.isFinite(minutes)) return '';
+    const normalized = ((Math.floor(minutes) % 1440) + 1440) % 1440;
+    return `${String(Math.floor(normalized / 60)).padStart(2, '0')}:${String(normalized % 60).padStart(2, '0')}`;
+}
+
+export function getPhoneWorldStatusPresentation(worldGeneration = {}) {
+    const status = String(worldGeneration?.status ?? 'idle');
+    if (status === 'generating') {
+        return { state: 'generating', icon: 'fa-spinner', text: '手机内容更新中…' };
+    }
+    if (worldGeneration?.dismissed === true) {
+        return { state: 'idle', icon: '', text: '' };
+    }
+    if (status === 'error') {
+        const detail = text(worldGeneration?.lastError, 240);
+        return {
+            state: 'error',
+            icon: 'fa-circle-exclamation',
+            text: detail ? `手机更新失败：${detail}` : '手机内容更新失败',
+        };
+    }
+    const notices = [...new Set((Array.isArray(worldGeneration?.modules) ? worldGeneration.modules : [])
+        .map(module => PHONE_WORLD_MODULE_NOTICES[module]).filter(Boolean))];
+    if (notices.length > 0) {
+        return { state: status === 'partial' ? 'partial' : 'ready', icon: 'fa-bell', text: notices.join(' · ') };
+    }
+    return { state: 'idle', icon: '', text: '' };
+}
+
+export function findLatestPhoneStoryMessageId(context = {}) {
+    const chat = Array.isArray(context?.chat) ? context.chat : [];
+    for (let index = chat.length - 1; index >= 0; index--) {
+        const message = chat[index];
+        if (!message?.is_user && text(message?.mes ?? message?.content, 30_000)) return index;
+    }
+    return null;
+}
 
 function renderAppButtons() {
     return PHONE_APP_SHELLS.map(app => `
@@ -65,7 +127,7 @@ export function initializePhoneShellUi(
     if (!root.querySelector('.memory-augment-phone-device')) {
         root.innerHTML = `
             <div class="memory-augment-phone-stage">
-                <section class="memory-augment-phone-device" aria-label="娱乐圈手机">
+                <section class="memory-augment-phone-device" aria-label="KK PHONE">
                     <div class="memory-augment-phone-speaker" aria-hidden="true"></div>
                     <div class="memory-augment-phone-screen">
                         <header class="memory-augment-phone-statusbar" aria-label="手机状态栏">
@@ -80,7 +142,11 @@ export function initializePhoneShellUi(
                         <main class="memory-augment-phone-home" data-phone-screen="home">
                             <section class="memory-augment-phone-widget">
                                 <span>KK PHONE</span>
-                                <strong>娱乐圈</strong>
+                                <strong class="memory-augment-phone-world-status" data-phone-world-status data-state="idle"></strong>
+                                <button type="button" class="memory-augment-phone-world-regenerate" data-phone-world-regenerate title="接收最新手机内容">
+                                    <i class="fa-solid fa-rotate-right" aria-hidden="true"></i>
+                                    <span>接收消息</span>
+                                </button>
                             </section>
                             <div class="memory-augment-phone-app-grid">
                                 ${renderAppButtons()}
@@ -115,8 +181,170 @@ export function initializePhoneShellUi(
         const powerUser = runtime.powerUser ?? context?.powerUser ?? context?.power_user;
         return powerUser ? { ...current, powerUser } : current;
     };
+    let clockAnchorKey = '';
+    let clockAnchorMinutes = null;
+    let clockAnchorStartedAt = 0;
+    const renderPhoneClock = () => {
+        const target = root.querySelector('.memory-augment-phone-clock');
+        if (!target) return;
+        const current = getCurrentContext();
+        const chatId = getPhoneChatId(current);
+        const latest = getLatestStoryStatus(current);
+        const storyTime = text(latest?.status?.environment?.time, 300);
+        const storyMinutes = parsePhoneClockMinutes(storyTime);
+        const now = Date.now();
+        if (storyMinutes !== null) {
+            const nextAnchorKey = `${chatId}:${latest?.messageId ?? ''}:${latest?.timestamp ?? ''}:${storyTime}`;
+            if (clockAnchorKey !== nextAnchorKey) {
+                clockAnchorKey = nextAnchorKey;
+                clockAnchorMinutes = storyMinutes;
+                clockAnchorStartedAt = now;
+            }
+            const elapsedMinutes = Math.max(0, Math.floor((now - clockAnchorStartedAt) / 60_000));
+            target.textContent = formatPhoneClockMinutes(clockAnchorMinutes + elapsedMinutes);
+            target.title = storyTime;
+            target.dataset.source = 'story';
+            return;
+        }
+        clockAnchorKey = `device:${chatId}`;
+        clockAnchorMinutes = null;
+        clockAnchorStartedAt = now;
+        const deviceTime = new Date(now);
+        target.textContent = formatPhoneClockMinutes(deviceTime.getHours() * 60 + deviceTime.getMinutes());
+        target.removeAttribute('title');
+        target.dataset.source = 'device';
+    };
+    renderPhoneClock();
+    const clockTimer = (runtime.setInterval ?? globalThis.setInterval)?.(renderPhoneClock, 1000);
+    clockTimer?.unref?.();
     const phoneSession = runtime.phoneSession ?? createPhoneSession(settings, getCurrentContext);
     const scopedSettings = phoneSession.settings;
+    let renderedWorldGeneration = { status: 'idle' };
+    let regenerateWorld = async () => undefined;
+    let dismissWorldStatus = async () => undefined;
+    const renderWorldStatus = worldGeneration => {
+        const target = root.querySelector('[data-phone-world-status]');
+        if (!target) return;
+        renderedWorldGeneration = worldGeneration && typeof worldGeneration === 'object'
+            ? { ...worldGeneration }
+            : { status: 'idle' };
+        const presentation = getPhoneWorldStatusPresentation(worldGeneration);
+        target.dataset.state = presentation.state;
+        target.replaceChildren();
+        target.title = presentation.text;
+        const regenerate = root.querySelector('[data-phone-world-regenerate]');
+        if (regenerate) {
+            const generating = presentation.state === 'generating';
+            regenerate.disabled = generating;
+            regenerate.dataset.generating = generating ? 'true' : 'false';
+            const icon = regenerate.querySelector('i');
+            const label = regenerate.querySelector('span');
+            if (icon) icon.className = `fa-solid ${generating ? 'fa-spinner' : 'fa-rotate-right'}`;
+            if (label) label.textContent = generating ? '接收中' : '接收消息';
+        }
+        if (presentation.text) {
+            const icon = documentRef.createElement('i');
+            icon.className = `fa-solid ${presentation.icon}`;
+            icon.setAttribute('aria-hidden', 'true');
+            const label = documentRef.createElement('span');
+            label.textContent = presentation.text;
+            target.append(icon, label);
+            if (presentation.state === 'error') {
+                const actions = documentRef.createElement('span');
+                actions.className = 'memory-augment-phone-world-actions';
+                const retry = documentRef.createElement('button');
+                retry.type = 'button';
+                retry.textContent = '重试';
+                retry.addEventListener('click', event => {
+                    event.stopPropagation();
+                    void regenerateWorld(Number(renderedWorldGeneration?.messageId));
+                });
+                const ignore = documentRef.createElement('button');
+                ignore.type = 'button';
+                ignore.textContent = '忽略';
+                ignore.addEventListener('click', event => {
+                    event.stopPropagation();
+                    void dismissWorldStatus();
+                });
+                actions.append(retry, ignore);
+                target.append(actions);
+            }
+        }
+    };
+    dismissWorldStatus = async () => {
+        if (!['ready', 'partial', 'error'].includes(String(renderedWorldGeneration?.status ?? ''))) return;
+        const sourceKey = String(renderedWorldGeneration?.sourceKey ?? '');
+        renderWorldStatus({ status: 'idle', dismissed: true });
+        try {
+            const currentStore = await phoneSession.ensure();
+            if (sourceKey && String(currentStore.worldGeneration?.sourceKey ?? '') !== sourceKey) return;
+            if (!['ready', 'partial', 'error'].includes(String(currentStore.worldGeneration?.status ?? ''))) return;
+            currentStore.worldGeneration.dismissed = true;
+            await phoneSession.save();
+        } catch (error) {
+            console.warn('[Memory Augment] 手机更新提示关闭状态保存失败。', error);
+        }
+    };
+    regenerateWorld = async preferredMessageId => {
+        if (String(renderedWorldGeneration?.status ?? '') === 'generating') return;
+        const current = getCurrentContext();
+        const preferred = Number(preferredMessageId);
+        const preferredMessage = current?.chat?.[preferred];
+        const messageId = Number.isInteger(preferred) && preferred >= 0 && preferredMessage && !preferredMessage.is_user
+            ? preferred
+            : findLatestPhoneStoryMessageId(current);
+        const message = current?.chat?.[messageId];
+        if (!Number.isInteger(messageId) || !message || message.is_user) {
+            renderWorldStatus({
+                status: 'error',
+                lastError: '还没有可以用于生成手机内容的正文。',
+                dismissed: false,
+            });
+            return;
+        }
+        try {
+            await requestPhoneWorldStoryUpdate(phoneSession, current, messageId, { force: true });
+        } catch {
+            // The request itself persists and announces the detailed failure.
+        }
+    };
+    const refreshWorldStatus = async () => {
+        if (!getPhoneChatId(getCurrentContext())) {
+            renderWorldStatus({ status: 'idle' });
+            return;
+        }
+        try {
+            const currentStore = await phoneSession.ensure();
+            if (currentStore.worldGeneration?.status === 'generating'
+                && !isPhoneWorldStoryUpdateInFlight(currentStore.worldGeneration.sourceKey)
+                && Date.now() - Number(currentStore.worldGeneration.startedAt || 0) >= 180_000) {
+                currentStore.worldGeneration = {
+                    ...currentStore.worldGeneration,
+                    status: 'error',
+                    lastError: '上一次手机更新已中断，可以重新尝试。',
+                    completedAt: Date.now(),
+                    dismissed: false,
+                };
+                await phoneSession.save();
+            }
+            renderWorldStatus(currentStore.worldGeneration);
+        } catch (error) {
+            renderWorldStatus({ status: 'error', lastError: error?.message ?? String(error) });
+        }
+    };
+    globalThis.addEventListener?.('memory-augment-phone-world-status', event => {
+        renderWorldStatus(event?.detail);
+    });
+    root.querySelector('[data-phone-world-regenerate]')?.addEventListener('click', event => {
+        event.stopPropagation();
+        void regenerateWorld();
+    });
+    root.querySelector('.memory-augment-phone-device')?.addEventListener('click', () => {
+        if (['ready', 'partial'].includes(String(renderedWorldGeneration?.status ?? ''))) {
+            void dismissWorldStatus();
+        }
+    });
+    void refreshWorldStatus();
     const recordActivity = async value => {
         const currentStore = await phoneSession.ensure();
         const event = appendPhoneActivityEvent(currentStore, value);
@@ -254,6 +482,8 @@ export function initializePhoneShellUi(
     if (chatChanged && context?.eventSource?.on) {
         context.eventSource.on(chatChanged, () => setTimeout(() => {
             phoneSession.invalidate();
+            renderPhoneClock();
+            void refreshWorldStatus();
             if (!activeApp) return;
             const content = root.querySelector('.memory-augment-phone-app-content');
             if (!content) return;

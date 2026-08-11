@@ -50,8 +50,17 @@
             <div class="memory-augment-section memory-augment-card">
                 <div class="memory-augment-field"><label for="memory_augment_recent_messages">保留最近 N 楼：<span data-value-for="memory_augment_recent_messages"></span></label><input id="memory_augment_recent_messages" type="range" min="1" max="30" step="1" data-setting="context.recentMessages"><small class="memory-augment-param-help">最近 N 楼保留原文并保持可见；已总结且离开该范围的楼层会用 ST 原生隐藏功能标记，可通过幽灵图标手动取消隐藏。</small></div>
                 <div class="memory-augment-field"><label>单次总结楼层数<input class="text_pole" type="number" min="1" max="50" step="1" data-setting="context.summaryBatchSize"></label><small class="memory-augment-param-help">每次总结覆盖的楼层数量。旧楼层离开保留范围并攒够此数量后，由副 API 自动总结。</small></div>
-                <div class="memory-augment-actions"><button id="memory_augment_repair_summaries" type="button" class="menu_button">修复异常摘要</button></div>
-                <small class="memory-augment-param-help">只在你手动点击时重新生成空白、截断或拒绝式摘要，避免后台修复抢占弹幕的副 API。</small>
+                <div class="memory-augment-actions">
+                    <button id="memory_augment_repair_summaries" type="button" class="menu_button">修复异常摘要</button>
+                    <button id="memory_augment_regenerate_summaries" type="button" class="menu_button">重新总结全部历史</button>
+                </div>
+                <small class="memory-augment-param-help">修复只重做空白、截断或拒绝式摘要；重新总结会清除当前存档的插件摘要，并从第一批可总结楼层重新生成。</small>
+                <div class="memory-augment-summary-range">
+                    <label>起始楼层<input id="memory_augment_summary_range_start" class="text_pole" type="number" min="1" step="1" inputmode="numeric"></label>
+                    <label>结束楼层<input id="memory_augment_summary_range_end" class="text_pole" type="number" min="1" step="1" inputmode="numeric"></label>
+                    <button id="memory_augment_regenerate_summary_range" type="button" class="menu_button">重新总结指定楼层</button>
+                </div>
+                <small class="memory-augment-param-help">只重做与指定范围相交的现有摘要条目。例如每条摘要覆盖 15 楼，指定第 119 楼会重做包含它的整条摘要，不影响其他条目。</small>
             </div>
         </details>
 

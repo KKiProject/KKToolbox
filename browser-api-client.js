@@ -138,9 +138,30 @@ async function postStreamingChatCompletion(endpoint, body, config, options = {})
     if (typeof fetchImpl !== 'function') throw new Error('当前浏览器不支持网络请求。');
     const maxRetries = options.maxRetries ?? 1;
     const timeoutMs = options.timeoutMs ?? 300_000;
+    const idleTimeoutMs = options.idleTimeoutMs ?? 180_000;
+    const externalSignal = options.signal;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
         const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), timeoutMs);
+        let abortReason = 'total';
+        const timeout = setTimeout(() => {
+            abortReason = 'total';
+            controller.abort();
+        }, timeoutMs);
+        let idleTimeout;
+        const resetIdleTimeout = () => {
+            clearTimeout(idleTimeout);
+            idleTimeout = setTimeout(() => {
+                abortReason = 'idle';
+                controller.abort();
+            }, idleTimeoutMs);
+        };
+        const abortFromOutside = () => {
+            abortReason = 'external';
+            controller.abort();
+        };
+        if (externalSignal?.aborted) abortFromOutside();
+        else externalSignal?.addEventListener?.('abort', abortFromOutside, { once: true });
+        resetIdleTimeout();
         try {
             const response = await fetchImpl(endpoint, {
                 method: 'POST',
@@ -152,6 +173,7 @@ async function postStreamingChatCompletion(endpoint, body, config, options = {})
                 body: JSON.stringify({ ...body, stream: true }),
                 signal: controller.signal,
             });
+            resetIdleTimeout();
             const retryable = response.status === 429 || [502, 503, 504].includes(response.status);
             if (retryable && attempt < maxRetries) {
                 await sleep(getRetryDelay(response, attempt));
@@ -195,6 +217,7 @@ async function postStreamingChatCompletion(endpoint, body, config, options = {})
             };
             while (true) {
                 const { done, value } = await reader.read();
+                if (!done || value?.length) resetIdleTimeout();
                 buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
                 const lines = buffer.split(/\r?\n/);
                 buffer = done ? '' : lines.pop() ?? '';
@@ -207,7 +230,13 @@ async function postStreamingChatCompletion(endpoint, body, config, options = {})
             if (!content.trim() && !reasoning.trim()) throw new Error('手机世界更新 API 的流式响应没有返回正文。');
             return { choices: [{ message: { content, reasoning_content: reasoning } }] };
         } catch (error) {
-            if (error?.name === 'AbortError') throw new Error(`请求超过 ${Math.ceil(timeoutMs / 1000)} 秒仍未完成。`);
+            if (error?.name === 'AbortError') {
+                if (abortReason === 'external') throw new Error('这次手机请求已被新的正文候选替换。');
+                if (abortReason === 'idle') {
+                    throw new Error(`连续 ${Math.ceil(idleTimeoutMs / 1000)} 秒没有收到 API 数据，已停止这次请求。`);
+                }
+                throw new Error(`请求超过 ${Math.ceil(timeoutMs / 1000)} 秒仍未完成。`);
+            }
             const detail = String(error?.message ?? error);
             const connectionInterrupted = /failed to fetch|networkerror|load failed|fetch failed|terminated/i.test(detail);
             if (connectionInterrupted && attempt < maxRetries) {
@@ -220,6 +249,8 @@ async function postStreamingChatCompletion(endpoint, body, config, options = {})
             throw error;
         } finally {
             clearTimeout(timeout);
+            clearTimeout(idleTimeout);
+            externalSignal?.removeEventListener?.('abort', abortFromOutside);
         }
     }
     throw new Error('API 请求多次重试后仍然失败。');
@@ -338,6 +369,7 @@ export async function rerankCandidates({
 function buildBarrageUserContent(
     recentMessages,
     ragFragments,
+    statusWorldContext = '',
     previousStatus = null,
     previousTimeline = null,
     developmentSnapshot = null,
@@ -372,6 +404,16 @@ function buildBarrageUserContent(
     const previousTimelineText = previousTimeline && typeof previousTimeline === 'object'
         ? JSON.stringify(previousTimeline)
         : '（无，这是第一次建立时间线）';
+    const previousTimeAnchor = String(
+        previousStatus?.environment?.time
+        || previousTimeline?.currentTime
+        || previousTimeline?.mainlineTime
+        || '',
+    ).trim();
+    const hasDate = /(?:\d{2,4}\s*[-/.年]\s*\d{1,2}\s*[-/.月]\s*\d{1,2}\s*日?|(?:历|纪元|纪年).{0,24}(?:年|月|日|旬))/u.test(previousTimeAnchor);
+    const hasClock = /(?:(?:[01]?\d|2[0-3]):[0-5]\d|(?:子|丑|寅|卯|辰|巳|午|未|申|酉|戌|亥)时|\d+\s*(?:时|刻|更))/u.test(previousTimeAnchor);
+    const hasCycle = /(?:星期|周[一二三四五六日天]|礼拜|曜|周期|轮回|月相)/u.test(previousTimeAnchor);
+    const hasPreviousTimeAnchor = hasDate && hasClock && hasCycle;
     const customFields = (Array.isArray(statusOptions?.customFields) ? statusOptions.customFields : [])
         .filter(field => field?.enabled !== false)
         .map(field => String(field?.label ?? '').trim())
@@ -380,6 +422,7 @@ function buildBarrageUserContent(
     const barrageEnabled = outputOptions?.barrageEnabled !== false;
     const statusEnabled = outputOptions?.statusEnabled !== false;
     const developmentEnabled = outputOptions?.developmentEnabled === true;
+    const needsDerivedContext = statusEnabled || developmentEnabled;
     const requestedTasks = [
         barrageEnabled && '观众弹幕',
         statusEnabled && '最新剧情状态与时间线',
@@ -391,12 +434,19 @@ function buildBarrageUserContent(
         '',
         '【相关记忆】（仅供前后呼应参考，不要单独评论）',
         memories || '（无）',
-        '',
-        '【上一份剧情状态】（继承没有发生变化的事实；如与新剧情冲突，以新剧情为准）',
-        previous,
-        '',
-        '【上一份剧情时间线】（这是时间连续性的唯一基准；没有明确时间推进时必须原样继承）',
-        previousTimelineText,
+        ...(statusEnabled ? [
+            '',
+            '【角色卡中的角色与世界基础】（用于理解人物性格、关系、时代、历法、地点与环境；是状态推导依据，不是新增剧情）',
+            String(statusWorldContext ?? '').trim().slice(0, 24_000) || '（无额外世界基础）',
+        ] : []),
+        ...(needsDerivedContext ? [
+            '',
+            '【上一份剧情状态】（外貌、地点等没有变化的客观事实可以继承；动作、情绪、欲望和内心OS必须结合新剧情重新判断，不得机械照抄；如与新剧情冲突，以新剧情为准）',
+            previous,
+            '',
+            '【上一份剧情时间线】（这是时间连续性的唯一基准；没有明确时间推进时必须原样继承）',
+            previousTimelineText,
+        ] : []),
         ...(developmentEnabled ? [
             '',
             '【人物初始基准】（这是故事开始前的设定，只用于判断“是否真的发生了变化”）',
@@ -413,62 +463,50 @@ function buildBarrageUserContent(
         '---',
         '',
         `[最新章节楼号：第 ${latest.id} 楼]`,
-        '【最新章节】（这是你要评论的内容）',
+        '【最新章节】（这是本轮状态更新的直接剧情依据）',
         latest.text,
         '',
         '【必须完成的输出任务】',
-        `完成：${requestedTasks || '返回空结果'}。只输出一个合法 JSON 对象，不要使用 Markdown 代码块，也不要添加 JSON 之外的文字。`,
-        'barrage、status、timeline、development 必须是这个 JSON 对象中彼此独立的四个字段，禁止用标签或自然语言把它们拼在同一个字符串里。barrage 内换行必须正确转义，不能破坏 JSON。',
-        'JSON 格式：',
-        '{',
-        '  "barrage": "弹幕正文，可包含换行",',
-        '  "status": {',
-        '    "environment": { "time": "世界观适配的年月日/星期或历法时间", "location": "大地点 → 小地点", "season": "季节", "weather": "天气" },',
-        '    "characters": [',
-        '      { "name": "人物名", "role": "user、char或重要NPC", "appearance": "当前外貌", "action": "当前动作或姿态", "emotion": "当前情绪", "desire": "当前欲望或倾向", "innerThoughts": "内心OS", "extras": [{ "label": "其他状态名", "value": "状态内容" }] }',
-        '    ],',
-        '    "event": { "activity": "目前正在做什么", "situation": "当前形势", "goals": ["当前目标"] }',
-        '  },',
-        '  "timeline": {',
-        '    "transition": "unchanged、advance、jump、enter_flashback、return_mainline 或 unknown",',
-        '    "currentTime": "最新章节结束时当前叙事场景的时间",',
-        '    "mainlineTime": "没有被回忆覆盖的主线现在",',
-        '    "elapsed": "相对上一主线锚点明确经过了多久；未明确则留空",',
-        '    "evidence": "只写最新用户消息或最新章节中证明时间变化的短句；没有则留空",',
-        '    "segments": [{ "messageId": 12, "startQuote": "该时间段开头的短原文", "time": "该段时间", "relation": "与主线现在的关系", "mode": "mainline、flashback、flashforward、mention 或 unknown" }]',
-        '  },',
-        '  "development": {',
-        '    "changes": [{',
-        '      "character": "人物名",',
-        '      "dimension": "temperament、belief、relationship、habit、boundary 或 self_view",',
-        '      "target": "仅 relationship 填关系对象，其他留空",',
-        '      "candidateId": "若与 candidates 中某项是同一方向的变化，必须原样填写其 id；否则留空",',
-        '      "trend": "2至12字的稳定语义标签，例如易怒、更加信任、回避亲密",',
-        '      "before": "过去的倾向；不明确则留空",',
-        '      "after": "现在形成的长期变化",',
-        '      "reason": "已知原因；中间过程未知就留空，不得补写",',
-        '      "source": "user_direct 或 observed",',
-        '      "evidence": [{ "messageId": 12, "quote": "逐字摘录的短原文" }]',
-        '    }],',
-        '    "merges": [{',
-        '      "intoId": "保留的候选 id",',
-        '      "fromIds": ["应并入它的其他候选 id"],',
-        '      "trend": "合并后的简短趋势标签",',
-        '      "after": "合并后的简洁当前倾向"',
-        '    }]',
-        '  }',
-        '}',
-        barrageEnabled ? 'barrage 必须填写弹幕正文。' : '弹幕已关闭，barrage 必须返回空字符串。',
+        `完成：${requestedTasks || '返回空结果'}。只输出 JSONL，不要 Markdown，不要解释。每行必须是一个能够独立 JSON.parse 的完整对象；模块之间绝不能共用括号、逗号或字符串。`,
+        '严格按 status → timeline → development → barrage 的顺序输出已启用模块。某一行损坏不得改变其他行；未启用模块整行省略。',
+        ...(statusEnabled ? [
+            'status 行：{"module":"status","data":{"environment":{"time":"完整时间","location":"大地点 → 小地点","season":"季节","weather":"天气"},"characters":[{"name":"人物名","role":"user、char或重要NPC","appearance":"当前外貌","action":"当前动作或姿态","emotion":"当前情绪","desire":"当前欲望或倾向","innerThoughts":"1至3句内心OS","extras":[{"label":"玩家启用的状态名","value":"状态内容"}]}],"event":{"activity":"正在做什么","situation":"当前形势","goals":["当前目标"]}}}',
+            'timeline 行：{"module":"timeline","data":{"transition":"unchanged|advance|jump|enter_flashback|return_mainline|unknown","currentTime":"当前叙事时间","mainlineTime":"主线现在","elapsed":"明确经过多久或空字符串","evidence":"证明时间变化的短原文或空字符串","segments":[{"messageId":12,"startQuote":"该段开头的短原文","time":"该段时间","relation":"与主线现在的关系","mode":"mainline|flashback|flashforward|mention|unknown"}]}}',
+        ] : []),
+        ...(developmentEnabled ? [
+            'development 行：{"module":"development","data":{"changes":[{"character":"人物名","dimension":"temperament|belief|relationship|habit|boundary|self_view","target":"关系对象或空字符串","candidateId":"候选ID或空字符串","trend":"稳定语义标签","before":"过去倾向或空字符串","after":"长期变化","reason":"已知原因或空字符串","source":"user_direct|observed","evidence":[{"messageId":12,"quote":"逐字短原文"}]}],"merges":[{"intoId":"保留ID","fromIds":["并入ID"],"trend":"合并标签","after":"合并后的当前倾向"}]}}',
+        ] : []),
+        ...(barrageEnabled ? [
+            'barrage 必须最后输出。barrage 行：{"module":"barrage","data":{"lines":["弹幕1","弹幕2","弹幕3"]}}。lines 中每项只能是纯字符串，禁止输出作者对象、content 对象或包含真实换行的单个字符串。',
+        ] : []),
         statusEnabled
             ? 'status 是最新章节结束时的一份当前快照，不是剧情总结。必须包含 user 和 char；只加入真正重要的 NPC，忽略普通 NPC。'
-            : '剧情状态已关闭，status 必须返回 null。',
-        statusEnabled ? '不要生成金钱、物品栏、数值属性或游戏面板数据。没有明确的信息可留空，不要捏造精确日期。' : '',
+            : '剧情状态已关闭，省略 status 与 timeline 两行。',
+        statusEnabled ? '不要生成金钱、物品栏、数值属性或游戏面板数据。人物状态的“有依据”包括两类：正文直接写明的事实，以及从角色卡人设、既有关系、相关记忆、上一份状态和本轮言行中能够合理推出的隐含状态。后者是允许且必须进行的有依据推导，不算瞎编。' : '',
+        statusEnabled ? 'appearance 和 action 要写章节结束时的当前状态，可以在不改变事件结果的前提下补足正文省略的自然连续细节。emotion、desire、innerThoughts 本来就是解释性状态：正文没有逐字写出时，也必须结合人物性格、处境、关系与言行推导，不能因为原文未明说就留空，更不能复制正文句子充数。' : '',
+        statusEnabled ? 'innerThoughts 要写成该人物此刻真正会在心里掠过的1至3句简短OS，使用符合其人设的内在口吻；不要复述旁白、动作或已经说出口的台词，不要把 emotion/desire 换个说法再写一遍。允许包含人物自己的判断、犹豫、误会、盘算和没有说出口的话。' : '',
+        statusEnabled ? '心理推导仍受角色视角约束：人物只能根据自己亲历、看见、听见、被告知或能够合理猜到的信息思考；可以猜错，但不得知道未公开的他人内心、幕后事件或自己不可能掌握的事实。不得为了丰富OS新增正文之外已经发生的事件。' : '',
+        statusEnabled && !hasPreviousTimeAnchor
+            ? '这是本存档第一次建立时间锚点。先完整检查故事基础设定、相关记忆、前情回顾、最新章节中是否已有明确日期、时刻、星期或世界历法记录；有就以它为准，并在不冲突的前提下补齐缺少的组成。若完全没有明确记录，必须依据世界观合理设定一个完整起始时间，不能只写“早上、深夜、某日、时间不明”等模糊词。'
+            : '',
+        statusEnabled && !hasPreviousTimeAnchor
+            ? '首次 environment.time 必须精确到“年-月-日 24小时制时:分 星期几”；若世界观不用公历或七日星期，则改用该世界真正采用的完整历法日期、记时刻度和对应周期名。首次 timeline.currentTime 与 timeline.mainlineTime 必须使用同一个完整锚点。'
+            : '',
+        statusEnabled && !hasPreviousTimeAnchor
+            ? '首次 environment 的 location、season、weather 也必须建立。正文或设定明确写了就如实记录；没有写时，依据当前场景、世界观和刚建立的日期合理补全，不要留成“未知”。这种合理补全只负责建立可持续的环境基准，不得反过来新增剧情事件。'
+            : '',
+        statusEnabled && hasPreviousTimeAnchor
+            ? '本存档已经有精确时间锚点。它是后续唯一基准：正文没有明确时间推进时，environment.time、timeline.currentTime 与 timeline.mainlineTime 必须逐字继承；明确推进时从该锚点连续换算出新的完整日期、24小时制时刻与星期／世界周期，不能退化成“次日、稍后、夜里”等模糊记录，也不能另起一套日期。'
+            : '',
+        statusEnabled && hasPreviousTimeAnchor
+            ? '后续 environment 的地点、季节、天气：正文明确改变则更新，没有改变则继承上一份；不得每楼重新随机。'
+            : '',
         statusEnabled ? '时间线规则：楼层数不代表时间流逝。即使连续很多楼，正文没有明确推进时间时，transition 必须为 unchanged，并逐字继承上一份 currentTime 与 mainlineTime。' : '',
         statusEnabled ? '仅仅提到、回忆或召回“昨天、三天前、十年前”的历史事件，不会改变主线现在。只有正文真的进入过去场景才是 enter_flashback；回到原场景才是 return_mainline。' : '',
         statusEnabled ? '最新用户指令或最新章节若明确写出“次日、数日后、十年后”等真实推进，可用 advance 或 jump，跨度不受限制；无法确定就用 unknown，绝不能猜。' : '',
         statusEnabled ? 'segments 覆盖前情回顾里尚未建立状态的最新用户楼和最新章节，按每一楼内真实发生的时间转折列出；一楼可有多个时间段。messageId 必须使用上文标出的楼号，startQuote 必须逐字摘取该时间段开头的短句，以便切片器定位；单纯提及历史而未进入场景时 mode=mention。' : '',
-        statusEnabled ? 'timeline 必须返回对象。' : '剧情状态已关闭，timeline 必须返回 null。',
-        developmentEnabled ? '人物发展默认没有变化，development.changes 默认必须是空数组。提供了这个字段不代表必须填写；绝大多数回复都应返回空数组。当前情绪、一次行为、临时欲望和当场失态都不属于长期变化。' : '人物发展档案已关闭，development 必须返回 null。',
+        statusEnabled ? 'timeline 模块必须输出；segments 没有内容时返回空数组。' : '',
+        developmentEnabled ? '人物发展默认没有变化，development.changes 默认必须是空数组。提供了这个模块不代表必须填写；绝大多数回复都应返回空数组。当前情绪、一次行为、临时欲望和当场失态都不属于长期变化。' : '人物发展档案已关闭，省略 development 行。',
         developmentEnabled ? '必须先拿人物初始基准与已有发展档案比较。符合初始性格、初始关系或一贯保护方式的行为不是“变化”，绝不能为了填写 before/after 而虚构一个过去状态。' : '',
         developmentEnabled ? '人物初始基准里的 knownCharacters 只列出本轮确实找到基准的人物。某个人物不在 knownCharacters 中，就视为该人物基准未知：禁止从平民、贵族、职业、种族、阵营、性别或关系身份推断其原本性格；除非玩家最新输入直接明确前后变化，否则不要提交该人物的变化。' : '',
         developmentEnabled ? '单人卡模式中，primaryCharacter 的基础性格以酒馆角色卡为准；世界书条目只补充其标注 useFor 的人物关系、背景约束和重要 NPC，冲突时角色卡优先。世界／群像卡则只使用世界书中按 useFor 匹配到的各人物条目。不要把一个人物的设定套给另一个人。' : '',
@@ -501,7 +539,7 @@ function buildBarrageRecoveryUserContent(recentMessages) {
         '【任务】',
         '只生成几条简短的观众弹幕，对已经发生的剧情作旁观反应。不要续写剧情，不要复述或扩写敏感行为细节，也不要评价用户喜好。',
         '即使片段涉及成人关系、暴力、强制关系或近亲关系，也只需用含蓄、中性的观众语气评论剧情张力、人物反应或关系变化，不要拒绝任务。',
-        '只输出一个合法 JSON 对象：{"barrage":"弹幕正文，可包含换行","status":null}',
+        '只输出一行合法 JSONL：{"module":"barrage","data":{"lines":["弹幕1","弹幕2","弹幕3"]}}。lines 每项只能是纯字符串。',
     ].join('\n');
 }
 
@@ -530,6 +568,25 @@ function findFinalJsonObject(text, acceptedKeys) {
     return '';
 }
 
+function findJsonlModuleLines(text) {
+    const acceptedModules = new Set(['barrage', 'status', 'timeline', 'development']);
+    const lines = [];
+    for (const sourceLine of String(text ?? '').split(/\r?\n/)) {
+        const line = sourceLine.trim().replace(/^```(?:jsonl?|javascript)?\s*/i, '').replace(/\s*```$/i, '');
+        if (!line.startsWith('{') || !line.endsWith('}')) continue;
+        try {
+            const value = JSON.parse(line);
+            const module = String(value?.module ?? '').trim().toLowerCase();
+            if (value && typeof value === 'object' && !Array.isArray(value) && acceptedModules.has(module)) {
+                lines.push(JSON.stringify(value));
+            }
+        } catch {
+            // Ignore analysis prose and incomplete module lines.
+        }
+    }
+    return lines.join('\n');
+}
+
 function extractChatContent(payload, label = '副 API') {
     const choice = payload?.choices?.[0];
     const message = choice?.message;
@@ -547,12 +604,16 @@ function extractChatContent(payload, label = '副 API') {
 
     const reasoning = contentToText(message?.reasoning_content ?? message?.reasoning);
     if (reasoning) {
+        if (/弹幕/.test(label)) {
+            const jsonl = findJsonlModuleLines(reasoning);
+            if (jsonl) return jsonl;
+        }
         const acceptedKeys = /地图册/.test(label)
             ? ['title', 'pages']
             : /直播/.test(label) ? ['phase', 'sessionSummary']
             : /手机世界/.test(label) ? ['module', 'messages']
             : /手机/.test(label) ? ['messages']
-            : /弹幕/.test(label) ? ['barrage', '弹幕', 'status', '状态', 'timeline', '时间线', 'development', '人物发展'] : [];
+            : /弹幕/.test(label) ? ['module', 'barrage', '弹幕', 'status', '状态', 'timeline', '时间线', 'development', '人物发展'] : [];
         const finalJson = acceptedKeys.length > 0 ? findFinalJsonObject(reasoning, acceptedKeys) : '';
         if (finalJson) return finalJson;
         const afterThink = reasoning.split(/<\/think>/i).at(-1)?.trim();
@@ -575,6 +636,7 @@ export async function generateBarrageCompletion(payload, options = {}) {
     const userContent = buildBarrageUserContent(
         payload?.recentMessages,
         payload?.ragFragments,
+        payload?.statusWorldContext,
         payload?.previousStatus,
         payload?.previousTimeline,
         payload?.developmentSnapshot,
@@ -583,10 +645,14 @@ export async function generateBarrageCompletion(payload, options = {}) {
         payload?.outputOptions,
     );
     const maxTokens = Math.max(1, Math.min(128_000, Math.trunc(Number(payload?.maxTokens) || 4064)));
+    const barrageEnabled = payload?.outputOptions?.barrageEnabled !== false;
     const requestBody = {
         model: config.model,
         messages: [
-            ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
+            ...(systemPrompt && barrageEnabled ? [{
+                role: 'system',
+                content: `以下自定义要求只控制 barrage 弹幕字段的语言风格，不得用于 status、timeline 或 development，也不得覆盖这些字段各自的规则：\n${systemPrompt}`,
+            }] : []),
             { role: 'user', content: userContent },
         ],
         max_tokens: maxTokens,
@@ -599,7 +665,6 @@ export async function generateBarrageCompletion(payload, options = {}) {
         const emptyStop = choice?.finish_reason === 'stop'
             && !contentToText(choice?.message?.content)
             && !contentToText(choice?.message?.reasoning_content ?? choice?.message?.reasoning);
-        const barrageEnabled = payload?.outputOptions?.barrageEnabled !== false;
         if (!emptyStop || !barrageEnabled) throw error;
         const recoveryPrompt = buildBarrageRecoveryUserContent(payload?.recentMessages);
         const recoveryResponse = await postJson(endpoint, {
@@ -1002,7 +1067,7 @@ export async function generatePhoneWorldCompletion(payload, options = {}) {
     const endpoint = new URL(`${config.baseUrl}/v1/chat/completions`).toString();
     const prompt = String(payload?.prompt ?? '').trim();
     if (!prompt) throw new Error('手机世界更新没有收到生成规则。');
-    const maxTokens = Math.max(8192, Math.min(48_000, Math.trunc(Number(payload?.maxTokens) || 32_000)));
+    const maxTokens = Math.max(4096, Math.min(32_000, Math.trunc(Number(payload?.maxTokens) || 12_000)));
     const response = await postStreamingChatCompletion(endpoint, {
         model: config.model,
         messages: [
@@ -1013,7 +1078,7 @@ export async function generatePhoneWorldCompletion(payload, options = {}) {
             { role: 'user', content: prompt },
         ],
         max_tokens: maxTokens,
-    }, config, { timeoutMs: 300_000, maxRetries: 1, ...options });
+    }, config, { timeoutMs: 600_000, idleTimeoutMs: 180_000, maxRetries: 1, ...options });
     return { content: extractChatContent(response, '手机世界更新 API') };
 }
 

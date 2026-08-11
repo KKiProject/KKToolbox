@@ -8,6 +8,7 @@ import {
     normalizeMapAtlas,
     parseMapAtlasResponse,
     selectMapSourceBooks,
+    wrapMapNodeLabel,
 } from '../map-atlas.js';
 
 function atlasFixture() {
@@ -55,6 +56,13 @@ test('relevant map text contains the current node, direct route, and city facili
     assert.match(text, /霜隘（北境大道）/);
     assert.match(text, /雪松宫/);
     assert.match(text, /冒险者公会/);
+});
+
+test('long map node names wrap inside the fixed node box', () => {
+    assert.deepEqual(wrapMapNodeLabel('银松城'), ['银松城']);
+    assert.deepEqual(wrapMapNodeLabel('首曜市国际文化艺术交流中心'), ['首曜市国际文化', '艺术交流中心']);
+    assert.deepEqual(wrapMapNodeLabel('首曜市国际文化艺术交流中心特别行政总部'), ['首曜市国际文化', '艺术交流中心…']);
+    assert.deepEqual(wrapMapNodeLabel('International Arts Center'), ['International', 'Arts Center']);
 });
 
 test('map atlas is scoped to the character and injected before the latest user message', () => {

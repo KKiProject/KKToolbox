@@ -3,6 +3,7 @@ import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import {
     BARRAGE_METADATA_KEY,
+    buildStatusWorldContext,
     clearDeletedBarrageRecords,
     collectRecentMessages,
     findLatestEligibleAssistantMessageId,
@@ -63,6 +64,20 @@ function createContext() {
         },
     };
 }
+
+test('status context includes the character personality instead of relying on chapter wording alone', () => {
+    const context = {
+        characterId: 0,
+        characters: [{
+            description: '冷静克制的财团负责人。',
+            personality: '外冷内热，习惯把担忧藏在命令里。',
+            scenario: '两人在深夜的办公室谈话。',
+        }],
+    };
+    const source = buildStatusWorldContext(context);
+    assert.match(source, /【角色性格】/);
+    assert.match(source, /外冷内热，习惯把担忧藏在命令里/);
+});
 
 test('recent floor setting selects N recap messages plus the rendered AI response', () => {
     const context = createContext();
@@ -132,6 +147,7 @@ test('barrage generation renders and caches without mutating context.chat', asyn
                     characters: [{ name: '玩家', role: 'user', emotion: '警觉' }],
                     event: { activity: '交谈', situation: '局势紧张', goals: ['找到线索'] },
                 },
+                timeline: { transition: 'unknown', currentTime: '夜晚', mainlineTime: '夜晚', segments: [] },
             }) };
         },
     });
@@ -246,6 +262,7 @@ test('status can run without rendering or storing barrage', async () => {
                     characters: [{ name: '玩家', role: 'user' }, { name: '角色', role: 'char' }],
                     event: { activity: '赶路' },
                 },
+                timeline: { transition: 'unknown', currentTime: '清晨', mainlineTime: '清晨', segments: [] },
             }) };
         },
     });
@@ -280,6 +297,7 @@ test('missing status in a combined response gets one focused recovery request wi
                     characters: [{ name: '玩家', role: 'user' }],
                     event: { activity: '等待' },
                 },
+                timeline: { transition: 'unknown', currentTime: '深夜', mainlineTime: '深夜', segments: [] },
             }) };
         },
     });
@@ -288,6 +306,98 @@ test('missing status in a combined response gets one focused recovery request wi
     assert.equal(result.statusSaved, true);
     assert.equal(getOnlyBarrageVariant(context).content, '先保留下来的弹幕');
     assert.equal(context.chatMetadata[STORY_STATUS_METADATA_KEY]['5'].status.environment.location, '走廊');
+});
+
+test('a truncated barrage retries only barrage and still preserves the completed status bundle', async () => {
+    const context = createContext();
+    const renders = [];
+    let calls = 0;
+    const result = await handleCharacterMessageRendered(5, createSettings(), context, {
+        renderBarrage: (...args) => renders.push(args),
+        getCurrentContext: () => context,
+        async generateBarrage(payload) {
+            calls++;
+            if (calls === 1) {
+                assert.deepEqual(payload.outputOptions, {
+                    barrageEnabled: true,
+                    statusEnabled: true,
+                    developmentEnabled: false,
+                });
+                return { content: [
+                    JSON.stringify({
+                        module: 'status',
+                        data: {
+                            environment: { time: '深夜', location: '窗边' },
+                            characters: [{ name: '玩家', role: 'user' }, { name: '角色', role: 'char' }],
+                            event: { activity: '交谈' },
+                        },
+                    }),
+                    JSON.stringify({
+                        module: 'timeline',
+                        data: { transition: 'unchanged', currentTime: '深夜', mainlineTime: '深夜', segments: [] },
+                    }),
+                    '{"module":"barrage","data":{"lines":["断在这里"',
+                ].join('\n') };
+            }
+            assert.deepEqual(payload.outputOptions, {
+                barrageEnabled: true,
+                statusEnabled: false,
+                developmentEnabled: false,
+            });
+            return { content: JSON.stringify({ module: 'barrage', data: { lines: ['补回来的弹幕'] } }) };
+        },
+    });
+
+    assert.equal(calls, 2);
+    assert.equal(result.statusSaved, true);
+    assert.equal(result.content, '补回来的弹幕');
+    assert.equal(context.chatMetadata[STORY_STATUS_METADATA_KEY]['5'].status.environment.location, '窗边');
+    assert.equal(getOnlyBarrageVariant(context).content, '补回来的弹幕');
+    assert.equal(renders.at(-1)[1], '补回来的弹幕');
+    assert.equal(renders.at(-1)[2], 'ready');
+});
+
+test('two failed barrage modules do not discard a valid status update', async () => {
+    const context = createContext();
+    const renders = [];
+    let calls = 0;
+    const result = await handleCharacterMessageRendered(5, createSettings(), context, {
+        renderBarrage: (...args) => renders.push(args),
+        getCurrentContext: () => context,
+        async generateBarrage(payload) {
+            calls++;
+            if (calls === 1) {
+                return { content: [
+                    JSON.stringify({
+                        module: 'status',
+                        data: {
+                            environment: { time: '清晨', location: '庭院' },
+                            characters: [{ name: '玩家', role: 'user' }, { name: '角色', role: 'char' }],
+                            event: { activity: '等待' },
+                        },
+                    }),
+                    JSON.stringify({
+                        module: 'timeline',
+                        data: { transition: 'unchanged', currentTime: '清晨', mainlineTime: '清晨', segments: [] },
+                    }),
+                ].join('\n') };
+            }
+            assert.deepEqual(payload.outputOptions, {
+                barrageEnabled: true,
+                statusEnabled: false,
+                developmentEnabled: false,
+            });
+            return { content: '{"module":"barrage","data":{"lines":[' };
+        },
+    });
+
+    assert.equal(calls, 2);
+    assert.equal(result.statusSaved, true);
+    assert.equal(result.content, '');
+    assert.equal(context.chatMetadata[STORY_STATUS_METADATA_KEY]['5'].status.environment.location, '庭院');
+    assert.equal(getOnlyBarrageVariant(context).state, 'error');
+    assert.equal(renders.at(-1)[2], 'error');
+    assert.match(renders.at(-1)[1], /弹幕生成失败/);
 });
 
 test('player-declared character development shares the same side request and is cached', async () => {
@@ -476,6 +586,7 @@ test('forced status regeneration updates only status and preserves barrage and d
                 return { content: JSON.stringify({
                     barrage: '应当保留的弹幕',
                     status: { environment: { location: '旧地点' }, characters: [], event: { activity: '交谈' } },
+                    timeline: { transition: 'unknown', currentTime: '', mainlineTime: '', segments: [] },
                     development: { changes: [{
                         character: '角色',
                         dimension: 'relationship',
@@ -567,6 +678,7 @@ test('each swiped reply restores its own status and development without another 
                     characters: [],
                     event: { activity: protects ? '保护玩家' : '敌视玩家' },
                 },
+                timeline: { transition: 'unknown', currentTime: '', mainlineTime: '', segments: [] },
                 development: { changes: [{
                     character: '角色',
                     dimension: 'relationship',
@@ -649,6 +761,7 @@ test('editing a reply preserves its barrage but replaces status and development 
                         characters: [],
                         event: { activity: '彼此敌对' },
                     },
+                    timeline: { transition: 'unknown', currentTime: '', mainlineTime: '', segments: [] },
                     development: { changes: [{
                         character: '角色',
                         dimension: 'relationship',
@@ -670,6 +783,7 @@ test('editing a reply preserves its barrage but replaces status and development 
                     characters: [],
                     event: { activity: '保护玩家' },
                 },
+                timeline: { transition: 'unknown', currentTime: '', mainlineTime: '', segments: [] },
                 development: { changes: [{
                     character: '角色',
                     dimension: 'relationship',

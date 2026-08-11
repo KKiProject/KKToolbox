@@ -166,6 +166,35 @@ test('phone context still returns card foundations when retrieval sources are em
     assert.equal(result.activatedWorldInfo, '');
 });
 
+test('public-world context can skip the unused online-memory retrieval', async () => {
+    const result = await preparePhoneStoryContext({
+        settings: {
+            apis: { embedding: { url: 'https://embedding.example/v1', apiKey: 'key', model: 'model' } },
+            development: { enabled: false },
+            map: { includeInPrompt: false },
+        },
+        context: {
+            characterId: 0,
+            characters: [{ name: '艾莉娅', description: '演员。', data: {} }],
+            chatMetadata: {},
+        },
+        store: {
+            chatId: 'public-world-chat',
+            onlineMemory: { events: [{ id: 'event-1', summary: '不应检索。' }] },
+        },
+        snapshot: phoneSnapshot(),
+        recentStory: ['正文继续。'],
+        includePhoneMemory: false,
+    }, {
+        getPowerUser: () => ({}),
+        async getWorldInfoPrompt() { return {}; },
+        async retrieveAndInject() {},
+        async syncPhoneMemory() { throw new Error('unused phone memory should be skipped'); },
+        async searchPhoneMemory() { throw new Error('unused phone memory should be skipped'); },
+    });
+    assert.equal(result.phoneMemoryContext, '');
+});
+
 test('a broken story index or worldbook scan never blocks phone messaging context', async (testContext) => {
     const originalWarn = console.warn;
     console.warn = () => undefined;

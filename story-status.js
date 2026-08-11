@@ -434,17 +434,91 @@ function extractBalancedJsonObjects(value) {
     return results;
 }
 
+function emptySideResponse() {
+    return {
+        barrage: '',
+        status: null,
+        timeline: normalizeTimelineUpdate(null),
+        development: null,
+        modules: [],
+    };
+}
+
+function normalizeBarrageModuleData(value) {
+    const source = value && typeof value === 'object' && !Array.isArray(value)
+        ? value.lines ?? value.content ?? value.text ?? value.barrages
+        : value;
+    if (typeof source === 'string') return cleanText(source, 100_000);
+    if (!Array.isArray(source)) return '';
+    return source.map(item => {
+        if (typeof item === 'string') return cleanText(item, 2000);
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return '';
+        return cleanText(item.content ?? item.text ?? item.message, 2000);
+    }).filter(Boolean).join('\n').slice(0, 100_000);
+}
+
+function parseSideJsonl(raw) {
+    const result = emptySideResponse();
+    for (const candidate of extractBalancedJsonObjects(raw)) {
+        let value;
+        try {
+            value = JSON.parse(candidate.text);
+        } catch {
+            continue;
+        }
+        if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+        const module = cleanText(value.module ?? value.type, 40).toLowerCase();
+        if (!['barrage', 'status', 'timeline', 'development'].includes(module)) continue;
+        const data = value.data ?? value.value ?? null;
+        let accepted = false;
+        if (module === 'barrage') {
+            const barrage = normalizeBarrageModuleData(data);
+            if (barrage) {
+                result.barrage = barrage;
+                accepted = true;
+            }
+        }
+        if (module === 'status') {
+            const status = normalizeStoryStatus(data);
+            if (status) {
+                result.status = status;
+                accepted = true;
+            }
+        }
+        if (module === 'timeline' && data && typeof data === 'object' && !Array.isArray(data)) {
+            result.timeline = normalizeTimelineUpdate(data);
+            accepted = true;
+        }
+        if (module === 'development' && data && typeof data === 'object' && !Array.isArray(data)) {
+            result.development = data;
+            accepted = true;
+        }
+        if (accepted && !result.modules.includes(module)) result.modules.push(module);
+    }
+    return result.modules.length > 0 ? result : null;
+}
+
 function parseSideObject(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
     const recognized = ['barrage', '弹幕', 'status', '状态', 'timeline', '时间线', 'development', '人物发展']
         .some(key => Object.hasOwn(value, key));
     const directStatus = !recognized ? normalizeStoryStatus(value) : null;
     if (!recognized && !directStatus) return null;
+    const barrage = cleanText(value.barrage ?? value.弹幕, 100_000);
+    const status = normalizeStoryStatus(value.status ?? value.状态) ?? directStatus;
+    const timelineSource = value.timeline ?? value.时间线 ?? null;
+    const development = value.development ?? value.人物发展 ?? null;
+    const modules = [];
+    if (barrage) modules.push('barrage');
+    if (status) modules.push('status');
+    if (timelineSource && typeof timelineSource === 'object' && !Array.isArray(timelineSource)) modules.push('timeline');
+    if (development && typeof development === 'object' && !Array.isArray(development)) modules.push('development');
     return {
-        barrage: cleanText(value.barrage ?? value.弹幕, 100_000),
-        status: normalizeStoryStatus(value.status ?? value.状态) ?? directStatus,
-        timeline: normalizeTimelineUpdate(value.timeline ?? value.时间线),
-        development: value.development ?? value.人物发展 ?? null,
+        barrage,
+        status,
+        timeline: normalizeTimelineUpdate(timelineSource),
+        development,
+        modules,
     };
 }
 
@@ -497,7 +571,10 @@ function extractLooseBarrage(raw) {
 
 export function parseSideResponse(content) {
     const raw = cleanText(content, 200_000);
-    if (!raw) return { barrage: '', status: null, timeline: normalizeTimelineUpdate(null), development: null };
+    if (!raw) return emptySideResponse();
+
+    const jsonl = parseSideJsonl(raw);
+    if (jsonl) return jsonl;
 
     const candidates = [raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '')];
     for (const match of raw.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) candidates.push(match[1].trim());
@@ -555,15 +632,27 @@ export function parseSideResponse(content) {
         || /["'](?:status|状态|timeline|时间线|development|人物发展)["']\s*[:：]|<(?:status|timeline|development)>/iu.test(raw),
     );
     if (hasStructuredOutput) {
+        const modules = [];
+        if (barrageMatch || extractLooseBarrage(raw)) modules.push('barrage');
+        if (recoveredStatus) modules.push('status');
+        if (recoveredTimeline) modules.push('timeline');
+        if (recoveredDevelopment) modules.push('development');
         return {
             barrage: extractLooseBarrage(raw),
             status: recoveredStatus,
             timeline: normalizeTimelineUpdate(recoveredTimeline),
             development: recoveredDevelopment,
+            modules,
         };
     }
 
-    return { barrage: raw, status: null, timeline: normalizeTimelineUpdate(null), development: null };
+    // A cut-off JSONL module is structured output, not literal barrage text.
+    // Treat it as missing so the caller can retry only that module.
+    if (/["']module["']\s*:\s*["'](?:barrage|status|timeline|development)["']/iu.test(raw)) {
+        return emptySideResponse();
+    }
+
+    return { ...emptySideResponse(), barrage: raw, modules: ['barrage'] };
 }
 
 function getStatusStore(metadata, create = false) {

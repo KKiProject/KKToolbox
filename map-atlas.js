@@ -11,6 +11,49 @@ function cleanText(value, maximum = 2000) {
     return String(value ?? '').trim().slice(0, maximum);
 }
 
+function mapLabelCharacterWidth(character) {
+    return /[^\u0000-\u00ff]/u.test(character) ? 2 : 1;
+}
+
+function mapLabelLineWidth(value) {
+    return Array.from(value).reduce((total, character) => total + mapLabelCharacterWidth(character), 0);
+}
+
+export function wrapMapNodeLabel(value, maximumWidth = 14, maximumLines = 2) {
+    const characters = Array.from(cleanText(value, 160));
+    const lines = [];
+    let line = '';
+    let lineWidth = 0;
+    let overflowed = false;
+
+    for (const character of characters) {
+        const characterWidth = mapLabelCharacterWidth(character);
+        if (line && lineWidth + characterWidth > maximumWidth) {
+            lines.push(line.trim());
+            if (lines.length >= maximumLines) {
+                overflowed = true;
+                break;
+            }
+            line = '';
+            lineWidth = 0;
+        }
+        line += character;
+        lineWidth += characterWidth;
+    }
+
+    if (!overflowed && line) lines.push(line.trim());
+    if (lines.length === 0) return [''];
+    if (!overflowed) return lines;
+
+    const ellipsisWidth = mapLabelCharacterWidth('…');
+    let lastLine = lines.at(-1) ?? '';
+    while (lastLine && mapLabelLineWidth(lastLine) + ellipsisWidth > maximumWidth) {
+        lastLine = Array.from(lastLine).slice(0, -1).join('');
+    }
+    lines[lines.length - 1] = `${lastLine.trimEnd()}…`;
+    return lines;
+}
+
 function cleanId(value, fallback) {
     const normalized = String(value ?? '').trim().replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
     return (normalized || fallback).slice(0, 80);
@@ -574,8 +617,14 @@ function renderGraph(state) {
             'aria-label': node.name,
         });
         const rect = svgElement('rect', { x: -70, y: -25, width: 140, height: 50, rx: 14 });
-        const name = svgElement('text', { x: 0, y: 5, 'text-anchor': 'middle' });
-        name.textContent = node.name.length > 12 ? `${node.name.slice(0, 11)}…` : node.name;
+        const name = svgElement('text', { x: 0, 'text-anchor': 'middle' });
+        const labelLines = wrapMapNodeLabel(node.name);
+        const linePositions = labelLines.length === 1 ? [6] : [-6, 15];
+        labelLines.forEach((line, index) => {
+            const span = svgElement('tspan', { x: 0, y: linePositions[index] });
+            span.textContent = line;
+            name.append(span);
+        });
         group.append(rect, name);
         if (node.childPageId) {
             const marker = svgElement('text', { x: 58, y: -11, class: 'memory-augment-map-child-marker', 'text-anchor': 'middle' });

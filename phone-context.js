@@ -223,6 +223,7 @@ export async function preparePhoneStoryContext(payload = {}, clients = {}) {
     const snapshot = payload?.snapshot ?? {};
     const store = payload?.store ?? {};
     const recentStory = payload?.recentStory ?? [];
+    const includePhoneMemory = payload?.includePhoneMemory !== false;
     const query = buildPhoneRetrievalQuery(snapshot, recentStory);
     let helpers = { powerUser: clients.powerUser ?? {} };
     try {
@@ -258,6 +259,7 @@ export async function preparePhoneStoryContext(payload = {}, clients = {}) {
         }
     };
     const retrievePhoneMemory = async () => {
+        if (!includePhoneMemory) return '';
         try {
             return await collectRecalledPhoneMemory({ settings, store, snapshot, query, clients });
         } catch (error) {

@@ -366,7 +366,7 @@ export function buildPhoneWeiboAiRequest(settings, context, options = {}) {
         chatId,
         messageId,
         swipeIndex,
-        storyText: text(options.storyText, 20_000),
+        storyText: text(options.storyText, 60_000),
         storyContext: clone(options.storyContext ?? {}),
         operation: clone(options.operation ?? {}),
         interests: [...state.interests],

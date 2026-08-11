@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+    buildBarrageUserContent,
     buildLiveUserContent,
     buildPhoneUserContent,
     buildWeiboUserContent,
@@ -12,6 +13,26 @@ import {
     generateSummaryCompletion,
     rerankCandidates,
 } from '../browser-api-client.js';
+
+test('combined side prompt uses ordered independent JSONL modules with barrage last', () => {
+    const prompt = buildBarrageUserContent(
+        [{ id: 1, name: '玩家', text: '上楼。' }, { id: 2, name: '角色', text: '门开了。' }],
+        [],
+        '角色性格基础',
+        null,
+        null,
+        null,
+        null,
+        {},
+        { barrageEnabled: true, statusEnabled: true, developmentEnabled: true },
+    );
+
+    assert.match(prompt, /只输出 JSONL/);
+    assert.match(prompt, /status → timeline → development → barrage/);
+    assert.match(prompt, /"module":"barrage".*"lines":\["弹幕1"/);
+    assert.match(prompt, /barrage 必须最后输出/);
+    assert.doesNotMatch(prompt, /只输出一个合法 JSON 对象/);
+});
 
 test('anonymous phone masks never reveal their player binding without public evidence', () => {
     const phonePrompt = buildPhoneUserContent({
@@ -158,10 +179,11 @@ test('browser barrage request separates recap, memory, and latest chapter', asyn
     });
 
     assert.equal(requestBody.max_tokens, 1234);
-    assert.equal(requestBody.messages[0].content, '观众提示');
+    assert.match(requestBody.messages[0].content, /只控制 barrage 弹幕字段/);
+    assert.match(requestBody.messages[0].content, /观众提示/);
     assert.match(requestBody.messages[1].content, /【前情回顾】/);
     assert.match(requestBody.messages[1].content, /更早的记忆/);
-    assert.match(requestBody.messages[1].content, /【最新章节】（这是你要评论的内容）\n最新回复/);
+    assert.match(requestBody.messages[1].content, /【最新章节】（这是本轮状态更新的直接剧情依据）\n最新回复/);
     assert.match(requestBody.messages[1].content, /完成：观众弹幕、最新剧情状态与时间线/);
     assert.deepEqual(result, { content: '弹幕内容' });
 });
@@ -232,6 +254,24 @@ test('phone world generation streams long structured output instead of waiting o
     assert.equal(result.content, expected);
 });
 
+test('phone world streaming stops a connection that sends no data for too long', async () => {
+    await assert.rejects(generatePhoneWorldCompletion({
+        barrage: { baseUrl: 'https://provider.example', apiKey: 'secret', model: 'chat-model' },
+        prompt: '生成手机世界。',
+    }, {
+        timeoutMs: 1000,
+        idleTimeoutMs: 15,
+        maxRetries: 0,
+        fetchImpl: async (_url, options) => new Promise((_resolve, reject) => {
+            options.signal.addEventListener('abort', () => {
+                const error = new Error('aborted');
+                error.name = 'AbortError';
+                reject(error);
+            }, { once: true });
+        }),
+    }), /连续 1 秒没有收到 API 数据/);
+});
+
 test('development output defaults to empty and gives direct player canon highest priority', async () => {
     let requestBody;
     await generateBarrageCompletion({
@@ -273,6 +313,98 @@ test('development output defaults to empty and gives direct player canon highest
     assert.match(prompt, /"merges"/);
 });
 
+test('story status establishes one precise first time anchor and then inherits it continuously', async () => {
+    const prompts = [];
+    const run = previous => generateBarrageCompletion({
+        barrage: { baseUrl: 'https://provider.example', apiKey: 'secret', model: 'chat-model' },
+        recentMessages: [{ id: 5, name: '角色', text: '她在窗边坐下。' }],
+        statusWorldContext: '【初始场景】\n王历三百年，王都采用十二时制。',
+        previousStatus: previous,
+        previousTimeline: previous ? {
+            currentTime: previous.environment.time,
+            mainlineTime: previous.environment.time,
+        } : null,
+        outputOptions: { barrageEnabled: false, statusEnabled: true, developmentEnabled: false },
+    }, {
+        fetchImpl: async (_url, options) => {
+            prompts.push(JSON.parse(options.body).messages.at(-1).content);
+            return response({ choices: [{ message: { content: JSON.stringify({
+                barrage: '',
+                status: { environment: { time: '2026-08-10 09:41 星期一', location: '住宅 → 卧室', season: '夏季', weather: '晴' }, characters: [], event: {} },
+                timeline: { transition: 'unchanged', currentTime: '2026-08-10 09:41 星期一', mainlineTime: '2026-08-10 09:41 星期一', segments: [] },
+                development: null,
+            }) } }] });
+        },
+    });
+    await run(null);
+    await run({ environment: { time: '深夜', location: '住宅 → 卧室', season: '夏季', weather: '晴' } });
+    await run({ environment: { time: '2026-08-10 09:41 星期一', location: '住宅 → 卧室', season: '夏季', weather: '晴' } });
+
+    assert.match(prompts[0], /第一次建立时间锚点/);
+    assert.match(prompts[0], /王历三百年，王都采用十二时制/);
+    assert.match(prompts[0], /年-月-日 24小时制时:分 星期几/);
+    assert.match(prompts[0], /location、season、weather 也必须建立/);
+    assert.doesNotMatch(prompts[0], /本存档已经有精确时间锚点/);
+    assert.match(prompts[1], /第一次建立时间锚点/);
+    assert.doesNotMatch(prompts[1], /本存档已经有精确时间锚点/);
+    assert.match(prompts[2], /本存档已经有精确时间锚点/);
+    assert.match(prompts[2], /不能退化成“次日、稍后、夜里”等模糊记录/);
+    assert.match(prompts[2], /不得每楼重新随机/);
+});
+
+test('story status infers inner states without copying prose and isolates barrage-only prompts', async () => {
+    let requestBody;
+    await generateBarrageCompletion({
+        barrage: { baseUrl: 'https://provider.example', apiKey: 'secret', model: 'chat-model' },
+        systemPrompt: '每条弹幕都使用短句。',
+        recentMessages: [{ id: 5, name: '角色', text: '她沉默地替对方把外套扣好，随后移开视线。' }],
+        statusWorldContext: '【角色性格】\n她不擅长直说关心，总把担忧藏进命令与行动里。',
+        previousStatus: {
+            environment: { time: '2026-08-10 09:41 星期一' },
+            characters: [{ name: '角色', innerThoughts: '旧OS' }],
+        },
+        outputOptions: { barrageEnabled: true, statusEnabled: true, developmentEnabled: false },
+    }, {
+        fetchImpl: async (_url, options) => {
+            requestBody = JSON.parse(options.body);
+            return response({ choices: [{ message: { content: JSON.stringify({
+                barrage: '嘴硬。',
+                status: { environment: {}, characters: [], event: {} },
+                timeline: { transition: 'unchanged', segments: [] },
+                development: null,
+            }) } }] });
+        },
+    });
+
+    assert.match(requestBody.messages[0].content, /只控制 barrage 弹幕字段/);
+    assert.match(requestBody.messages[0].content, /不得用于 status、timeline 或 development/);
+    const prompt = requestBody.messages.at(-1).content;
+    assert.match(prompt, /合理推出的隐含状态/);
+    assert.match(prompt, /不算瞎编/);
+    assert.match(prompt, /不能因为原文未明说就留空/);
+    assert.match(prompt, /不能复制正文句子充数/);
+    assert.match(prompt, /不得机械照抄/);
+    assert.match(prompt, /人物只能根据自己亲历、看见、听见、被告知或能够合理猜到的信息/);
+    assert.match(prompt, /她不擅长直说关心/);
+});
+
+test('barrage style system prompts are omitted from status-only requests', async () => {
+    let requestBody;
+    await generateBarrageCompletion({
+        barrage: { baseUrl: 'https://provider.example', apiKey: 'secret', model: 'chat-model' },
+        systemPrompt: '这条要求绝不能进入状态栏。',
+        recentMessages: [{ id: 5, name: '角色', text: '她望向窗外。' }],
+        outputOptions: { barrageEnabled: false, statusEnabled: true, developmentEnabled: false },
+    }, {
+        fetchImpl: async (_url, options) => {
+            requestBody = JSON.parse(options.body);
+            return response({ choices: [{ message: { content: '{"barrage":"","status":{"environment":{},"characters":[],"event":{}},"timeline":{"transition":"unchanged","segments":[]},"development":null}' } }] });
+        },
+    });
+    assert.equal(requestBody.messages.length, 1);
+    assert.doesNotMatch(requestBody.messages[0].content, /这条要求绝不能进入状态栏/);
+});
+
 test('browser barrage recovers a final JSON object placed in reasoning_content', async () => {
     const result = await generateBarrageCompletion({
         barrage: { baseUrl: 'https://provider.example', apiKey: 'secret', model: 'chat-model' },
@@ -289,6 +421,30 @@ test('browser barrage recovers a final JSON object placed in reasoning_content',
         }),
     });
     assert.match(result.content, /"barrage":"救回来了！"/);
+});
+
+test('browser barrage preserves every JSONL module placed in reasoning_content', async () => {
+    const moduleLines = [
+        JSON.stringify({ module: 'status', data: { environment: {}, characters: [], event: {} } }),
+        JSON.stringify({ module: 'timeline', data: { transition: 'unchanged', segments: [] } }),
+        JSON.stringify({ module: 'barrage', data: { lines: ['保留下来'] } }),
+    ];
+    const result = await generateBarrageCompletion({
+        barrage: { baseUrl: 'https://provider.example', apiKey: 'secret', model: 'chat-model' },
+        recentMessages: [{ id: 1, name: '角色', text: '最新回复' }],
+    }, {
+        fetchImpl: async () => response({
+            choices: [{
+                finish_reason: 'stop',
+                message: {
+                    content: '',
+                    reasoning_content: ['先分析。', ...moduleLines].join('\n'),
+                },
+            }],
+        }),
+    });
+
+    assert.deepEqual(result.content.split('\n'), moduleLines);
 });
 
 test('an empty stop response retries with a lightweight barrage-only request', async () => {

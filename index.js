@@ -23,7 +23,14 @@ import {
     setManualDevelopmentField,
 } from './character-development.js';
 import { initializeDevelopmentBaselineUi } from './character-baseline.js';
-import { clearAllSummaries, getSummaryStatus, initializeSummaryManager, repairMalformedSummaries } from './summary-manager.js';
+import {
+    clearAllSummaries,
+    getSummaryStatus,
+    initializeSummaryManager,
+    regenerateAllSummaries,
+    regenerateSummaryRange,
+    repairMalformedSummaries,
+} from './summary-manager.js';
 import { initializeWorldInfoManager, rebuildAllCurrentWorldInfo } from './world-info-manager.js';
 import { initializeHtmlRenderer, refreshHtmlRenderer } from './html-renderer.js';
 import { initializePhoneShellUi } from './phone-shell.js';
@@ -932,6 +939,72 @@ function bindActions(settings) {
         } catch (error) {
             showNotice(`修复摘要失败：${error.message}`, 'error');
             console.error('[Memory Augment] Failed to repair malformed summaries.', error);
+        } finally {
+            button.classList.remove('disabled');
+            button.disabled = false;
+        }
+    });
+    document.querySelector('#memory_augment_regenerate_summaries')?.addEventListener('click', async (event) => {
+        const confirmed = await Popup.show.confirm(
+            '重新生成当前存档的全部摘要？',
+            '会清除当前存档已有的 KKToolbox 摘要，并从第一批可总结楼层重新生成。已经隐藏的楼层仍保留原文，可以正常重新总结；楼层较多时会连续调用多次副 API。',
+        );
+        if (!confirmed) return;
+        const button = event.currentTarget;
+        button.classList.add('disabled');
+        button.disabled = true;
+        try {
+            const result = await regenerateAllSummaries(settings, SillyTavern.getContext(), {
+                getCurrentContext: () => SillyTavern.getContext(),
+                onSaved: refreshStatus,
+                onProgress: refreshStatus,
+            });
+            if (result.discarded) {
+                showNotice('聊天已经切换，本次重新总结已停止。', 'info');
+            } else {
+                showNotice(`重新总结完成：已生成 ${result.created} 批摘要。`, 'success');
+            }
+            await refreshStatus();
+        } catch (error) {
+            showNotice(`重新总结失败：${error.message}`, 'error');
+            console.error('[Memory Augment] Failed to regenerate summaries.', error);
+        } finally {
+            button.classList.remove('disabled');
+            button.disabled = false;
+        }
+    });
+    document.querySelector('#memory_augment_regenerate_summary_range')?.addEventListener('click', async (event) => {
+        const startFloor = Number(document.querySelector('#memory_augment_summary_range_start')?.value);
+        const endFloor = Number(document.querySelector('#memory_augment_summary_range_end')?.value);
+        if (!Number.isInteger(startFloor) || !Number.isInteger(endFloor) || startFloor < 1 || endFloor < 1) {
+            showNotice('请输入有效的起止楼层。', 'error');
+            return;
+        }
+        const button = event.currentTarget;
+        button.classList.add('disabled');
+        button.disabled = true;
+        try {
+            const result = await regenerateSummaryRange(
+                settings,
+                SillyTavern.getContext(),
+                startFloor,
+                endFloor,
+                {
+                    getCurrentContext: () => SillyTavern.getContext(),
+                    onSaved: refreshStatus,
+                    onProgress: refreshStatus,
+                },
+            );
+            if (result.discarded) {
+                showNotice('聊天已经切换，本次指定摘要已停止。', 'info');
+            } else {
+                const ranges = result.ranges.map(range => `第${range.start}-${range.end}楼`).join('、');
+                showNotice(`已重新生成 ${result.regenerated} 条摘要：${ranges}`, 'success');
+            }
+            await refreshStatus();
+        } catch (error) {
+            showNotice(`指定楼层重新总结失败：${error.message}`, 'error');
+            console.error('[Memory Augment] Failed to regenerate summary range.', error);
         } finally {
             button.classList.remove('disabled');
             button.disabled = false;

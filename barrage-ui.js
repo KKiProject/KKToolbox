@@ -60,6 +60,21 @@ function getChatId(context) {
     return context?.getCurrentChatId?.() ?? context?.chatId;
 }
 
+function buildStatusWorldContext(context = {}) {
+    const character = context?.characters?.[context?.characterId] ?? {};
+    const data = character?.data ?? {};
+    const sections = [
+        ['角色／世界基础', character?.description ?? data?.description],
+        ['角色性格', character?.personality ?? data?.personality],
+        ['初始场景', character?.scenario ?? data?.scenario],
+        ['创作者补充', data?.creator_notes ?? character?.creator_notes],
+    ];
+    return sections.map(([label, value]) => {
+        const content = String(value ?? '').trim().slice(0, 10_000);
+        return content ? `【${label}】\n${content}` : '';
+    }).filter(Boolean).join('\n\n').slice(0, 24_000);
+}
+
 function getBarrageStore(metadata, create = false) {
     const existing = metadata?.[BARRAGE_METADATA_KEY];
     if (existing && typeof existing === 'object' && !Array.isArray(existing)) {
@@ -813,6 +828,7 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
             maxTokens: settings.barrage.maxTokens,
             recentMessages,
             ragFragments,
+            statusWorldContext: requestStatus ? buildStatusWorldContext(context) : '',
             previousStatus,
             previousTimeline,
             developmentSnapshot,
@@ -827,34 +843,54 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
         const response = await request(requestPayload);
         let parsed = parseSideResponse(response?.content);
         let statusRecoveryError = null;
-        if (requestStatus && !parsed.status) {
+        let barrageRecoveryError = null;
+        const initialModules = new Set(Array.isArray(parsed.modules) ? parsed.modules : []);
+        const missingBarrage = requestBarrage && !parsed.barrage;
+        const missingStatus = requestStatus && (!parsed.status || !initialModules.has('timeline'));
+        const missingDevelopment = requestDevelopment && !initialModules.has('development');
+        if (missingBarrage || missingStatus || missingDevelopment) {
             try {
                 const recoveryResponse = await request({
                     ...requestPayload,
                     outputOptions: {
-                        barrageEnabled: false,
-                        statusEnabled: true,
-                        developmentEnabled: false,
+                        barrageEnabled: missingBarrage,
+                        statusEnabled: missingStatus,
+                        developmentEnabled: missingDevelopment,
                     },
                 });
                 const recovered = parseSideResponse(recoveryResponse?.content);
-                if (recovered.status) {
-                    parsed = {
-                        ...parsed,
-                        status: recovered.status,
-                        timeline: recovered.timeline,
-                    };
-                } else {
+                const recoveredModules = new Set(Array.isArray(recovered.modules) ? recovered.modules : []);
+                const modules = new Set(initialModules);
+                if (missingBarrage && recovered.barrage) {
+                    parsed.barrage = recovered.barrage;
+                    modules.add('barrage');
+                }
+                if (missingStatus && recovered.status && recoveredModules.has('timeline')) {
+                    parsed.status = recovered.status;
+                    parsed.timeline = recovered.timeline;
+                    modules.add('status');
+                    modules.add('timeline');
+                }
+                if (missingDevelopment && recoveredModules.has('development')) {
+                    parsed.development = recovered.development;
+                    modules.add('development');
+                }
+                parsed.modules = [...modules];
+                if (missingStatus && (!parsed.status || !modules.has('timeline'))) {
                     statusRecoveryError = new Error('副 API 连续两次没有返回有效的剧情状态。');
                 }
+                if (missingBarrage && !parsed.barrage) {
+                    barrageRecoveryError = new Error('副 API 连续两次没有返回有效弹幕。');
+                }
             } catch (error) {
-                statusRecoveryError = error;
+                if (missingStatus) statusRecoveryError = error;
+                if (missingBarrage) barrageRecoveryError = error;
             }
         }
         const generatedContent = parsed.barrage;
-        if (requestBarrage && !generatedContent) {
-            throw new Error('Barrage endpoint returned empty content.');
-        }
+        const parsedModules = new Set(Array.isArray(parsed.modules) ? parsed.modules : []);
+        const statusBundleReady = !requestStatus || (Boolean(parsed.status) && parsedModules.has('timeline'));
+        const developmentReady = !requestDevelopment || parsedModules.has('development');
 
         const currentContext = dependencies.getCurrentContext?.()
             ?? globalThis.SillyTavern?.getContext?.()
@@ -867,16 +903,23 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
         const content = requestBarrage ? generatedContent : String(cached?.content ?? '').trim();
         if (barrageEnabled && content) {
             safelyRender(render, numericId, content, 'ready');
+        } else if (barrageEnabled && requestBarrage) {
+            const detail = String(barrageRecoveryError?.message ?? '副 API 没有返回有效弹幕。').trim();
+            safelyRender(render, numericId, `弹幕生成失败：${detail}`, 'error');
         }
         if (requestBarrage) {
             const currentStore = getBarrageStore(currentContext.chatMetadata, true);
-            setBarrageVariant(currentStore, numericId, currentMessage, sourceHash, {
+            setBarrageVariant(currentStore, numericId, currentMessage, sourceHash, content ? {
                 content,
+                timestamp: Math.floor(Date.now() / 1000),
+            } : {
+                state: 'error',
+                error: String(barrageRecoveryError?.message ?? '副 API 没有返回有效弹幕。').trim(),
                 timestamp: Math.floor(Date.now() / 1000),
             });
         }
         let finalStatus = requestStatus
-            ? applyStoryStatusOptions(parsed.status, statusOptions)
+            ? statusBundleReady ? applyStoryStatusOptions(parsed.status, statusOptions) : null
             : applyStoryStatusOptions(cachedSideResult?.status ?? cachedStatus?.status, statusOptions);
         if (requestStatus && finalStatus) {
             clearStoryStatusRecords(currentContext, numericId);
@@ -895,7 +938,7 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
             ? getMessageTimelineMetadata(currentContext, numericId)
             : null;
         let developmentResult = null;
-        if (requestDevelopment && response?.partial !== true) {
+        if (requestDevelopment && developmentReady && response?.partial !== true) {
             clearCharacterDevelopmentRecords(currentContext, numericId);
             developmentResult = applyCharacterDevelopmentUpdate(currentContext, numericId, parsed.development, {
                 status: finalStatus,
@@ -904,7 +947,7 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
                 characterBaselines,
             });
         }
-        if ((requestStatus && finalStatus) || (requestDevelopment && response?.partial !== true)) {
+        if ((requestStatus && finalStatus) || (requestDevelopment && developmentReady && response?.partial !== true)) {
             const currentSideStore = getSideResultStore(currentContext.chatMetadata, true);
             const nextSideResult = {
                 ...(cachedSideResult ? cloneSideValue(cachedSideResult) : {}),
@@ -916,7 +959,7 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
                 nextSideResult.status = cloneSideValue(finalStatus);
                 nextSideResult.timeline = cloneSideValue(parsed.timeline);
             }
-            if (requestDevelopment && response?.partial !== true) {
+            if (requestDevelopment && developmentReady && response?.partial !== true) {
                 nextSideResult.developmentProcessed = true;
                 nextSideResult.development = cloneSideValue(parsed.development);
             }
@@ -1321,4 +1364,4 @@ export function refreshBarrageVisibility(settings, context = globalThis.SillyTav
     if (enabled && context) restoreStoredBarrages(context, settings);
 }
 
-export { BARRAGE_METADATA_KEY, SIDE_RESULT_METADATA_KEY };
+export { BARRAGE_METADATA_KEY, SIDE_RESULT_METADATA_KEY, buildStatusWorldContext };

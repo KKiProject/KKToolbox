@@ -55,6 +55,34 @@ test('live normalization preserves saved streams and removes duplicate follows',
     assert.equal(state.ownLive.status, 'idle');
 });
 
+test('public live streams unwrap structured scenes and barrages without object labels', () => {
+    const settings = {
+        phone: {
+            live: {
+                streams: [{
+                    id: 'structured-live',
+                    type: 'official',
+                    host: '主持人',
+                    scenes: [
+                        { kind: 'narration', segment: '开场', text: { content: '镜头扫过全场。' } },
+                        { kind: 'dialogue', segment: '采访', speaker: '嘉宾', text: { dialogue: '大家晚上好。' } },
+                    ],
+                    barrages: [
+                        { author: '观众甲', content: '终于开播了！' },
+                        { user: '观众乙', text: '现场好漂亮。' },
+                        { 弹幕: '主持人声音好稳。' },
+                    ],
+                    chats: [{ author: '观众丙', content: { text: '期待采访。' } }],
+                }],
+            },
+        },
+    };
+    const stream = normalizePhoneLiveState(settings).streams[0];
+    assert.deepEqual(stream.scenes.map(scene => scene.text), ['镜头扫过全场。', '大家晚上好。']);
+    assert.deepEqual(stream.barrages, ['终于开播了！', '现场好漂亮。', '主持人声音好稳。']);
+    assert.doesNotMatch(JSON.stringify(stream), /\[object Object\]/);
+});
+
 test('ended legacy own streams migrate into lightweight transcripts without barrage or gift data', () => {
     const settings = {
         phone: {

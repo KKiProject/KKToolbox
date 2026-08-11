@@ -11,6 +11,8 @@ import {
     isUnusableSummaryOutput,
     migrateLegacySummaries,
     parseSummaryEvents,
+    regenerateAllSummaries,
+    regenerateSummaryRange,
     SUMMARY_KEY_PREFIX,
     SUMMARY_STATE_KEY,
     summarizePendingMessages,
@@ -194,6 +196,138 @@ function createContext(messages = []) {
     };
     return context;
 }
+
+test('a stale summary name is recreated from the real lorebook list before it is rebound', async () => {
+    const context = createContext();
+    const staleBookName = context.summaryBookName;
+    context.chatMetadata[SUMMARY_STATE_KEY] = {
+        lastSummarizedMessageIndex: -1,
+        entries: [],
+        overviewGroups: [],
+        bookName: staleBookName,
+        migrationVersion: 2,
+    };
+    // SillyTavern returns an empty dummy object when a requested lorebook file
+    // is missing, so loadWorldInfo alone cannot prove that the file exists.
+    context.loadWorldInfo = async () => ({ entries: {} });
+
+    await migrateLegacySummaries(context);
+
+    assert.equal(context.lorebooks.has(staleBookName), true);
+    assert.deepEqual(context.additionalBooks, [staleBookName]);
+});
+
+test('manually deleting the active summary book drops stale UIDs and backfills from the first floor', async () => {
+    const context = createContext(dialoguePairs(15));
+    const bookName = context.summaryBookName;
+    context.chatMetadata[SUMMARY_STATE_KEY] = {
+        lastSummarizedMessageIndex: 9,
+        entries: [{ uid: '8', start: 0, end: 9, bookName, createdAt: '' }],
+        overviewGroups: [{ key: '0-9', start: 0, end: 9, sourceHash: 'old' }],
+        bookName,
+        migrationVersion: 2,
+    };
+    context.lorebooks.set(bookName, { entries: {
+        8: { uid: 8, key: [`${SUMMARY_KEY_PREFIX}[第1-10楼]`], content: '已经被用户删除的旧摘要。' },
+    } });
+    context.lorebooks.delete(bookName);
+
+    const result = await summarizePendingMessages(
+        { context: { recentMessages: 20, summaryBatchSize: 10 } },
+        context,
+        {
+            getCurrentContext: () => context,
+            generateSummary: async () => '[事件1]\n重要度：3\n事件概述：删除世界书后从第一批原文重新生成摘要。\n时间：未明确\n地点：室内\n涉及角色：用户，角色',
+        },
+    );
+
+    assert.equal(result.created, 1);
+    assert.equal(result.start, 0);
+    assert.equal(context.chatMetadata[SUMMARY_STATE_KEY].entries.length, 1);
+    assert.equal(context.chatMetadata[SUMMARY_STATE_KEY].entries[0].start, 0);
+    assert.equal(context.calls.some(command => command.startsWith('/getentryfield ')), false);
+});
+
+test('one-click regeneration can summarize already hidden floors from the beginning', async () => {
+    const context = createContext(dialoguePairs(20));
+    const bookName = context.summaryBookName;
+    for (let index = 0; index < 10; index++) context.chat[index].is_system = true;
+    context.chatMetadata[SUMMARY_STATE_KEY] = {
+        lastSummarizedMessageIndex: 9,
+        entries: [{ uid: '0', start: 0, end: 9, bookName, createdAt: '' }],
+        overviewGroups: [],
+        bookName,
+        migrationVersion: 2,
+    };
+    context.lorebooks.set(bookName, { entries: {
+        0: { uid: 0, key: [`${SUMMARY_KEY_PREFIX}[第1-10楼]`], content: '准备被重新生成的旧摘要。' },
+    } });
+
+    const result = await regenerateAllSummaries(
+        { context: { recentMessages: 20, summaryBatchSize: 10 } },
+        context,
+        {
+            getCurrentContext: () => context,
+            generateSummary: async prompt => {
+                assert.match(prompt, /dialogue/);
+                return '[事件1]\n重要度：3\n事件概述：隐藏楼层的原文仍然能够正常参与重新总结。\n时间：未明确\n地点：室内\n涉及角色：用户，角色';
+            },
+        },
+    );
+
+    assert.equal(result.removed, 1);
+    assert.equal(result.created, 2);
+    assert.equal(result.discarded, undefined);
+    assert.deepEqual(
+        context.chatMetadata[SUMMARY_STATE_KEY].entries.map(entry => [entry.start, entry.end]),
+        [[0, 9], [10, 19]],
+    );
+});
+
+test('range regeneration rewrites only summary entries intersecting the requested floors', async () => {
+    const context = createContext(dialoguePairs(25));
+    const bookName = context.summaryBookName;
+    context.chatMetadata[SUMMARY_STATE_KEY] = {
+        lastSummarizedMessageIndex: 29,
+        entries: [
+            { uid: '0', start: 0, end: 9, bookName, createdAt: '' },
+            { uid: '1', start: 10, end: 19, bookName, createdAt: '' },
+            { uid: '2', start: 20, end: 29, bookName, createdAt: '' },
+        ],
+        overviewGroups: [],
+        bookName,
+        migrationVersion: 2,
+    };
+    context.lorebooks.set(bookName, { entries: {
+        0: { uid: 0, key: [`${SUMMARY_KEY_PREFIX}[第1-10楼]`], content: '第一条保持不变。' },
+        1: { uid: 1, key: [`${SUMMARY_KEY_PREFIX}[第11-20楼]`], content: '第二条旧摘要。' },
+        2: { uid: 2, key: [`${SUMMARY_KEY_PREFIX}[第21-30楼]`], content: '第三条保持不变。' },
+    } });
+    let modelCalls = 0;
+
+    const result = await regenerateSummaryRange(
+        { context: { recentMessages: 20, summaryBatchSize: 10 } },
+        context,
+        12,
+        12,
+        {
+            getCurrentContext: () => context,
+            generateSummary: async prompt => {
+                modelCalls++;
+                assert.match(prompt, /第11-20楼/);
+                return '[事件1]\n重要度：4\n事件概述：只重新生成指定楼层所在的摘要条目。\n时间：未明确\n地点：室内\n涉及角色：用户，角色';
+            },
+        },
+    );
+
+    assert.equal(modelCalls, 1);
+    assert.equal(result.regenerated, 1);
+    assert.deepEqual(result.ranges, [{ start: 11, end: 20 }]);
+    const entries = context.lorebooks.get(bookName).entries;
+    assert.equal(entries[0].content, '第一条保持不变。');
+    assert.match(entries[1].content, /只重新生成指定楼层所在的摘要条目/);
+    assert.equal(entries[2].content, '第三条保持不变。');
+});
 
 function dialoguePairs(count, offset = 0) {
     return Array.from({ length: count * 2 }, (_, localIndex) => {

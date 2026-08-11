@@ -85,6 +85,58 @@ test('combined side response separates barrage text from structured status', () 
     assert.equal(parsed.development.changes[0].after, '开始相信玩家');
 });
 
+test('JSONL side response keeps every module independently parseable', () => {
+    const parsed = parseSideResponse([
+        JSON.stringify({ module: 'status', data: status('午夜') }),
+        JSON.stringify({
+            module: 'timeline',
+            data: { transition: 'unchanged', currentTime: '午夜', mainlineTime: '午夜', segments: [] },
+        }),
+        JSON.stringify({ module: 'development', data: { changes: [], merges: [] } }),
+        JSON.stringify({ module: 'barrage', data: { lines: ['第一条', '第二条'] } }),
+    ].join('\n'));
+
+    assert.equal(parsed.status.environment.time, '午夜');
+    assert.equal(parsed.timeline.transition, 'unchanged');
+    assert.deepEqual(parsed.development, { changes: [], merges: [] });
+    assert.equal(parsed.barrage, '第一条\n第二条');
+    assert.deepEqual(parsed.modules, ['status', 'timeline', 'development', 'barrage']);
+});
+
+test('a truncated final barrage line cannot destroy completed status modules', () => {
+    const parsed = parseSideResponse([
+        JSON.stringify({ module: 'status', data: status('深夜') }),
+        JSON.stringify({
+            module: 'timeline',
+            data: { transition: 'unchanged', currentTime: '深夜', mainlineTime: '深夜', segments: [] },
+        }),
+        JSON.stringify({ module: 'development', data: { changes: [], merges: [] } }),
+        '{"module":"barrage","data":{"lines":["这行被截断了"',
+    ].join('\n'));
+
+    assert.equal(parsed.status.environment.time, '深夜');
+    assert.equal(parsed.timeline.transition, 'unchanged');
+    assert.deepEqual(parsed.development, { changes: [], merges: [] });
+    assert.equal(parsed.barrage, '');
+    assert.deepEqual(parsed.modules, ['status', 'timeline', 'development']);
+});
+
+test('one malformed JSONL module does not poison later valid modules', () => {
+    const parsed = parseSideResponse([
+        '{"module":"status","data":{"characters":[,]}}',
+        JSON.stringify({
+            module: 'timeline',
+            data: { transition: 'unchanged', currentTime: '清晨', mainlineTime: '清晨', segments: [] },
+        }),
+        JSON.stringify({ module: 'barrage', data: { lines: ['还能正常看见'] } }),
+    ].join('\n'));
+
+    assert.equal(parsed.status, null);
+    assert.equal(parsed.timeline.currentTime, '清晨');
+    assert.equal(parsed.barrage, '还能正常看见');
+    assert.deepEqual(parsed.modules, ['timeline', 'barrage']);
+});
+
 test('malformed combined output still separates raw-line barrage from structured fields', () => {
     const malformed = `{
   "barrage": "第一条弹幕

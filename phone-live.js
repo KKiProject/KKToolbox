@@ -132,6 +132,27 @@ function clone(value) {
         : JSON.parse(JSON.stringify(value));
 }
 
+function liveText(value, maximum = 4000, seen = new WeakSet()) {
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+        const source = String(value).trim();
+        const objectCoercionOnly = source.includes('[object Object]')
+            && !source.replace(/\[object Object\]/g, '').replace(/[\s,，;；]+/g, '');
+        return objectCoercionOnly ? '' : source.slice(0, maximum);
+    }
+    if (!value || typeof value !== 'object') return '';
+    if (seen.has(value)) return '';
+    seen.add(value);
+    if (Array.isArray(value)) {
+        return value.map(item => liveText(item, maximum, seen)).filter(Boolean).join(' ').slice(0, maximum);
+    }
+    for (const key of ['content', 'text', 'message', 'description', 'narration', 'dialogue', 'body', 'value', '弹幕', '内容', '旁白', '台词']) {
+        if (!Object.hasOwn(value, key)) continue;
+        const result = liveText(value[key], maximum, seen);
+        if (result) return result;
+    }
+    return '';
+}
+
 function normalizeLiveScenes(value, fallback, stream = {}) {
     const source = Array.isArray(value) && value.length > 0
         ? value
@@ -140,16 +161,16 @@ function normalizeLiveScenes(value, fallback, stream = {}) {
             : [{ kind: 'narration', segment: stream.segment, text: stream.scene || stream.summary }];
     const scenes = source.map((scene, index) => {
         const kind = scene?.kind === 'dialogue' ? 'dialogue' : 'narration';
-        const content = text(scene?.text, 800);
+        const content = liveText(scene?.text ?? scene?.content ?? scene, 800);
         if (!content) return null;
         return {
             id: text(scene?.id, 100) || `${text(stream.id, 80) || 'live'}-scene-${index + 1}`,
             kind,
-            segment: text(scene?.segment, 80) || text(stream.segment, 80) || '直播进行中',
+            segment: liveText(scene?.segment, 80) || liveText(stream.segment, 80) || '直播进行中',
             text: content,
             ...(kind === 'dialogue' ? {
-                speaker: text(scene?.speaker, 60) || text(stream.host, 60) || '主播',
-                speakerRole: text(scene?.speakerRole, 60) || (stream.type === 'official' ? '现场发言' : '主播'),
+                speaker: liveText(scene?.speaker, 60) || liveText(stream.host, 60) || '主播',
+                speakerRole: liveText(scene?.speakerRole, 60) || (stream.type === 'official' ? '现场发言' : '主播'),
             } : {}),
         };
     }).filter(Boolean);
@@ -231,7 +252,7 @@ export function normalizePhoneLiveState(settings = {}) {
             return {
                 ...merged,
                 scenes: normalizeLiveScenes(stream?.scenes, seed?.scenes, merged),
-                barrages: Array.isArray(merged?.barrages) ? merged.barrages.map(message => text(message, 100)).filter(Boolean) : [],
+                barrages: Array.isArray(merged?.barrages) ? merged.barrages.map(message => liveText(message, 100)).filter(Boolean) : [],
                 chats: Array.isArray(merged?.chats) ? merged.chats : [],
             };
         }),
@@ -737,7 +758,7 @@ export function createPhoneLiveController(options = {}) {
             ? [0, 1, 2].map(index => messages[(barrageOffset + index) % messages.length]).filter(Boolean)
             : [];
         visible.forEach((message, index) => {
-            const line = element(documentRef, 'span', `is-lane-${index + 1}`, text(message, 100));
+            const line = element(documentRef, 'span', `is-lane-${index + 1}`, liveText(message, 100));
             layer.append(line);
         });
         stage.append(layer);
@@ -777,7 +798,7 @@ export function createPhoneLiveController(options = {}) {
         const count = Math.min(6, messages.length);
         return Array.from({ length: count }, (_, index) => ({
             author: `观众${String(index + 1).padStart(2, '0')}`,
-            content: messages[(barrageOffset + index) % messages.length],
+            content: liveText(messages[(barrageOffset + index) % messages.length], 180),
             kind: 'message',
         }));
     }
@@ -787,7 +808,7 @@ export function createPhoneLiveController(options = {}) {
         list.replaceChildren();
         for (const item of liveChatItems(stream)) {
             const row = element(documentRef, 'p', item.kind === 'gift' ? 'is-gift' : item.mine ? 'is-mine' : '');
-            row.append(element(documentRef, 'strong', '', item.mine ? '我' : text(item.author, 50)), documentRef.createTextNode(` ${text(item.content, 180)}`));
+            row.append(element(documentRef, 'strong', '', item.mine ? '我' : liveText(item.author, 50)), documentRef.createTextNode(` ${liveText(item.content ?? item.text ?? item.message, 180)}`));
             list.append(row);
         }
         list.scrollTop = previousScrollTop;

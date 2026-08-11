@@ -93,6 +93,17 @@ function getSummaryState(metadata, create = false) {
     return state;
 }
 
+function resetSummaryProgress(state) {
+    if (!state) return false;
+    const changed = state.lastSummarizedMessageIndex !== -1
+        || state.entries.length > 0
+        || state.overviewGroups.length > 0;
+    state.lastSummarizedMessageIndex = -1;
+    state.entries = [];
+    state.overviewGroups = [];
+    return changed;
+}
+
 function quoteSlashValue(value) {
     return `"${String(value ?? '').replace(/([\\"{}|])/g, '\\$1')}"`;
 }
@@ -262,17 +273,20 @@ async function getSummaryBookName(context, create = false) {
             await context.saveMetadata?.();
         }
         const bindingKey = `${String(getChatId(context) ?? '')}:${bookName}`;
-        const bindingIsCurrent = activeSummaryBinding?.metadata === context.chatMetadata
-            && activeSummaryBinding?.key === bindingKey;
-        const knownBookNames = bindingIsCurrent
-            ? await listWorldInfoBookNames(context)
-            : null;
-        const existing = bindingIsCurrent && knownBookNames?.includes(bookName)
-            ? true
+        const knownBookNames = await listWorldInfoBookNames(context);
+        const existing = knownBookNames
+            ? knownBookNames.includes(bookName)
             : typeof context?.loadWorldInfo === 'function'
                 ? await context.loadWorldInfo(bookName)
                 : null;
-        if (!existing) await createSummaryBook(context, bookName);
+        if (!existing) {
+            // The user may delete the active summary lorebook directly in ST.
+            // Its saved UIDs and progress then point at entries which can never
+            // exist in the recreated file, so restart from the first eligible
+            // floor before any reader can query those stale UIDs.
+            if (resetSummaryProgress(state)) await context.saveMetadata?.();
+            await createSummaryBook(context, bookName);
+        }
         // The runtime cache only avoids reloading the book. Always reconcile
         // charLore so a manual unbind or an earlier failed save cannot leave
         // the RAG state and SillyTavern's real character binding out of sync.
@@ -362,6 +376,46 @@ function getManagedSummaryRange(entry) {
     const managedKey = keys.find(key => String(key ?? '').startsWith(SUMMARY_KEY_PREFIX)
         || String(key ?? '').startsWith(LEGACY_SUMMARY_KEY_PREFIX));
     return getRangeFromKey(managedKey);
+}
+
+function rebuildSummaryProgressFromBook(state, bookName, data) {
+    if (!state) return false;
+    const records = [];
+    for (const [uid, entry] of Object.entries(data?.entries ?? {})) {
+        const managedKey = (Array.isArray(entry?.key) ? entry.key : [entry?.key])
+            .find(key => String(key ?? '').startsWith(SUMMARY_KEY_PREFIX)
+                || String(key ?? '').startsWith(LEGACY_SUMMARY_KEY_PREFIX));
+        if (!managedKey) continue;
+        let range = getRangeFromKey(managedKey);
+        if (!range) continue;
+        if (String(managedKey).startsWith(`${SUMMARY_KEY_PREFIX}[第`)) {
+            range = { start: Math.max(0, range.start - 1), end: Math.max(0, range.end - 1) };
+        }
+        records.push({
+            ...range,
+            uid: String(entry?.uid ?? uid),
+            key: String(managedKey),
+            bookName,
+            createdAt: String(state.entries.find(item => String(item?.uid) === String(entry?.uid ?? uid))?.createdAt ?? ''),
+        });
+    }
+    records.sort(compareSummaryRanges);
+    let contiguousEnd = -1;
+    for (const record of records) {
+        if (record.start > contiguousEnd + 1) break;
+        contiguousEnd = Math.max(contiguousEnd, record.end);
+    }
+    const before = JSON.stringify({
+        entries: state.entries,
+        lastSummarizedMessageIndex: state.lastSummarizedMessageIndex,
+    });
+    state.entries = records;
+    state.lastSummarizedMessageIndex = contiguousEnd;
+    if (before !== JSON.stringify({ entries: state.entries, lastSummarizedMessageIndex: contiguousEnd })) {
+        state.overviewGroups = [];
+        return true;
+    }
+    return false;
 }
 
 function compareSummaryRanges(left, right) {
@@ -935,19 +989,32 @@ export async function getSummaries(context) {
         return [];
     }
 
-    const data = typeof context?.loadWorldInfo === 'function'
+    const knownBookNames = await listWorldInfoBookNames(context);
+    if (knownBookNames && !knownBookNames.includes(bookName)) {
+        if (resetSummaryProgress(state)) await context.saveMetadata?.();
+        return [];
+    }
+
+    const canLoadDirectly = typeof context?.loadWorldInfo === 'function';
+    const data = canLoadDirectly
         ? await context.loadWorldInfo(bookName)
         : null;
+    if (data && rebuildSummaryProgressFromBook(state, bookName, data)) {
+        await context.saveMetadata?.();
+    }
     const summaries = [];
     for (const entry of state.entries) {
-        if (!entry?.uid) {
+        if (entry?.uid === undefined || entry?.uid === null || String(entry.uid).trim() === '') {
             continue;
         }
         const direct = String(data?.entries?.[entry.uid]?.content ?? '').trim();
-        const summary = direct || getPipe(await runSlash(
+        // If the official loader returned the book, an absent UID is genuinely
+        // absent. Falling back to STscript here only opens an error popup for a
+        // deleted entry and cannot recover any content.
+        const summary = direct || (!canLoadDirectly ? getPipe(await runSlash(
             context,
             `/getentryfield file=${quoteSlashValue(bookName)} field=content ${quoteSlashValue(entry.uid)}`,
-        ));
+        )) : '');
         if (summary) {
             summaries.push({
                 start: Number(entry.start),
@@ -1015,9 +1082,7 @@ export async function clearAllSummaries(context) {
     }
 
     const state = getSummaryState(context?.chatMetadata, true);
-    state.lastSummarizedMessageIndex = -1;
-    state.entries = [];
-    state.overviewGroups = [];
+    resetSummaryProgress(state);
     await context.saveMetadata?.();
     const chatId = getChatId(context);
     if (chatId && typeof globalThis.location !== 'undefined') {
@@ -1028,6 +1093,167 @@ export async function clearAllSummaries(context) {
         }
     }
     return removed;
+}
+
+export function regenerateAllSummaries(settings, context, options = {}) {
+    const expectedChatId = getChatId(context);
+    const expectedMetadata = context?.chatMetadata;
+    const task = async () => {
+        const activeContext = options.getCurrentContext?.() ?? context;
+        if (!expectedChatId
+            || getChatId(activeContext) !== expectedChatId
+            || activeContext.chatMetadata !== expectedMetadata) {
+            return { removed: 0, created: 0, pendingFloors: 0, discarded: true };
+        }
+
+        const removed = await clearAllSummaries(activeContext);
+        options.onProgress?.({ removed, created: 0, pendingFloors: 0 });
+        const batchSize = clampInteger(settings?.context?.summaryBatchSize, 15, 1, 50);
+        const maximumBatches = Math.ceil((activeContext.chat?.length ?? 0) / batchSize) + 2;
+        let created = 0;
+        let pendingFloors = 0;
+        for (let attempt = 0; attempt < maximumBatches; attempt++) {
+            const currentContext = options.getCurrentContext?.() ?? activeContext;
+            if (getChatId(currentContext) !== expectedChatId
+                || currentContext.chatMetadata !== expectedMetadata) {
+                return { removed, created, pendingFloors, discarded: true };
+            }
+            const result = await summarizePendingMessages(settings, currentContext, {
+                ...options,
+                onSaved: options.onSaved,
+            });
+            pendingFloors = Number(result?.pendingFloors) || 0;
+            if (result?.created !== 1 || result?.discarded) break;
+            created++;
+            options.onProgress?.({ removed, created, pendingFloors });
+            if (pendingFloors < batchSize) break;
+        }
+        return { removed, created, pendingFloors };
+    };
+
+    summaryQueue = summaryQueue.catch(() => undefined).then(task).catch((error) => {
+        const activeContext = options.getCurrentContext?.() ?? context;
+        if (getChatId(activeContext) === expectedChatId
+            && activeContext.chatMetadata === expectedMetadata) {
+            setSummaryRuntime(activeContext, {
+                phase: 'error',
+                error: String(error?.message ?? error),
+            });
+            options.onProgress?.({ error });
+        }
+        throw error;
+    });
+    return summaryQueue;
+}
+
+export function regenerateSummaryRange(settings, context, startFloor, endFloor, options = {}) {
+    const firstFloor = Math.trunc(Number(startFloor));
+    const lastFloor = Math.trunc(Number(endFloor));
+    if (!Number.isInteger(firstFloor) || !Number.isInteger(lastFloor) || firstFloor < 1 || lastFloor < 1) {
+        return Promise.reject(new Error('请输入有效的起止楼层。'));
+    }
+    const requestedStart = Math.min(firstFloor, lastFloor) - 1;
+    const requestedEnd = Math.max(firstFloor, lastFloor) - 1;
+    const expectedChatId = getChatId(context);
+    const expectedMetadata = context?.chatMetadata;
+    const task = async () => {
+        const activeContext = options.getCurrentContext?.() ?? context;
+        if (!expectedChatId
+            || getChatId(activeContext) !== expectedChatId
+            || activeContext.chatMetadata !== expectedMetadata) {
+            return { regenerated: 0, ranges: [], discarded: true };
+        }
+        await migrateLegacySummaries(activeContext);
+        // This also reconciles metadata with the entries that really exist in
+        // the book, so manually deleted UIDs can never become repair targets.
+        await getSummaries(activeContext);
+        const state = getSummaryState(activeContext.chatMetadata, true);
+        const targets = state.entries
+            .map(entry => ({
+                start: Number(entry?.start),
+                end: Number(entry?.end),
+            }))
+            .filter(range => Number.isInteger(range.start)
+                && Number.isInteger(range.end)
+                && range.end >= requestedStart
+                && range.start <= requestedEnd)
+            .sort(compareSummaryRanges);
+        if (targets.length === 0) {
+            throw new Error('指定范围内还没有已生成的摘要条目。');
+        }
+
+        const completed = [];
+        for (const target of targets) {
+            setSummaryRuntime(activeContext, {
+                phase: 'repairing',
+                start: target.start,
+                end: target.end,
+                error: '',
+            });
+            options.onProgress?.({ regenerated: completed.length, target });
+            const events = await generateSummaryEventsForRange(
+                settings,
+                activeContext,
+                target.start,
+                target.end,
+                options,
+            );
+            const currentContext = options.getCurrentContext?.() ?? activeContext;
+            if (getChatId(currentContext) !== expectedChatId
+                || currentContext.chatMetadata !== expectedMetadata) {
+                return { regenerated: completed.length, ranges: completed, discarded: true };
+            }
+            const order = getSummaryOrder(state.entries, target.start, target.end);
+            const saved = await upsertSummaryEntry(
+                currentContext,
+                events,
+                target.start,
+                target.end,
+                new Date().toISOString(),
+                order,
+            );
+            state.entries = state.entries
+                .filter(entry => Number(entry.start) !== target.start || Number(entry.end) !== target.end);
+            state.entries.push(saved);
+            state.entries.sort(compareSummaryRanges);
+            await currentContext.saveMetadata?.();
+            completed.push({ start: target.start + 1, end: target.end + 1 });
+            options.onSaved?.(saved);
+        }
+
+        // Rebuild only historical overview groups whose source summaries
+        // changed. Detailed summaries remain successful even if an overview
+        // request happens to fail.
+        for (let attempt = 0; attempt < completed.length; attempt++) {
+            try {
+                const result = await updateHistoricalOverview(settings, activeContext, options);
+                if (result?.updated !== 1) break;
+            } catch (error) {
+                console.warn('[Memory Augment] Historical overview refresh after range regeneration failed.', error);
+                break;
+            }
+        }
+        const recentMessages = clampInteger(settings?.context?.recentMessages, 20, 1, 1000);
+        const firstIndexInsideRecentWindow = Math.max(0, (activeContext.chat?.length ?? 0) - recentMessages);
+        const pendingFloors = Math.max(0, firstIndexInsideRecentWindow - (state.lastSummarizedMessageIndex + 1));
+        setSummaryRuntime(activeContext, { phase: 'idle', pendingFloors, error: '' });
+        options.onProgress?.({ regenerated: completed.length, ranges: completed, pendingFloors });
+        return { regenerated: completed.length, ranges: completed, pendingFloors };
+    };
+
+    summaryQueue = summaryQueue.catch(() => undefined).then(task).catch((error) => {
+        const activeContext = options.getCurrentContext?.() ?? context;
+        if (getChatId(activeContext) === expectedChatId
+            && activeContext.chatMetadata === expectedMetadata) {
+            setSummaryRuntime(activeContext, {
+                phase: 'error',
+                error: String(error?.message ?? error),
+            });
+            options.onProgress?.({ error });
+        }
+        throw error;
+    });
+    return summaryQueue;
 }
 
 async function migrateLegacyLorebookEntries(context, state) {
@@ -1263,6 +1489,32 @@ export async function migrateLegacySummaries(context) {
     return migrated;
 }
 
+async function generateSummaryEventsForRange(settings, context, start, end, options = {}) {
+    const chat = Array.isArray(context?.chat) ? context.chat : [];
+    const messages = chat.slice(start, end + 1).map(message => ({
+        name: message?.name,
+        is_user: message?.is_user,
+        mes: message?.mes,
+    }));
+    const timelineContext = Array.from({ length: end - start + 1 }, (_, offset) => {
+        const messageId = start + offset;
+        const timeline = getMessageTimelineMetadata(context, messageId);
+        return timeline ? { messageId, ...timeline } : null;
+    }).filter(Boolean);
+    const prompt = buildSummaryPrompt(messages, start, end, timelineContext);
+    let output = String(await callSummaryModel(settings, context, prompt, options.generateSummary) ?? '').trim();
+    let events = parseSummaryEvents(output);
+    if (events.length === 0) {
+        const retryPrompt = buildSummaryRetryPrompt(messages, start, end, timelineContext);
+        output = String(await callSummaryModel(settings, context, retryPrompt, options.generateSummary) ?? '').trim();
+        events = parseSummaryEvents(output);
+    }
+    if (events.length === 0) {
+        throw new Error(`Summary model returned no usable events for messages ${start}-${end}.`);
+    }
+    return events;
+}
+
 export async function summarizePendingMessages(settings, context, options = {}) {
     const recentMessages = clampInteger(settings?.context?.recentMessages, 20, 1, 1000);
     const batchSize = clampInteger(settings?.context?.summaryBatchSize, 15, 1, 50);
@@ -1301,27 +1553,7 @@ export async function summarizePendingMessages(settings, context, options = {}) 
         end,
         error: '',
     });
-    const messages = chat.slice(start, end + 1).map(message => ({
-        name: message?.name,
-        is_user: message?.is_user,
-        mes: message?.mes,
-    }));
-    const timelineContext = Array.from({ length: end - start + 1 }, (_, offset) => {
-        const messageId = start + offset;
-        const timeline = getMessageTimelineMetadata(context, messageId);
-        return timeline ? { messageId, ...timeline } : null;
-    }).filter(Boolean);
-    const prompt = buildSummaryPrompt(messages, start, end, timelineContext);
-    let output = String(await callSummaryModel(settings, context, prompt, options.generateSummary) ?? '').trim();
-    let events = parseSummaryEvents(output);
-    if (events.length === 0) {
-        const retryPrompt = buildSummaryRetryPrompt(messages, start, end, timelineContext);
-        output = String(await callSummaryModel(settings, context, retryPrompt, options.generateSummary) ?? '').trim();
-        events = parseSummaryEvents(output);
-    }
-    if (events.length === 0) {
-        throw new Error(`Summary model returned no usable events for messages ${start}-${end}.`);
-    }
+    const events = await generateSummaryEventsForRange(settings, context, start, end, options);
 
     const currentContext = options.getCurrentContext?.() ?? context;
     if (getChatId(currentContext) !== chatId || currentContext.chatMetadata !== metadata) {
