@@ -8,11 +8,42 @@ import {
     createEmbeddings,
     generateAtlasCompletion,
     generateBarrageCompletion,
+    generateCustomPanelCompletion,
     generatePhoneCompletion,
     generatePhoneWorldCompletion,
     generateSummaryCompletion,
     rerankCandidates,
 } from '../browser-api-client.js';
+
+test('custom panel uses a separate direct-output request with player-defined purpose', async () => {
+    let requestBody;
+    const result = await generateCustomPanelCompletion({
+        barrage: { baseUrl: 'https://provider.example', apiKey: 'secret', model: 'chat-model' },
+        prompt: '生成一张紫色的角色关系卡。',
+        recentMessages: [
+            { id: 8, role: 'user', name: '玩家', text: '我推开门。' },
+            { id: 9, role: 'assistant', name: '角色', text: '她正站在门后。' },
+        ],
+        renderHtml: true,
+        choicesEnabled: true,
+        customContentEnabled: true,
+        maxTokens: 3456,
+    }, {
+        fetchImpl: async (_url, options) => {
+            requestBody = JSON.parse(options.body);
+            return response({ choices: [{ message: { content: 'KK_CHOICES_JSON={"choices":[]}\n<div class="card">关系卡</div>' } }] });
+        },
+    });
+
+    assert.equal(requestBody.max_tokens, 3456);
+    assert.match(requestBody.messages[0].content, /没有预设用途/);
+    assert.match(requestBody.messages[0].content, /沙箱 iframe/);
+    assert.match(requestBody.messages[0].content, /善良、邪恶、中立、沙雕/);
+    assert.match(requestBody.messages[0].content, /台词加一个行动/);
+    assert.match(requestBody.messages[1].content, /玩家自定义要求/);
+    assert.match(requestBody.messages[1].content, /第9楼·角色/);
+    assert.match(result.content, /^KK_CHOICES_JSON=/);
+});
 
 test('combined side prompt uses ordered independent JSONL modules with barrage last', () => {
     const prompt = buildBarrageUserContent(

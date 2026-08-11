@@ -1,6 +1,7 @@
 import {
     createEmbeddings,
     generateBarrageCompletion,
+    generateCustomPanelCompletion,
     generateSummaryCompletion,
     generateAtlasCompletion,
     generatePhoneCompletion,
@@ -193,6 +194,10 @@ export function rerankMemory(payload) {
 
 export function generateBarrage(payload) {
     return generateBarrageCompletion(payload);
+}
+
+export function generateCustomPanel(payload) {
+    return generateCustomPanelCompletion(payload);
 }
 
 export function generateSummary(payload) {

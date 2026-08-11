@@ -936,6 +936,11 @@ export function requestPhoneWorldStoryUpdate(phoneSession, context, messageId, o
     return task;
 }
 
+export function isPhoneWorldAutomaticUpdateEnabled(phoneSessionOrSettings) {
+    const settings = phoneSessionOrSettings?.settings ?? phoneSessionOrSettings;
+    return settings?.phoneAutomation?.autoWorldUpdatesEnabled !== false;
+}
+
 export function initializePhoneWorldLifecycle(phoneSession, context = globalThis.SillyTavern?.getContext?.()) {
     if (lifecycleBound || !context?.eventSource) return false;
     const eventTypes = { ...(context.event_types ?? {}), ...(context.eventTypes ?? {}) };
@@ -945,6 +950,7 @@ export function initializePhoneWorldLifecycle(phoneSession, context = globalThis
     let generationStopped = false;
     let initialCount = Array.isArray(context.chat) ? context.chat.length : 0;
     const enqueue = messageId => {
+        if (!isPhoneWorldAutomaticUpdateEnabled(phoneSession)) return false;
         const liveContext = globalThis.SillyTavern?.getContext?.() ?? context;
         abortSupersededPhoneWorldUpdates(liveContext, messageId);
         updateQueue = updateQueue.catch(() => undefined).then(async () => {
@@ -955,6 +961,7 @@ export function initializePhoneWorldLifecycle(phoneSession, context = globalThis
                 console.warn('[Memory Augment] 手机世界正文更新失败，已保留其他存档内容。', error);
             }
         });
+        return true;
     };
     if (eventTypes.GENERATION_STARTED) context.eventSource.on(eventTypes.GENERATION_STARTED, () => {
         generationActive = true;

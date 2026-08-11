@@ -12,6 +12,7 @@
    the floating window and plugin-owned popups. */
 .memory-augment-settings .menu_button,
 .memory-augment-barrage .menu_button,
+.memory-augment-custom-panel .menu_button,
 #memory_augment_story_status_root .menu_button,
 .memory-augment-popup .menu_button {
     flex-shrink: 0 !important;
@@ -895,6 +896,210 @@
 .memory-augment-barrage.is-error .memory-augment-barrage-status,
 .memory-augment-barrage.is-error .memory-augment-barrage-content {
     color: var(--crimson70a);
+}
+
+.memory-augment-custom-panel {
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 55%, transparent);
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 0.5rem;
+    box-sizing: border-box;
+    margin-top: 0.75rem;
+    max-width: 100%;
+    min-width: 0;
+    padding: 0.35rem 0.6rem;
+    width: 100%;
+}
+
+.memory-augment-custom-panel-toggle {
+    align-items: center;
+    color: var(--SmartThemeQuoteColor);
+    cursor: pointer;
+    display: flex;
+    gap: 0.45rem;
+    list-style: none;
+    min-width: 0;
+    user-select: none;
+}
+
+.memory-augment-custom-panel-toggle::-webkit-details-marker {
+    display: none;
+}
+
+.memory-augment-custom-panel-toggle::after {
+    content: '›';
+    flex: 0 0 auto;
+    margin-left: auto;
+    transform: rotate(90deg);
+    transition: transform 0.15s ease;
+}
+
+.memory-augment-custom-panel[open] > .memory-augment-custom-panel-toggle::after {
+    transform: rotate(270deg);
+}
+
+.memory-augment-custom-panel-title {
+    font-weight: 650;
+    min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+.memory-augment-custom-panel-status {
+    flex: 0 0 auto;
+    font-size: 0.85em;
+    opacity: 0.78;
+}
+
+.memory-augment-custom-panel-content {
+    border-left: 2px solid var(--SmartThemeQuoteColor);
+    box-sizing: border-box;
+    line-height: 1.55;
+    margin: 0.55rem 0 0.2rem;
+    overflow-wrap: anywhere;
+    padding: 0.3rem 0 0.3rem 0.7rem;
+    white-space: normal;
+}
+
+.memory-augment-custom-panel-choices {
+    display: grid;
+    gap: 0.55rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.memory-augment-custom-panel-choice-heading {
+    color: var(--SmartThemeQuoteColor);
+    font-size: 0.88em;
+    font-weight: 750;
+    grid-column: 1 / -1;
+    letter-spacing: 0.08em;
+}
+
+.memory-augment-custom-panel-choice {
+    align-items: stretch;
+    appearance: none;
+    background: color-mix(in srgb, var(--SmartThemeBlurTintColor) 78%, var(--SmartThemeBodyColor) 8%);
+    border: 1px solid color-mix(in srgb, var(--SmartThemeBorderColor) 78%, var(--SmartThemeQuoteColor));
+    border-radius: 0.65rem;
+    color: var(--SmartThemeBodyColor);
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    font: inherit;
+    gap: 0.35rem;
+    justify-content: flex-start;
+    line-height: 1.45;
+    min-height: 4.6rem;
+    overflow-wrap: anywhere;
+    padding: 0.65rem 0.75rem;
+    text-align: left;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+    width: 100%;
+}
+
+.memory-augment-custom-panel-choice:hover,
+.memory-augment-custom-panel-choice:focus-visible {
+    border-color: var(--SmartThemeQuoteColor);
+    box-shadow: 0 0.3rem 0.85rem rgb(0 0 0 / 16%);
+    outline: none;
+    transform: translateY(-1px);
+}
+
+.memory-augment-custom-panel-choice:active {
+    transform: translateY(0);
+}
+
+.memory-augment-custom-panel-choice-tone {
+    align-self: flex-start;
+    border-radius: 999px;
+    color: #fff;
+    font-size: 0.76em;
+    font-weight: 750;
+    letter-spacing: 0.08em;
+    line-height: 1;
+    padding: 0.3rem 0.48rem;
+}
+
+.memory-augment-custom-panel-choice[data-choice-tone="善良"] .memory-augment-custom-panel-choice-tone {
+    background: #3f9368;
+}
+
+.memory-augment-custom-panel-choice[data-choice-tone="邪恶"] .memory-augment-custom-panel-choice-tone {
+    background: #9d4058;
+}
+
+.memory-augment-custom-panel-choice[data-choice-tone="中立"] .memory-augment-custom-panel-choice-tone {
+    background: #68768d;
+}
+
+.memory-augment-custom-panel-choice[data-choice-tone="沙雕"] .memory-augment-custom-panel-choice-tone {
+    background: #a76e25;
+}
+
+.memory-augment-custom-panel-choice-text {
+    font-size: 0.96em;
+    font-weight: 550;
+}
+
+.memory-augment-custom-panel-output {
+    margin-top: 0.65rem;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+.memory-augment-custom-panel-output.is-html {
+    overflow: hidden;
+    white-space: normal;
+}
+
+.memory-augment-custom-panel-frame {
+    background: transparent;
+    border: 0;
+    display: block;
+    height: min(650px, 72vh);
+    height: min(650px, 72dvh);
+    max-width: 100%;
+    min-height: min(360px, 60vh);
+    min-height: min(360px, 60dvh);
+    overscroll-behavior-y: contain;
+    touch-action: pan-y;
+    width: 100%;
+    -webkit-overflow-scrolling: touch;
+}
+
+.memory-augment-custom-panel-actions {
+    display: flex;
+    justify-content: center;
+    margin-top: 0.35rem;
+    width: 100%;
+}
+
+.memory-augment-custom-panel-regenerate {
+    align-items: center;
+    display: inline-flex;
+    font-size: 0.8em;
+    justify-content: center;
+    min-height: 1.8rem;
+    padding: 0.15rem 0.5rem;
+    white-space: nowrap;
+    width: auto;
+}
+
+.memory-augment-custom-panel.is-loading {
+    opacity: 0.8;
+}
+
+.memory-augment-custom-panel.is-error .memory-augment-custom-panel-status,
+.memory-augment-custom-panel.is-error .memory-augment-custom-panel-content {
+    color: var(--crimson70a);
+}
+
+@media (max-width: 700px) {
+    .memory-augment-custom-panel-choices {
+        grid-template-columns: 1fr;
+    }
+
+    .memory-augment-custom-panel-choice {
+        min-height: 4.2rem;
+    }
 }
 
 #memory_augment_story_status_root {

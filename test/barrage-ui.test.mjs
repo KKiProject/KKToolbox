@@ -97,6 +97,20 @@ test('latest recovery skips streaming placeholders and finds the newest finished
     assert.equal(findLatestEligibleAssistantMessageId(context), 8);
 });
 
+test('the shipped live room contains KK built-in audience rules and remains editable once', async () => {
+    const [indexSource, template, settings] = await Promise.all([
+        readFile(new URL('../index.js', import.meta.url), 'utf8'),
+        readFile(new URL('../barrage.html', import.meta.url), 'utf8'),
+        readFile(new URL('../settings.html', import.meta.url), 'utf8'),
+    ]);
+    assert.match(indexSource, /BUILTIN_LIVE_ROOM_PROMPT_VERSION = 1/);
+    assert.match(indexSource, /只有成年女性能观看这场直播内容/);
+    assert.match(indexSource, /绝对禁止辱女词汇/);
+    assert.match(indexSource, /settings\.barrage\.systemPrompt = BUILTIN_LIVE_ROOM_PROMPT/);
+    assert.match(template, /高维直播间/);
+    assert.match(settings, /已内置 KK 的高维成年女观众直播间规则/);
+});
+
 test('generation-end recovery checks the settled assistant floor more than once without crossing chats', () => {
     let context = createContext();
     const scheduled = [];

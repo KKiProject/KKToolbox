@@ -6,11 +6,20 @@ import {
     detectPhoneWorldPlotModules,
     getPhoneWorldOutputTokenBudget,
     inferPhonePublicWorldFrame,
+    isPhoneWorldAutomaticUpdateEnabled,
     parsePhoneWorldRecords,
     removePhoneWorldStoryBatch,
     requestPhoneWorldStoryUpdate,
     selectDailyPhoneWorldModule,
 } from '../phone-world-ai.js';
+
+test('phone automatic updates default on and can be disabled without disabling manual requests', () => {
+    assert.equal(isPhoneWorldAutomaticUpdateEnabled({}), true);
+    assert.equal(isPhoneWorldAutomaticUpdateEnabled({ phoneAutomation: { autoWorldUpdatesEnabled: false } }), false);
+    assert.equal(isPhoneWorldAutomaticUpdateEnabled({
+        settings: { phoneAutomation: { autoWorldUpdatesEnabled: false } },
+    }), false);
+});
 
 test('one phone story turn includes both the player floor and its assistant reply', () => {
     const context = {
@@ -605,6 +614,7 @@ test('manual force regeneration replaces the saved batch for the same story floo
     store.phone.weibo = { initialized: true, roleAccounts: [] };
     const settings = {
         apis: { barrage: { url: 'https://example.com/v1', apiKey: 'key', model: 'model' } },
+        phoneAutomation: { autoWorldUpdatesEnabled: false },
         development: { enabled: false },
         map: { includeInPrompt: false },
         phone: store.phone,

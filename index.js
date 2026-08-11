@@ -1,12 +1,18 @@
 import { extension_settings, renderExtensionTemplateAsync } from '../../../extensions.js';
 import { power_user } from '../../../power-user.js';
 import { Popup, POPUP_RESULT, POPUP_TYPE } from '../../../popup.js';
+import { reloadCurrentChat } from '../../../../script.js';
 import { normalizeBaseUrl } from './api-utils.js';
 import { bindChatIngestionLifecycle, reconcileBufferedMessageQueue } from './chat-lifecycle.js';
 import { initializeChatMemoryUi } from './chat-memory-ui.js';
 import { memoryAugmentInterceptor } from './context-manager.js';
 import { fetchModels, getStatus, ingestChat, reconcileChatVectors } from './rag-client.js';
 import { initializeBarrageUi, refreshBarrageVisibility, scheduleLatestSideGeneration } from './barrage-ui.js';
+import {
+    initializeCustomPanelUi,
+    refreshCustomPanelVisibility,
+    scheduleLatestCustomPanelGeneration,
+} from './custom-panel.js';
 import {
     correctLatestStoryTime,
     getMessageTimelineMetadata,
@@ -42,6 +48,7 @@ import {
     getPhoneChatId,
 } from './phone-store.js';
 import { initializeSwipeCleanup } from './swipe-cleanup.js';
+import { analyzeChatTagRemoval, removeChatTagContent } from './chat-tag-cleaner.js';
 
 const EXTENSION_KEY = 'st-memory-augment';
 const EXTENSION_FOLDER = decodeURIComponent(new URL('.', import.meta.url).pathname)
@@ -51,6 +58,34 @@ const EXTENSION_FOLDER = decodeURIComponent(new URL('.', import.meta.url).pathna
 const TEMPLATE_PATH = `third-party/${EXTENSION_FOLDER}`;
 const API_TYPES = ['embedding', 'reranker', 'barrage'];
 const LEGACY_DEFAULT_BARRAGE_PROMPT = '你是一群正在观看小说直播的观众，请以弹幕/评论区风格吐槽点评';
+const BUILTIN_LIVE_ROOM_PROMPT_VERSION = 1;
+const BUILTIN_LIVE_ROOM_PROMPT = `这里是一个成人高维世界观众观看的成人向独立直播切片。只有成年女性能观看这场直播内容，对于她们而言，角色们的真实生活其实是小说、游戏或连续剧剧情。观众可以发疯、嗑CP、考据、吐槽、玩梗、心疼、阴暗爬行，但无法干涉剧情。
+禁止与角色世界内任何“直播、弹幕、观众、论坛、评论区”等情节混同。故事中的角色永远不会意识到自己的生活正被高维观众观看。
+高维观众的发言只能基于当前正文已经发生的内容、合理情绪推断、已知伏笔和前文关系。可以结合旧内容做前后呼应（"卧槽这不是XX的伏笔吗"、"早就猜到了"），但呼应的落脚点必须回到最新章节。
+
+---
+
+### 1. Danmu Persona
+
+* 用户画像：
+    * 群体：同人女 / 妈妈粉 / CP粉 / 乐子人 / 考据党 / 缺德混沌恶路人。
+    * 立场：热衷于嗑CP、玩梗、尖叫、阴暗爬行、发疯、解读。
+    * 禁止：绝对禁止辱女词汇、荡妇羞辱、用男性标准认证女性价值。
+    * 风格：互联网嘴替。高度口语化、显微镜成精、玩梗达人、发疯文学、emoji狂魔、颜文字卖萌、缺德但不恶毒。
+
+* ID生成规则：
+    * 每次回复必须生成全新的随机ID列表。
+    * 每条弹幕的ID都必须是剧情相关梗，和当前场景、角色状态、台词、动作、情绪或伏笔有关。
+    * ID长度约1-15字。
+    * ID可以是普通用户名，也可以是相关网络梗名。
+
+---
+
+### 2. Output Template
+格式示例：
+**🎦 实时弹幕**
+* 【XX】：约8-10条，节奏要像真实弹幕区快速刷屏，每一条的着重点要做出区分，可以互相隔空喊话、讨论等
+* 系统：["XX" 投喂了 [与当前剧情强相关的礼物名]！]`;
 let ingestionQueue = Promise.resolve();
 let quickPanelPromise = null;
 
@@ -91,10 +126,21 @@ export const defaultSettings = Object.freeze({
     },
     barrage: {
         enabled: false,
+        builtinPromptVersion: BUILTIN_LIVE_ROOM_PROMPT_VERSION,
         recentMessages: 5,
         maxTokens: 4064,
         includeRag: true,
-        systemPrompt: '',
+        systemPrompt: BUILTIN_LIVE_ROOM_PROMPT,
+    },
+    customPanel: {
+        enabled: false,
+        choicesEnabled: false,
+        customContentEnabled: true,
+        title: '自定义',
+        prompt: '',
+        recentMessages: 3,
+        maxTokens: 2048,
+        renderHtml: true,
     },
     status: {
         enabled: false,
@@ -114,6 +160,9 @@ export const defaultSettings = Object.freeze({
     },
     htmlRenderer: {
         enabled: true,
+    },
+    phoneAutomation: {
+        autoWorldUpdatesEnabled: true,
     },
     phone: {
         maxTokens: 2048,
@@ -240,10 +289,20 @@ function bindSettings(settings, context) {
             if (input.dataset.setting.startsWith('status.')) refreshStoryStatusUi(context);
             if (input.dataset.setting.startsWith('development.')) refreshCharacterDevelopmentUi(context);
             if (input.dataset.setting === 'barrage.enabled') refreshBarrageVisibility(settings, context);
+            if (input.dataset.setting.startsWith('customPanel.')) {
+                refreshCustomPanelVisibility(settings, context);
+            }
             if ((input.dataset.setting === 'barrage.enabled' || input.dataset.setting === 'status.enabled')
                 && input.checked) scheduleLatestSideGeneration(settings, context);
+            if ((input.dataset.setting === 'customPanel.enabled' && input.checked)
+                || ['customPanel.choicesEnabled', 'customPanel.customContentEnabled'].includes(input.dataset.setting)) {
+                scheduleLatestCustomPanelGeneration(settings, context, { force: true });
+            }
             if (input.dataset.setting === 'htmlRenderer.enabled') refreshHtmlRenderer();
         });
+        if (input.dataset.setting === 'customPanel.prompt') {
+            input.addEventListener('change', () => scheduleLatestCustomPanelGeneration(settings, context, { force: true }));
+        }
     });
 }
 
@@ -477,6 +536,25 @@ function showNotice(message, type = 'info') {
     } else if (type === 'warning') {
         console.warn(`[Memory Augment] ${message}`);
     }
+}
+
+function formatFloorRanges(messageIds) {
+    const floors = [...new Set((Array.isArray(messageIds) ? messageIds : [])
+        .map(value => Math.trunc(Number(value)) + 1)
+        .filter(value => Number.isInteger(value) && value > 0))]
+        .sort((left, right) => left - right);
+    const ranges = [];
+    for (const floor of floors) {
+        const previous = ranges.at(-1);
+        if (previous && floor === previous.end + 1) previous.end = floor;
+        else ranges.push({ start: floor, end: floor });
+    }
+    const labels = ranges.map(range => range.start === range.end
+        ? `第${range.start}楼`
+        : `第${range.start}-${range.end}楼`);
+    return labels.length > 12
+        ? `${labels.slice(0, 12).join('、')}等 ${labels.length} 段`
+        : labels.join('、');
 }
 
 function renderStatus(status) {
@@ -1010,6 +1088,49 @@ function bindActions(settings) {
             button.disabled = false;
         }
     });
+    document.querySelector('#memory_augment_remove_chat_tag')?.addEventListener('click', async (event) => {
+        const input = document.querySelector('#memory_augment_chat_tag_name');
+        const includeUser = document.querySelector('#memory_augment_chat_tag_include_user')?.checked === true;
+        const context = SillyTavern.getContext();
+        let preview;
+        try {
+            preview = analyzeChatTagRemoval(context, input?.value, { includeUser });
+        } catch (error) {
+            showNotice(error.message, 'error');
+            return;
+        }
+        if (preview.blocks === 0) {
+            showNotice(`当前聊天没有找到完整的 <${preview.tagName}>…</${preview.tagName}> 标签块。`, 'info');
+            return;
+        }
+        const floors = formatFloorRanges(preview.affectedMessageIds);
+        const confirmed = await Popup.show.confirm(
+            `删除 <${preview.tagName}> 标签内容？`,
+            `找到 ${preview.blocks} 处完整标签块，涉及 ${preview.affectedMessageIds.length} 楼（${floors}）。会同时清理这些楼层的所有滑动候选，并更新对应聊天向量；不完整的半截标签不会删除。此操作会直接修改当前聊天原文。`,
+        );
+        if (!confirmed) return;
+        const button = event.currentTarget;
+        button.classList.add('disabled');
+        button.disabled = true;
+        try {
+            const result = await removeChatTagContent(context, preview.tagName, { includeUser });
+            let vectorWarning = '';
+            try {
+                await queueChatReconciliation(settings, result.affectedMessageIds);
+            } catch (error) {
+                vectorWarning = '；聊天原文已保存，但对应向量更新失败，可稍后手动重建当前聊天向量';
+                console.warn('[Memory Augment] Tag cleanup vector reconciliation failed.', error);
+            }
+            await reloadCurrentChat();
+            showNotice(`已删除 ${result.blocks} 处 <${result.tagName}> 标签块，涉及 ${result.affectedMessageIds.length} 楼${vectorWarning}。`, vectorWarning ? 'warning' : 'success');
+        } catch (error) {
+            showNotice(`清理聊天标签失败：${error.message}`, 'error');
+            console.error('[Memory Augment] Failed to remove tagged chat content.', error);
+        } finally {
+            button.classList.remove('disabled');
+            button.disabled = false;
+        }
+    });
 }
 
 async function initialize() {
@@ -1029,18 +1150,24 @@ async function initialize() {
     );
     const hadStatusEnabled = Object.hasOwn(savedSettings?.status ?? {}, 'enabled');
     const hadLegacyAiCustomFields = Object.hasOwn(savedSettings?.status ?? {}, 'allowCustomFields');
-    const hadLegacyDefaultBarragePrompt = String(savedSettings?.barrage?.systemPrompt ?? '').trim()
-        === LEGACY_DEFAULT_BARRAGE_PROMPT;
+    const savedBarragePrompt = String(savedSettings?.barrage?.systemPrompt ?? '').trim();
+    const hadLegacyDefaultBarragePrompt = savedBarragePrompt === LEGACY_DEFAULT_BARRAGE_PROMPT;
+    const hadBuiltinLiveRoomPrompt = Number(savedSettings?.barrage?.builtinPromptVersion) >= BUILTIN_LIVE_ROOM_PROMPT_VERSION;
     const settings = mergeSettings(defaultSettings, extension_settings[EXTENSION_KEY]);
     delete settings.context.summaryMaxTokens;
     delete settings.context.summaryInterval;
     delete settings.rag.chunkSize;
     delete settings.status.allowCustomFields;
-    if (hadLegacyDefaultBarragePrompt) settings.barrage.systemPrompt = '';
+    if (!hadBuiltinLiveRoomPrompt) {
+        settings.barrage.builtinPromptVersion = BUILTIN_LIVE_ROOM_PROMPT_VERSION;
+        if (!savedBarragePrompt || hadLegacyDefaultBarragePrompt) {
+            settings.barrage.systemPrompt = BUILTIN_LIVE_ROOM_PROMPT;
+        }
+    }
     if (!hadStatusEnabled) settings.status.enabled = Boolean(savedSettings?.barrage?.enabled);
     extension_settings[EXTENSION_KEY] = settings;
     if (hadLegacySummaryMaxTokens || hadLegacySummaryInterval || hadLegacyChunkSize
-        || hadLegacyAiCustomFields || hadLegacyDefaultBarragePrompt || !hadStatusEnabled) {
+        || hadLegacyAiCustomFields || !hadBuiltinLiveRoomPrompt || !hadStatusEnabled) {
         context.saveSettingsDebounced();
     }
 
@@ -1066,6 +1193,11 @@ async function initialize() {
         await initializeBarrageUi(settings, { templatePath: TEMPLATE_PATH });
     } catch (error) {
         console.warn('[Memory Augment] Barrage UI initialization failed; the remaining extension will continue.', error);
+    }
+    try {
+        initializeCustomPanelUi(settings);
+    } catch (error) {
+        console.warn('[Memory Augment] Custom panel initialization failed; the remaining extension will continue.', error);
     }
     const getPhoneContext = () => ({
         ...(globalThis.SillyTavern?.getContext?.() ?? context),

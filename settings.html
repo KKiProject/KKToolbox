@@ -105,9 +105,9 @@
         </details>
 
         <details>
-            <summary>弹幕、剧情状态与人物发展</summary>
+            <summary>高维直播间、剧情状态与人物发展</summary>
             <div class="memory-augment-section memory-augment-card">
-                <div class="memory-augment-field"><label class="checkbox_label"><input type="checkbox" data-setting="barrage.enabled">启用弹幕</label><small class="memory-augment-param-help">AI 回复完成后生成旁路弹幕，不写入后续聊天上下文。</small></div>
+                <div class="memory-augment-field"><label class="checkbox_label"><input type="checkbox" data-setting="barrage.enabled">启用高维直播间</label><small class="memory-augment-param-help">AI 回复完成后生成高维观众弹幕，不写入后续聊天上下文。</small></div>
                 <div class="memory-augment-field"><label class="checkbox_label"><input type="checkbox" data-setting="status.enabled">启用剧情状态栏</label><small class="memory-augment-param-help">AI 回复完成后更新剧情状态，并在下一次回复前放到最新用户消息前。与弹幕同时开启时只调用一次副 API。</small></div>
                 <div class="memory-augment-field"><label class="checkbox_label"><input type="checkbox" data-setting="development.enabled">启用人物发展档案</label><small class="memory-augment-param-help">记录故事开始后真正形成的人物变化。普通变化会先观察，玩家明确设定则立即生效；与弹幕和状态共用一次副 API。</small></div>
                 <div class="memory-augment-field"><label>携带最近 N 楼<input class="text_pole" type="number" min="1" max="20" step="1" data-setting="barrage.recentMessages"></label><small class="memory-augment-param-help">作为弹幕与剧情状态的前情回顾发送；最新 AI 回复会单独作为“最新章节”发送。</small></div>
@@ -120,7 +120,28 @@
                     <small class="memory-augment-param-help">由玩家填写要额外追踪的项目名称，并可逐项启用或关闭。AI 只负责更新这些已启用项目的内容。</small>
                 </div>
                 <div class="memory-augment-field"><label class="checkbox_label"><input type="checkbox" data-setting="status.showGoals">记录当前目标</label><small class="memory-augment-param-help">在事件状态中记录当前明确目标；关闭后不生成目标栏。</small></div>
-                <div class="memory-augment-field memory-augment-barrage-prompt"><label>系统提示词<textarea class="text_pole" rows="9" data-setting="barrage.systemPrompt"></textarea></label><small class="memory-augment-param-help">可选。由玩家自行定义弹幕的身份、语气和输出风格；插件不会预填风格提示词。</small></div>
+                <div class="memory-augment-field memory-augment-barrage-prompt"><label>高维直播间提示词<textarea class="text_pole" rows="12" data-setting="barrage.systemPrompt"></textarea></label><small class="memory-augment-param-help">已内置 KK 的高维成年女观众直播间规则；可以继续按自己喜好修改或清空，不会反复覆盖。</small></div>
+            </div>
+        </details>
+
+        <details>
+            <summary>自定义栏</summary>
+            <div class="memory-augment-section memory-augment-card">
+                <div class="memory-augment-field"><label class="checkbox_label"><input type="checkbox" data-setting="customPanel.enabled">启用自定义栏</label><small class="memory-augment-param-help">在每次 AI 回复下方生成一个独立内容栏，单独调用一次副 API，不占用弹幕与状态栏的输出空间。</small></div>
+                <div class="memory-augment-field"><label class="checkbox_label"><input type="checkbox" data-setting="customPanel.choicesEnabled">生成剧情选项</label><small class="memory-augment-param-help">把玩家下一步可以说或做的事生成为可点击的游戏选项；点击后只填入酒馆输入框，不会发送。</small></div>
+                <div class="memory-augment-field"><label class="checkbox_label"><input type="checkbox" data-setting="customPanel.customContentEnabled">生成自定义内容</label><small class="memory-augment-param-help">可以只开剧情选项、只开自定义内容，或让两者共用同一次请求。</small></div>
+                <div class="memory-augment-field"><label>栏目名称<input class="text_pole" type="text" maxlength="80" data-setting="customPanel.title" placeholder="自定义"></label></div>
+                <div class="memory-augment-field"><label>生成要求<textarea class="text_pole" rows="9" data-setting="customPanel.prompt" placeholder="例如：根据最近剧情生成一张角色好感度卡片……"></textarea><small class="memory-augment-param-help">这里由玩家完整定义栏目用途、内容和风格；插件不预设直播、弹幕或其他身份。</small></div>
+                <div class="memory-augment-field"><label>携带最近 N 楼<input class="text_pole" type="number" min="1" max="20" step="1" data-setting="customPanel.recentMessages"></label><small class="memory-augment-param-help">作为这一栏的剧情依据；最新 AI 回复会在这 N 楼之外一并携带。</small></div>
+                <div class="memory-augment-field"><label>最大输出长度<input class="text_pole" type="number" min="1" max="128000" step="1" data-setting="customPanel.maxTokens"></label><small class="memory-augment-param-help">仅限自定义栏这次独立请求，默认 2048 token。</small></div>
+                <div class="memory-augment-field"><label class="checkbox_label"><input type="checkbox" data-setting="customPanel.renderHtml">生成并渲染 HTML</label><small class="memory-augment-param-help">开启后会让 AI 直接输出可视化页面，并在隔离的小页面中显示；关闭则只生成纯文本。</small></div>
+            </div>
+        </details>
+
+        <details>
+            <summary>手机</summary>
+            <div class="memory-augment-section memory-augment-card">
+                <div class="memory-augment-field"><label class="checkbox_label"><input type="checkbox" data-setting="phoneAutomation.autoWorldUpdatesEnabled">跟随正文自动更新手机</label><small class="memory-augment-param-help">关闭后，AI 回复、重刷和编辑正文都不再自动调用手机副 API；手机仍可正常使用，手动点“接收消息”也会照常更新。</small></div>
             </div>
         </details>
 
@@ -155,6 +176,12 @@
                 <div class="memory-augment-field">
                     <label class="checkbox_label"><input type="checkbox" data-setting="htmlRenderer.enabled">渲染聊天中的 HTML 代码块</label>
                     <small class="memory-augment-param-help">兼容由世界书或正则替换生成的旧式 HTML 界面。只改变代码块的显示方式，不修改聊天原文，也不会弹出启动提示。</small>
+                </div>
+                <div class="memory-augment-field">
+                    <label>批量删除聊天标签及内容<input id="memory_augment_chat_tag_name" class="text_pole" type="text" placeholder="例如 status 或 <status>"></label>
+                    <label class="checkbox_label"><input id="memory_augment_chat_tag_include_user" type="checkbox">同时处理玩家消息</label>
+                    <button id="memory_augment_remove_chat_tag" type="button" class="menu_button">查找并删除</button>
+                    <small class="memory-augment-param-help">扫描当前聊天正文、隐藏楼层和所有滑动候选，只删除指定标签的完整成对内容；半截标签不会删除。执行前会显示命中楼层并再次确认。</small>
                 </div>
             </div>
         </details>

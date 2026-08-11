@@ -683,6 +683,74 @@ export async function generateBarrageCompletion(payload, options = {}) {
     }
 }
 
+export async function generateCustomPanelCompletion(payload, options = {}) {
+    const config = normalizeConfig(payload?.barrage, '自定义栏');
+    const endpoint = new URL(`${config.baseUrl}/v1/chat/completions`).toString();
+    const prompt = String(payload?.prompt ?? '').trim();
+    const choicesEnabled = payload?.choicesEnabled === true;
+    const customContentEnabled = payload?.customContentEnabled !== false;
+    if (!choicesEnabled && (!customContentEnabled || !prompt)) {
+        throw new Error('自定义栏没有开启任何需要生成的内容。');
+    }
+    const recentMessages = Array.isArray(payload?.recentMessages)
+        ? payload.recentMessages.filter(message => String(message?.text ?? '').trim())
+        : [];
+    if (recentMessages.length === 0) throw new Error('自定义栏没有收到可供参考的剧情。');
+    const renderHtml = customContentEnabled && payload?.renderHtml === true;
+    const maxTokens = Math.max(1, Math.min(128_000, Math.trunc(Number(payload?.maxTokens) || 2048)));
+    const story = recentMessages.map(message => {
+        const role = message?.role === 'user' ? '用户' : '角色';
+        const name = String(message?.name ?? role).trim() || role;
+        return `[第${message.id}楼·${role}·${name}]\n${String(message.text ?? '').trim()}`;
+    }).join('\n\n');
+    const outputRule = !customContentEnabled
+        ? ''
+        : renderHtml
+        ? [
+            `${choicesEnabled ? '在规定的选项 JSON 首行之后' : '直接'}输出一份可在沙箱 iframe 中显示的 HTML，不要包裹 Markdown 代码块，不要解释。`,
+            '界面必须响应式适配手机和电脑，字号清晰、对比度足够，不要依赖外部网页、外部脚本或外部样式。',
+            '可以使用内联 CSS 和 JavaScript，但不得试图访问父页面、酒馆数据或本地存储。',
+        ].join('\n')
+        : '只输出最终要显示的纯文本，不要输出 HTML、Markdown 代码块或额外解释。';
+    const choiceRule = choicesEnabled ? [
+        '固定输出四个玩家此刻可以选择的下一步，顺序必须是：善良、邪恶、中立、沙雕。',
+        '每个选项都是简短的一句台词加一个行动，必须结合最新剧情、玩家已有人设与当前情境，不能只写抽象路线或剧情预测。',
+        '善良偏同理、体谅或主动帮助；邪恶偏自私、利用、挑衅或伤害；中立偏实用、克制或观望；沙雕偏荒诞搞笑，但四者都要在当前剧情中真的能做。',
+        '不得代替其他角色回应，不得预定行动结果，不得使用玩家当前不知道的信息。',
+        '回复第一行必须且只能是单行 JSON，格式为 KK_CHOICES_JSON={"choices":[{"tone":"善良","text":"台词＋行动"},{"tone":"邪恶","text":"台词＋行动"},{"tone":"中立","text":"台词＋行动"},{"tone":"沙雕","text":"台词＋行动"}]}。',
+    ].join('\n') : '不生成剧情选项，也不得输出 KK_CHOICES_JSON 行。';
+    const finalOutputRule = choicesEnabled && customContentEnabled
+        ? '第一行选项 JSON 之后紧接自定义栏的最终内容；两部分都不要附加解释。'
+        : choicesEnabled
+            ? '只输出第一行选项 JSON，不要输出其他文字。'
+            : outputRule;
+    const response = await postJson(endpoint, {
+        model: config.model,
+        messages: [
+            {
+                role: 'system',
+                content: [
+                    '你负责生成一个完全由玩家定义的剧情附加栏。',
+                    '忠实执行玩家的自定义要求；剧情原文是事实依据，可以在已有信息上合理推导，不得篡改已发生的事实。',
+                    '这个栏没有预设用途、观众身份或直播语境，不得自行添加这些设定。',
+                    choiceRule,
+                    outputRule,
+                    finalOutputRule,
+                ].filter(Boolean).join('\n'),
+            },
+            {
+                role: 'user',
+                content: [
+                    ...(customContentEnabled ? [`【玩家自定义要求】\n${prompt}`] : []),
+                    `【最近剧情】\n${story}`,
+                ].join('\n\n'),
+            },
+        ],
+        max_tokens: maxTokens,
+    }, config, options);
+    return { content: extractChatContent(response, '自定义栏副 API') };
+}
+
 export async function generateSummaryCompletion(payload, options = {}) {
     const config = normalizeConfig(payload?.barrage, '自动总结');
     const endpoint = new URL(`${config.baseUrl}/v1/chat/completions`).toString();
