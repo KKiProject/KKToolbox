@@ -9,7 +9,7 @@ export const SUMMARY_STATE_KEY = 'kktoolbox_summary_state';
 
 const LEGACY_SUMMARY_METADATA_KEY = 'memory_augment_summaries';
 const LEGACY_SUMMARY_KEY_PREFIX = '[KKToolbox摘要]';
-const SUMMARY_GENERATION_MAX_TOKENS = 1200;
+const SUMMARY_GENERATION_MAX_TOKENS = 4096;
 const SUMMARY_BOOK_SUFFIX = '-自动总结';
 const SUMMARY_ENTRY_DEPTH = 4;
 const SUMMARY_ENTRY_ORDER_BASE = 100;
@@ -18,6 +18,7 @@ const HISTORICAL_OVERVIEW_GROUP_SIZE = 5;
 const HISTORICAL_OVERVIEW_ORDER = 99;
 const WORLD_INFO_POSITION_AT_DEPTH = 4;
 const SUMMARY_MIGRATION_VERSION = 2;
+const SUMMARY_QUALITY_VERSION = 1;
 const MAX_AUTOMATIC_BACKFILL_BATCHES = 3;
 let summaryQueue = Promise.resolve();
 const summaryRuntimeByChat = new Map();
@@ -397,6 +398,9 @@ function rebuildSummaryProgressFromBook(state, bookName, data) {
             key: String(managedKey),
             bookName,
             createdAt: String(state.entries.find(item => String(item?.uid) === String(entry?.uid ?? uid))?.createdAt ?? ''),
+            qualityVersion: Math.max(0, Math.trunc(Number(
+                state.entries.find(item => String(item?.uid) === String(entry?.uid ?? uid))?.qualityVersion,
+            ) || 0)),
         });
     }
     records.sort(compareSummaryRanges);
@@ -553,6 +557,7 @@ async function upsertSummaryEntry(context, events, start, end, createdAt, order 
             key,
             bookName,
             createdAt,
+            qualityVersion: SUMMARY_QUALITY_VERSION,
         };
     }
 
@@ -578,6 +583,7 @@ async function upsertSummaryEntry(context, events, start, end, createdAt, order 
         key,
         bookName,
         createdAt,
+        qualityVersion: SUMMARY_QUALITY_VERSION,
     };
 }
 
@@ -614,12 +620,13 @@ export function isUnusableSummaryOutput(output) {
     return !text || REFUSAL_OR_DRAFT_PATTERN.test(text);
 }
 
-function normalizeOverview(value) {
+function normalizeOverview(value, options = {}) {
     const text = String(value ?? '').replace(/\s+/g, ' ').trim();
     if (!text) return '';
     if (Array.from(text).length > SUMMARY_OVERVIEW_LIMIT) return '';
     if (INCOMPLETE_ELLIPSIS_END.test(text)) return '';
-    return COMPLETE_SENTENCE_END.test(text) ? text : '';
+    if (COMPLETE_SENTENCE_END.test(text)) return text;
+    return options.repairMissingPunctuation === true ? `${text}。` : '';
 }
 
 function getField(block, label, nextLabels = []) {
@@ -628,9 +635,68 @@ function getField(block, label, nextLabels = []) {
     return String(match?.[1] ?? '').trim();
 }
 
+function normalizeSummaryOutputMarkup(output) {
+    return String(output ?? '')
+        .replace(/^```(?:json|markdown|md)?\s*$/gim, '')
+        .replace(/^```\s*$/gim, '')
+        .replace(/\*\*\s*(重要度|事件概述|时间|地点|涉及角色)\s*\*\*\s*[：:]/gu, '$1：')
+        .replace(/【\s*事件\s*(\d+)\s*】/gu, '[事件$1]')
+        .replace(/(^|\n)\s*(?:#{1,6}\s*)?事件\s*(\d+)\s*[：:]?\s*(?=\n|$)/gu, '$1[事件$2]')
+        .trim();
+}
+
+function normalizeSummaryTime(value) {
+    return limitText(value, 80).replace(
+        /(\d{2}:\d{2}:)(\d)(?!\d)/gu,
+        (_match, prefix, seconds) => `${prefix}0${seconds}`,
+    );
+}
+
+function normalizeJsonSummaryEvent(item) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+    const importance = item.importance ?? item.level ?? item['重要度'];
+    const time = item.time ?? item['时间'];
+    const characters = item.characters ?? item.participants ?? item['涉及角色'];
+    const location = item.location ?? item.place ?? item['地点'];
+    if (!String(importance ?? '').trim()
+        || !String(time ?? '').trim()
+        || !String(characters ?? '').trim()
+        || !String(location ?? '').trim()) return null;
+    const overview = normalizeOverview(
+        item.overview ?? item.summary ?? item.event ?? item['事件概述'] ?? item['概述'],
+        { repairMissingPunctuation: true },
+    );
+    if (!overview) return null;
+    return {
+        importance: clampInteger(importance, 1, 1, 5),
+        time: normalizeSummaryTime(time),
+        characters: limitText(characters, 100),
+        location: limitText(location, 100),
+        overview,
+    };
+}
+
+function parseJsonSummaryEvents(text) {
+    const candidate = String(text ?? '').trim();
+    if (!candidate.startsWith('{') && !candidate.startsWith('[')) return [];
+    try {
+        const parsed = JSON.parse(candidate);
+        const items = Array.isArray(parsed)
+            ? parsed
+            : parsed?.events ?? parsed?.summaries ?? parsed?.['事件'];
+        if (!Array.isArray(items) || items.length === 0 || items.length > SUMMARY_EVENT_LIMIT) return [];
+        const events = items.map(normalizeJsonSummaryEvent);
+        return events.every(Boolean) ? events : [];
+    } catch {
+        return [];
+    }
+}
+
 export function parseSummaryEvents(output) {
-    const text = String(output ?? '').trim();
+    const text = normalizeSummaryOutputMarkup(output);
     if (isUnusableSummaryOutput(text)) return [];
+    const jsonEvents = parseJsonSummaryEvents(text);
+    if (jsonEvents.length > 0) return jsonEvents;
     const headers = [...text.matchAll(/\[事件\s*\d+\]/g)];
     if (headers.length > SUMMARY_EVENT_LIMIT) return [];
     const blocks = headers.map((header, index) => {
@@ -644,15 +710,20 @@ export function parseSummaryEvents(output) {
         const time = getField(block, '时间', ['重要度', '事件概述', '地点', '涉及角色']);
         const location = getField(block, '地点', ['重要度', '事件概述', '时间', '涉及角色']);
         const characters = getField(block, '涉及角色', ['重要度', '事件概述', '时间', '地点']);
-        const normalizedOverview = normalizeOverview(overview);
+        if (!importanceText || !time || !location || !characters) return null;
+        const normalizedOverview = normalizeOverview(overview, {
+            // Once all mandatory fields follow, a missing terminal period is
+            // cosmetic rather than evidence that generation was cut off.
+            repairMissingPunctuation: true,
+        });
         if (!normalizedOverview) {
             return null;
         }
         return {
             importance: clampInteger(importanceText.match(/[1-5]/)?.[0], 1, 1, 5),
-            time: limitText(time, 80) || '未明确',
-            characters: limitText(characters, 100) || '未明确',
-            location: limitText(location, 100) || '未明确',
+            time: normalizeSummaryTime(time),
+            characters: limitText(characters, 100),
+            location: limitText(location, 100),
             overview: normalizedOverview,
         };
     });
@@ -663,14 +734,32 @@ export function parseSummaryEvents(output) {
     if (headers.length > 0 || /(?:重要度|事件概述|涉及角色|地点|时间)\s*[：:]/.test(text)) {
         return [];
     }
-    const fallback = normalizeOverview(text);
-    return fallback ? [{
-        importance: 1,
-        time: '未明确',
-        characters: '未明确',
-        location: '未明确',
-        overview: fallback,
-    }] : [];
+    return [];
+}
+
+function describeSummaryOutputFailure(output) {
+    const text = normalizeSummaryOutputMarkup(output);
+    if (!text) return '返回空白';
+    if (REFUSAL_OR_DRAFT_PATTERN.test(text)) return '模型拒绝总结或只输出了思考草稿';
+    const headers = [...text.matchAll(/\[事件\s*\d+\]/g)];
+    if (headers.length > SUMMARY_EVENT_LIMIT) return `输出了 ${headers.length} 个事件，超过最多 ${SUMMARY_EVENT_LIMIT} 个`;
+    const overviewMatch = text.match(/事件概述\s*[：:]\s*([^\n]*)/u);
+    if (overviewMatch) {
+        const overview = String(overviewMatch[1] ?? '').trim();
+        if (Array.from(overview).length > SUMMARY_OVERVIEW_LIMIT) return `事件概述超过 ${SUMMARY_OVERVIEW_LIMIT} 字`;
+        if (overview && !COMPLETE_SENTENCE_END.test(overview)) return '事件概述没有写完完整句子';
+    }
+    if (headers.length > 0 || /(?:重要度|事件概述|涉及角色|地点|时间)\s*[：:]/.test(text)) {
+        return '事件字段缺失或格式不完整';
+    }
+    if ((text.startsWith('{') || text.startsWith('[')) && parseJsonSummaryEvents(text).length === 0) {
+        return 'JSON 字段缺失、事件过多或内容不完整';
+    }
+    return '使用了无法识别的格式';
+}
+
+function getMinimumSummaryEventCount(start, end) {
+    return end - start + 1 >= 15 ? 2 : 1;
 }
 
 export function formatEventContent(event) {
@@ -719,7 +808,9 @@ async function findMalformedSummaryRange(context, state) {
         .sort((left, right) => Number(left.start) - Number(right.start));
     for (const record of records) {
         const entry = data?.entries?.[record.uid];
-        if (!entry || isMalformedSummaryContent(entry.content)) {
+        if (Number(record?.qualityVersion) < SUMMARY_QUALITY_VERSION
+            || !entry
+            || isMalformedSummaryContent(entry.content)) {
             return { start: Number(record.start), end: Number(record.end), uid: String(record.uid ?? '') };
         }
     }
@@ -767,9 +858,39 @@ function formatSummaryTimeline(timelineContext) {
     return lines.length > 0 ? lines.join('\n') : '（这段旧剧情尚未建立时间锚点；无法确定时写“未明确”，禁止猜测。）';
 }
 
+function getSummaryTimelineLabels(timelineContext) {
+    const labels = (Array.isArray(timelineContext) ? timelineContext : [])
+        .flatMap(item => [
+            item?.sceneTime,
+            item?.mainlineTime,
+            ...(Array.isArray(item?.segments)
+                ? item.segments.flatMap(segment => [segment?.anchorLabel, segment?.time])
+                : []),
+        ])
+        .map(value => String(value ?? '').trim())
+        .filter(value => value && !/^(?:未明确|时间未明确|未知)$/u.test(value));
+    return [...new Set(labels)];
+}
+
+function findUntraceableSummaryTime(events, timelineContext, messages) {
+    const timelineLabels = getSummaryTimelineLabels(timelineContext);
+    if (timelineLabels.length === 0) return '';
+    const sourceText = (Array.isArray(messages) ? messages : [])
+        .map(message => String(message?.mes ?? ''))
+        .join('\n');
+    for (const event of events) {
+        const time = String(event?.time ?? '').trim();
+        if (!time || /^(?:未明确|时间未明确|未知)$/u.test(time)) continue;
+        const copiedAnchor = timelineLabels.some(label => time.includes(label));
+        const copiedSource = sourceText.includes(time);
+        if (!copiedAnchor && !copiedSource) return time;
+    }
+    return '';
+}
+
 export function buildSummaryPrompt(messages, start, end, timelineContext = []) {
     return [
-        `以下${end - start + 1}楼只是本次处理窗口，不是事件边界。通常提取1-3个关键事件；只有确实存在彼此独立的事件或明确时间跳跃时才可增加，但绝对不超过5个。按重要度从高到低排列。跨楼的同一事件必须合并，不能把同一件事的动作、对话和结果拆成多个事件。每个事件严格按以下格式输出，不要输出其他内容：`,
+        `以下${end - start + 1}楼只是本次处理窗口，不是事件边界。必须通读整个窗口，通常提取2-4个关键事件，绝对不超过5个；只有全部楼层确实属于同一场景、同一目标和同一直接结果时才可只写1个。按重要度从高到低排列。跨楼的同一事件必须合并，但不同时间、地点、行动目标或结果变化不得强行压成一个事件。每个事件严格按以下格式输出，不要输出其他内容：`,
         '',
         '[事件1]',
         '重要度：X（1-5，5为最重要）',
@@ -784,11 +905,15 @@ export function buildSummaryPrompt(messages, start, end, timelineContext = []) {
         '评判标准：',
         '- 这是梗概，不是正文摘录；不要复述动作、对话、外貌、气氛和细枝末节，原文细节会由 RAG 另行召回',
         '- 同一矛盾、同一场对话、同一行动及其直接结果算一个事件，禁止为了凑数量拆开',
+        '- 也不得为了省事把不同场景、不同时间、不同目标或先后发生的独立变化合成一个大事件；必须覆盖整个处理窗口',
+        '- 重要度、事件概述、时间、地点、涉及角色五个字段每个事件都必须填写；无法从原文确认时明确写“未明确”，禁止省略字段',
         '- 有矛盾冲突、清晰脉络、角色关系变化、重大决策的事件 = 高重要度',
         '- 纯日常流水账、寒暄、无实质进展 = 低重要度',
         '- 如果这段对话全是日常闲聊没有值得记录的事件，只输出一个1星事件简单概括即可',
         '- “昨天、三天前、十年前”等词只相对于它所在的场景时间有效；不要因为当前主线后来推进而改写其间隔',
         '- 回忆、转述历史与主线正在发生是不同时间层；只提到旧事，不代表主线倒退',
+        '- 时间字段不是自由概括：只允许逐字复制下方与该事件对应的一个或多个时间锚点、逐字复制正文明确写出的时间，或者在两者都没有时填写“未明确”',
+        '- 精确锚点存在时必须保留完整日期、时刻与历法写法；禁止把“2025-01-28 23:30:00”改写成“除夕夜”“深夜”“零点前后”等模糊说法。事件跨越多个锚点时，逐字写出起止锚点并用“至”连接',
         '',
         '以下是插件保存的时间锚点（优先级高于你对楼层间隔的猜测）：',
         formatSummaryTimeline(timelineContext),
@@ -802,10 +927,13 @@ export function buildSummaryPrompt(messages, start, end, timelineContext = []) {
 function buildSummaryRetryPrompt(messages, start, end, timelineContext = []) {
     return [
         `重新概括下面第${start + 1}-${end + 1}楼发生的关键事件。上一次回答存在事件过多、概述过长、格式错误或句子不完整的问题。`,
-        '通常只提取1-3个事件；只有明确独立事件或时间跳跃才可增加，绝对不超过5个。同一事件的起因、行动和结果必须合并。',
+        '必须重新通读整个窗口，通常提取2-4个事件，绝对不超过5个；只有全部楼层确实是同一场景、同一目标和同一直接结果时才可只写1个。',
+        '同一事件的起因、行动和结果必须合并；不同时间、地点、行动目标或结果变化不得强行压成一个事件。',
+        '重要度、事件概述、时间、地点、涉及角色五个字段缺一不可；无法确认时填写“未明确”，禁止省略。',
         '每个事件都按“[事件N]、重要度、事件概述、时间、地点、涉及角色”的原格式输出，不要输出解释。',
         '事件概述只写1-2句完整的因果骨架，通常不超过100字，绝不超过150字；不要复述细节，不要用省略号收尾。',
         '保留原剧情中的时间关系；楼层数不代表时间流逝，不能自行把“三天前”改成“昨天”。',
+        '时间字段只能逐字复制下方时间锚点、逐字复制正文明确时间，或填写“未明确”；禁止把精确日期时刻改写成节日、昼夜或大概时段。',
         '',
         '输出格式：',
         '[事件1]',
@@ -881,7 +1009,12 @@ function normalizeHistoricalOverviewOutput(output) {
         .replace(/^历史概括\s*[：:]?\s*/u, '')
         .trim();
     if (isUnusableSummaryOutput(text)) return '';
-    return limitText(text, 400);
+    const characters = Array.from(text);
+    if (characters.length <= 400) return COMPLETE_SENTENCE_END.test(text) ? text : '';
+    const prefix = characters.slice(0, 400).join('');
+    const endings = [...prefix.matchAll(/[。！？!?；;.!」』）)】]/gu)];
+    const lastEnding = endings.at(-1);
+    return lastEnding ? prefix.slice(0, Number(lastEnding.index) + lastEnding[0].length).trim() : '';
 }
 
 function replaceOverviewBlock(content, start, end, overview) {
@@ -1107,7 +1240,7 @@ export function regenerateAllSummaries(settings, context, options = {}) {
         }
 
         const removed = await clearAllSummaries(activeContext);
-        options.onProgress?.({ removed, created: 0, pendingFloors: 0 });
+        options.onProgress?.({ phase: 'cleared', removed, created: 0, pendingFloors: 0 });
         const batchSize = clampInteger(settings?.context?.summaryBatchSize, 15, 1, 50);
         const maximumBatches = Math.ceil((activeContext.chat?.length ?? 0) / batchSize) + 2;
         let created = 0;
@@ -1118,6 +1251,19 @@ export function regenerateAllSummaries(settings, context, options = {}) {
                 || currentContext.chatMetadata !== expectedMetadata) {
                 return { removed, created, pendingFloors, discarded: true };
             }
+            const state = getSummaryState(currentContext.chatMetadata, true);
+            const recentMessages = clampInteger(settings?.context?.recentMessages, 20, 1, 1000);
+            const nextStart = Math.max(0, state.lastSummarizedMessageIndex + 1);
+            const firstIndexInsideRecentWindow = Math.max(0, (currentContext.chat?.length ?? 0) - recentMessages);
+            options.onProgress?.({
+                phase: 'generating',
+                removed,
+                created,
+                current: created + 1,
+                start: nextStart,
+                end: Math.min(firstIndexInsideRecentWindow - 1, nextStart + batchSize - 1),
+                pendingFloors: Math.max(0, firstIndexInsideRecentWindow - nextStart),
+            });
             const result = await summarizePendingMessages(settings, currentContext, {
                 ...options,
                 onSaved: options.onSaved,
@@ -1125,7 +1271,7 @@ export function regenerateAllSummaries(settings, context, options = {}) {
             pendingFloors = Number(result?.pendingFloors) || 0;
             if (result?.created !== 1 || result?.discarded) break;
             created++;
-            options.onProgress?.({ removed, created, pendingFloors });
+            options.onProgress?.({ phase: 'saved', removed, created, pendingFloors });
             if (pendingFloors < batchSize) break;
         }
         return { removed, created, pendingFloors };
@@ -1502,15 +1648,40 @@ async function generateSummaryEventsForRange(settings, context, start, end, opti
         return timeline ? { messageId, ...timeline } : null;
     }).filter(Boolean);
     const prompt = buildSummaryPrompt(messages, start, end, timelineContext);
-    let output = String(await callSummaryModel(settings, context, prompt, options.generateSummary) ?? '').trim();
-    let events = parseSummaryEvents(output);
-    if (events.length === 0) {
+    const firstOutput = String(await callSummaryModel(settings, context, prompt, options.generateSummary) ?? '').trim();
+    let events = parseSummaryEvents(firstOutput);
+    const minimumEvents = getMinimumSummaryEventCount(start, end);
+    let retryOutput = '';
+    let untraceableTime = events.length > 0
+        ? findUntraceableSummaryTime(events, timelineContext, messages)
+        : '';
+    const firstFailure = untraceableTime
+        ? `时间“${untraceableTime}”既不是保存的历史锚点，也不是正文中的原句`
+        : events.length > 0 && events.length < minimumEvents
+        ? `只返回 ${events.length} 个完整事件，15楼批次至少需要 ${minimumEvents} 个`
+        : describeSummaryOutputFailure(firstOutput);
+    if (events.length < minimumEvents || untraceableTime) {
         const retryPrompt = buildSummaryRetryPrompt(messages, start, end, timelineContext);
-        output = String(await callSummaryModel(settings, context, retryPrompt, options.generateSummary) ?? '').trim();
-        events = parseSummaryEvents(output);
+        retryOutput = String(await callSummaryModel(settings, context, retryPrompt, options.generateSummary) ?? '').trim();
+        events = parseSummaryEvents(retryOutput);
+        untraceableTime = events.length > 0
+            ? findUntraceableSummaryTime(events, timelineContext, messages)
+            : '';
     }
-    if (events.length === 0) {
-        throw new Error(`Summary model returned no usable events for messages ${start}-${end}.`);
+    if (events.length < minimumEvents || untraceableTime) {
+        const retryFailure = untraceableTime
+            ? `时间“${untraceableTime}”既不是保存的历史锚点，也不是正文中的原句`
+            : events.length > 0
+            ? `只返回 ${events.length} 个完整事件，15楼批次至少需要 ${minimumEvents} 个`
+            : describeSummaryOutputFailure(retryOutput);
+        console.warn('[Memory Augment] Summary outputs could not be parsed.', {
+            range: { start, end },
+            firstFailure,
+            retryFailure,
+            firstOutput,
+            retryOutput,
+        });
+        throw new Error(`第${start + 1}-${end + 1}楼总结失败：首次${firstFailure}；重试${retryFailure}。`);
     }
     return events;
 }
@@ -1604,15 +1775,43 @@ export async function repairMalformedSummaries(settings, context, options = {}) 
     let repaired = 0;
     const state = getSummaryState(context?.chatMetadata);
     const maximumAttempts = Math.min(200, Math.max(20, state?.entries?.length ?? 0));
-    for (let attempt = 0; attempt < maximumAttempts; attempt++) {
-        const state = getSummaryState(context?.chatMetadata);
-        if (!state || !await findMalformedSummaryRange(context, state)) break;
-        const result = await summarizePendingMessages(settings, context, {
-            ...options,
-            repairMalformed: true,
+    try {
+        for (let attempt = 0; attempt < maximumAttempts; attempt++) {
+            const state = getSummaryState(context?.chatMetadata);
+            if (!state) break;
+            const malformed = await findMalformedSummaryRange(context, state);
+            const recentMessages = clampInteger(settings?.context?.recentMessages, 20, 1, 1000);
+            const batchSize = clampInteger(settings?.context?.summaryBatchSize, 15, 1, 50);
+            const chat = Array.isArray(context?.chat) ? context.chat : [];
+            const nextStart = Math.max(0, state.lastSummarizedMessageIndex + 1);
+            const firstIndexInsideRecentWindow = Math.max(0, chat.length - recentMessages);
+            const hasMissingBatch = firstIndexInsideRecentWindow - nextStart >= batchSize;
+            if (!malformed && !hasMissingBatch) break;
+
+            const target = malformed ?? {
+                start: nextStart,
+                end: Math.min(firstIndexInsideRecentWindow - 1, nextStart + batchSize - 1),
+            };
+            options.onProgress?.({
+                current: repaired + 1,
+                start: target.start,
+                end: target.end,
+                kind: malformed ? 'malformed' : 'missing',
+            });
+
+            const result = await summarizePendingMessages(settings, context, {
+                ...options,
+                repairMalformed: Boolean(malformed),
+            });
+            if (result?.created !== 1) break;
+            repaired++;
+        }
+    } catch (error) {
+        setSummaryRuntime(context, {
+            phase: 'error',
+            error: String(error?.message ?? error),
         });
-        if (!result?.repaired) break;
-        repaired++;
+        throw error;
     }
     return repaired;
 }

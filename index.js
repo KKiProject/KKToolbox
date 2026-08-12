@@ -1,11 +1,12 @@
 import { extension_settings, renderExtensionTemplateAsync } from '../../../extensions.js';
 import { power_user } from '../../../power-user.js';
 import { Popup, POPUP_RESULT, POPUP_TYPE } from '../../../popup.js';
-import { reloadCurrentChat } from '../../../../script.js';
+import { eventSource, event_types, reloadCurrentChat } from '../../../../script.js';
 import { normalizeBaseUrl } from './api-utils.js';
 import { bindChatIngestionLifecycle, reconcileBufferedMessageQueue } from './chat-lifecycle.js';
 import { initializeChatMemoryUi } from './chat-memory-ui.js';
 import { memoryAugmentInterceptor } from './context-manager.js';
+import { initializeGenerationTimingUi } from './generation-timing.js';
 import { fetchModels, getStatus, ingestChat, reconcileChatVectors } from './rag-client.js';
 import { initializeBarrageUi, refreshBarrageVisibility, scheduleLatestSideGeneration } from './barrage-ui.js';
 import {
@@ -116,6 +117,7 @@ export const defaultSettings = Object.freeze({
         summaryBatchSize: 15,
     },
     rag: {
+        enabled: true,
         segmentTargetChars: 400,
         topK: 25,
         topN: 7,
@@ -1005,50 +1007,99 @@ function bindActions(settings) {
     });
     document.querySelector('#memory_augment_repair_summaries')?.addEventListener('click', async (event) => {
         const button = event.currentTarget;
+        const originalText = button.textContent;
+        const actionProgress = document.querySelector('#memory_augment_summary_action_progress');
+        const setActionProgress = (text, state = 'working') => {
+            if (!actionProgress) return;
+            actionProgress.hidden = false;
+            actionProgress.textContent = text;
+            actionProgress.dataset.state = state;
+        };
         button.classList.add('disabled');
         button.disabled = true;
+        button.textContent = '修复中…';
+        setActionProgress('正在检查异常、缺失和旧版摘要…');
         try {
             const context = SillyTavern.getContext();
             const repaired = await repairMalformedSummaries(settings, context, {
                 getCurrentContext: () => SillyTavern.getContext(),
                 onSaved: refreshStatus,
+                onProgress: ({ current, start, end }) => {
+                    setActionProgress(`正在修复第${Number(start) + 1}-${Number(end) + 1}楼（第${current}条）`);
+                },
             });
-            showNotice(repaired > 0 ? `已修复 ${repaired} 条异常摘要。` : '没有发现需要修复的摘要。', repaired > 0 ? 'success' : 'info');
+            setActionProgress(repaired > 0 ? `修复完成：已修复或补齐 ${repaired} 条摘要。` : '检查完成：没有发现需要修复的摘要。', 'ok');
+            showNotice(repaired > 0 ? `已修复或补齐 ${repaired} 条摘要。` : '没有发现异常或缺失的摘要。', repaired > 0 ? 'success' : 'info');
         } catch (error) {
+            setActionProgress(`修复失败：${error.message}`, 'error');
             showNotice(`修复摘要失败：${error.message}`, 'error');
             console.error('[Memory Augment] Failed to repair malformed summaries.', error);
         } finally {
             button.classList.remove('disabled');
             button.disabled = false;
+            button.textContent = originalText;
+            await refreshStatus();
         }
     });
     document.querySelector('#memory_augment_regenerate_summaries')?.addEventListener('click', async (event) => {
+        const button = event.currentTarget;
+        const originalText = button.textContent;
+        const actionProgress = document.querySelector('#memory_augment_summary_action_progress');
+        const statusProgress = document.querySelector('#memory_augment_status_summary_progress');
+        const setProgress = (text, state = 'working') => {
+            for (const progress of [actionProgress, statusProgress]) {
+                if (!progress) continue;
+                progress.hidden = false;
+                progress.textContent = text;
+                progress.dataset.state = state;
+            }
+        };
+        setProgress('已收到操作，正在等待确认…');
         const confirmed = await Popup.show.confirm(
             '重新生成当前存档的全部摘要？',
             '会清除当前存档已有的 KKToolbox 摘要，并从第一批可总结楼层重新生成。已经隐藏的楼层仍保留原文，可以正常重新总结；楼层较多时会连续调用多次副 API。',
         );
-        if (!confirmed) return;
-        const button = event.currentTarget;
+        if (!confirmed) {
+            setProgress('已取消重新总结。', 'idle');
+            return;
+        }
         button.classList.add('disabled');
         button.disabled = true;
+        button.textContent = '重新总结中…';
+        setProgress('正在等待总结队列…');
         try {
             const result = await regenerateAllSummaries(settings, SillyTavern.getContext(), {
                 getCurrentContext: () => SillyTavern.getContext(),
                 onSaved: refreshStatus,
-                onProgress: refreshStatus,
+                onProgress: (update = {}) => {
+                    if (update.error) {
+                        setProgress(`重新总结失败：${update.error?.message ?? update.error}`, 'error');
+                    } else if (update.phase === 'cleared') {
+                        setProgress(`已清理 ${update.removed} 条旧摘要，准备重新生成…`);
+                    } else if (update.phase === 'generating') {
+                        setProgress(`正在重新总结第${Number(update.start) + 1}-${Number(update.end) + 1}楼（第${update.current}批）`);
+                    } else if (update.phase === 'saved') {
+                        setProgress(`已完成 ${update.created} 批，继续处理中…`);
+                    }
+                },
             });
             if (result.discarded) {
+                setProgress('聊天已经切换，本次重新总结已停止。', 'idle');
                 showNotice('聊天已经切换，本次重新总结已停止。', 'info');
             } else {
+                setProgress(`重新总结完成：已生成 ${result.created} 批摘要。`, 'ok');
                 showNotice(`重新总结完成：已生成 ${result.created} 批摘要。`, 'success');
             }
             await refreshStatus();
         } catch (error) {
+            setProgress(`重新总结失败：${error.message}`, 'error');
             showNotice(`重新总结失败：${error.message}`, 'error');
             console.error('[Memory Augment] Failed to regenerate summaries.', error);
         } finally {
             button.classList.remove('disabled');
             button.disabled = false;
+            button.textContent = originalText;
+            await refreshStatus();
         }
     });
     document.querySelector('#memory_augment_regenerate_summary_range')?.addEventListener('click', async (event) => {
@@ -1178,6 +1229,7 @@ async function initialize() {
     await refreshDisplayedVersion();
 
     bindSettings(settings, context);
+    initializeGenerationTimingUi({ eventSource, eventTypes: event_types, documentRef: document });
     initializeHtmlRenderer(settings);
     bindStatusCustomFields(settings, context);
     bindModelDiscovery(settings, context);

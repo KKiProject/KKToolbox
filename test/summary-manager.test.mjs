@@ -11,6 +11,7 @@ import {
     isUnusableSummaryOutput,
     migrateLegacySummaries,
     parseSummaryEvents,
+    repairMalformedSummaries,
     regenerateAllSummaries,
     regenerateSummaryRange,
     SUMMARY_KEY_PREFIX,
@@ -31,12 +32,60 @@ test('summary prompt treats floor batches as processing windows and uses saved a
         segments: [{ startQuote: '三天前', anchorLabel: '王历100年二月廿七', mode: 'mention' }],
     }]);
     assert.match(prompt, /只是本次处理窗口，不是事件边界/);
-    assert.match(prompt, /通常提取1-3个关键事件/);
+    assert.match(prompt, /通常提取2-4个关键事件/);
     assert.match(prompt, /绝对不超过5个/);
     assert.match(prompt, /原文细节会由 RAG 另行召回/);
     assert.match(prompt, /场景时间=王历100年春三月初一/);
     assert.match(prompt, /从“三天前”开始｜片段时间=王历100年二月廿七/);
     assert.match(prompt, /“昨天、三天前、十年前”等词只相对于它所在的场景时间有效/);
+    assert.match(prompt, /时间字段不是自由概括/);
+    assert.match(prompt, /禁止把“2025-01-28 23:30:00”改写成“除夕夜”/);
+});
+
+test('a summary retries when it paraphrases an exact saved time anchor', async () => {
+    const context = createContext(dialoguePairs(15));
+    context.chatMetadata.memory_augment_story_timeline = {
+        version: 1,
+        anchors: {
+            't1-initial': {
+                id: 't1-initial',
+                label: '2025-02-04 15:00:00',
+                mode: 'mainline',
+                relativeTo: '',
+                relation: '',
+                sourceMessageId: 1,
+            },
+        },
+        messageStates: {
+            1: {
+                sceneAnchorId: 't1-initial',
+                mainlineAnchorId: 't1-initial',
+                transition: 'unchanged',
+                sourceHash: '',
+            },
+        },
+        messageSegments: {},
+    };
+    let calls = 0;
+    const result = await summarizePendingMessages(
+        { context: { recentMessages: 20, summaryBatchSize: 10 } },
+        context,
+        {
+            getCurrentContext: () => context,
+            generateSummary: async () => {
+                calls++;
+                return calls === 1
+                    ? '[事件1]\n重要度：4\n事件概述：两人确认了彼此的关系。\n时间：除夕夜至零点\n地点：室内\n涉及角色：用户，角色'
+                    : '[事件1]\n重要度：4\n事件概述：两人确认了彼此的关系。\n时间：2025-02-04 15:00:00\n地点：室内\n涉及角色：用户，角色';
+            },
+        },
+    );
+
+    assert.equal(calls, 2);
+    assert.equal(result.created, 1);
+    const entries = Object.values(context.lorebooks.get(context.summaryBookName).entries);
+    assert.match(entries[0].content, /固定历史时间锚点：2025-02-04 15:00:00/);
+    assert.doesNotMatch(entries[0].content, /除夕夜至零点/);
 });
 
 test('summary lorebooks keep the character name and use a simple increasing sequence', () => {
@@ -263,11 +312,13 @@ test('one-click regeneration can summarize already hidden floors from the beginn
         0: { uid: 0, key: [`${SUMMARY_KEY_PREFIX}[第1-10楼]`], content: '准备被重新生成的旧摘要。' },
     } });
 
+    const progress = [];
     const result = await regenerateAllSummaries(
         { context: { recentMessages: 20, summaryBatchSize: 10 } },
         context,
         {
             getCurrentContext: () => context,
+            onProgress: update => progress.push(update),
             generateSummary: async prompt => {
                 assert.match(prompt, /dialogue/);
                 return '[事件1]\n重要度：3\n事件概述：隐藏楼层的原文仍然能够正常参与重新总结。\n时间：未明确\n地点：室内\n涉及角色：用户，角色';
@@ -278,6 +329,13 @@ test('one-click regeneration can summarize already hidden floors from the beginn
     assert.equal(result.removed, 1);
     assert.equal(result.created, 2);
     assert.equal(result.discarded, undefined);
+    assert.deepEqual(progress.map(update => update.phase), [
+        'cleared', 'generating', 'saved', 'generating', 'saved',
+    ]);
+    assert.deepEqual(
+        progress.filter(update => update.phase === 'generating').map(update => [update.start, update.end]),
+        [[0, 9], [10, 19]],
+    );
     assert.deepEqual(
         context.chatMetadata[SUMMARY_STATE_KEY].entries.map(entry => [entry.start, entry.end]),
         [[0, 9], [10, 19]],
@@ -380,7 +438,7 @@ test('a summary starts only after one full batch has left the recent-message win
     assert.match(prompts[0].prompt, /\[第 10 楼\].*dialogue 9/);
     assert.match(prompts[0].prompt, /以下10楼只是本次处理窗口，不是事件边界/);
     assert.match(prompts[0].prompt, /如果这段对话全是日常闲聊/);
-    assert.equal(prompts[0].maxTokens, 1200);
+    assert.equal(prompts[0].maxTokens, 4096);
     assert.equal(context.chatMetadata[SUMMARY_STATE_KEY].lastSummarizedMessageIndex, 9);
     assert.ok(context.worldInfoListUpdates > 0, 'the new summary lorebook must enter ST\'s live list immediately');
     assert.ok(context.reloadedWorldInfoBooks.includes(context.additionalBooks[0]), 'the open lorebook editor must reload after content is saved');
@@ -414,6 +472,30 @@ test('a summary starts only after one full batch has left the recent-message win
         [0, 1, 2, 4, 5, 6, 7, 8, 9].map(index => `/hide ${index}`),
     );
     assert.equal(context.chat.slice(0, 10).every(message => message.is_system === true), true);
+});
+
+test('a fifteen-floor batch retries when the model compresses everything into one event', async () => {
+    const context = createContext(dialoguePairs(18));
+    let calls = 0;
+    const result = await summarizePendingMessages({ context: { recentMessages: 20, summaryBatchSize: 15 } }, context, {
+        getCurrentContext: () => context,
+        generateSummary: async () => {
+            calls++;
+            if (calls === 1) {
+                return '[事件1]\n重要度：3\n事件概述：A经历了这一阶段的全部剧情。\n时间：未明确\n地点：未明确\n涉及角色：A';
+            }
+            return [
+                '[事件1]\n重要度：4\n事件概述：A发现关键线索并改变了原定计划。\n时间：清晨\n地点：庭院\n涉及角色：A',
+                '[事件2]\n重要度：3\n事件概述：B随后确认线索来源并决定与A合作。\n时间：当天稍后\n地点：书房\n涉及角色：A、B',
+            ].join('\n\n');
+        },
+    });
+
+    assert.equal(calls, 2);
+    assert.equal(result.created, 1);
+    const detail = Object.values(context.lorebooks.get(context.summaryBookName).entries)
+        .find(entry => entry.key?.[0] === `${SUMMARY_KEY_PREFIX}[第1-15楼]`);
+    assert.equal((detail.content.match(/^\[[★☆]{5}\]$/gmu) ?? []).length, 2);
 });
 
 test('event parser accepts at most five complete concise events without cutting their text', () => {
@@ -455,6 +537,46 @@ test('event parser accepts fields on one line and rejects truncated structured o
     assert.equal(isUnusableSummaryOutput('Drafting Event 3 (analysis)'), true);
 });
 
+test('event parser accepts full-width headings, markdown field labels, and JSON', () => {
+    const [markdownEvent] = parseSummaryEvents([
+        '【事件1】',
+        '**重要度**：4',
+        '**事件概述**：A与B确认误会源于伪造的信件，并决定共同追查来源。',
+        '**时间**：深夜',
+        '**地点**：书房',
+        '**涉及角色**：A、B',
+    ].join('\n'));
+    assert.equal(markdownEvent.importance, 4);
+    assert.match(markdownEvent.overview, /共同追查来源/);
+
+    const [jsonEvent] = parseSummaryEvents(JSON.stringify({ events: [{
+        importance: 3,
+        overview: 'A找到了能够证明身份的旧徽章。',
+        time: '清晨',
+        location: '阁楼',
+        characters: ['A'],
+    }] }));
+    assert.equal(jsonEvent.importance, 3);
+    assert.equal(jsonEvent.location, '阁楼');
+    assert.equal(jsonEvent.characters, 'A');
+});
+
+test('event parser repairs punctuation only for complete records and rejects missing metadata', () => {
+    const [event] = parseSummaryEvents([
+        '[事件1]',
+        '重要度：3',
+        '事件概述：A与B解除误会并决定继续同行',
+        '时间：傍晚',
+        '地点：旅店',
+        '涉及角色：A、B',
+    ].join('\n'));
+    assert.equal(event.overview, 'A与B解除误会并决定继续同行。');
+
+    assert.deepEqual(parseSummaryEvents('[事件1]\n重要度：2\n事件概述：A暂时留在原地等待消息'), []);
+
+    assert.deepEqual(parseSummaryEvents('[事件1]\n重要度：3\n事件概述：A与B决定继续……'), []);
+});
+
 test('a malformed summary is rebuilt from hidden messages before new ranges advance', async () => {
     const context = createContext(dialoguePairs(15));
     context.chat.slice(0, 10).forEach(message => message.is_system = true);
@@ -489,6 +611,36 @@ test('a malformed summary is rebuilt from hidden messages before new ranges adva
     assert.equal(context.calls.some(command => command.startsWith('/hide ')), false);
 });
 
+test('repair fills a missing batch after the model returned no usable events', async () => {
+    const context = createContext(dialoguePairs(15));
+    const settings = { context: { recentMessages: 20, summaryBatchSize: 10 } };
+    await assert.rejects(
+        summarizePendingMessages(settings, context, {
+            getCurrentContext: () => context,
+            generateSummary: async () => '抱歉，我无法总结这些内容。',
+        }),
+        /第1-10楼总结失败：首次模型拒绝总结或只输出了思考草稿/,
+    );
+    assert.equal(context.chatMetadata[SUMMARY_STATE_KEY].lastSummarizedMessageIndex, -1);
+    assert.equal(context.chatMetadata[SUMMARY_STATE_KEY].entries.length, 0);
+
+    const progress = [];
+    const repaired = await repairMalformedSummaries(settings, context, {
+        getCurrentContext: () => context,
+        onProgress: update => progress.push(update),
+        generateSummary: async prompt => {
+            assert.match(prompt, /第 1 楼/);
+            assert.match(prompt, /第 10 楼/);
+            return '[事件1]\n重要度：4\n事件概述：缺失的摘要区间已经重新生成。\n时间：未明确\n地点：室内\n涉及角色：用户，角色';
+        },
+    });
+
+    assert.equal(repaired, 1);
+    assert.deepEqual(progress, [{ current: 1, start: 0, end: 9, kind: 'missing' }]);
+    assert.equal(context.chatMetadata[SUMMARY_STATE_KEY].lastSummarizedMessageIndex, 9);
+    assert.match(context.lorebooks.get(context.summaryBookName).entries[0].content, /缺失的摘要区间已经重新生成/);
+});
+
 test('ordinary automatic summary checks do not repair old malformed entries in the background', async () => {
     const context = createContext(dialoguePairs(15));
     context.chatMetadata[SUMMARY_STATE_KEY] = {
@@ -518,7 +670,7 @@ test('a truncated structured summary retries as concise structured events before
             if (generationCalls === 1) {
                 return '[事件1] 重要度：5 时间：午夜 涉及角色：奥蕾莉亚·';
             }
-            assert.match(prompt, /通常只提取1-3个事件/);
+            assert.match(prompt, /通常提取2-4个事件/);
             assert.match(prompt, /绝对不超过5个/);
             assert.match(prompt, /不要用省略号收尾/);
             return '[事件1]\n重要度：5\n事件概述：主角在旧王宫找回王冠，并决定翌日公开失踪多年的真相。\n时间：午夜\n地点：旧王宫\n涉及角色：主角';
@@ -865,7 +1017,7 @@ test('MESSAGE_SENT checks window overflow while swipe events remain ignored', as
     await new Promise(resolve => setTimeout(resolve, 35));
 
     assert.equal(calls.length, 1);
-    assert.equal(calls[0][1], 1200);
+    assert.equal(calls[0][1], 4096);
     assert.match((await getSummaries(context))[0].summary, /普通的日常交谈/);
 });
 

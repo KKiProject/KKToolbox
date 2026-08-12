@@ -54,7 +54,8 @@
                     <button id="memory_augment_repair_summaries" type="button" class="menu_button">修复异常摘要</button>
                     <button id="memory_augment_regenerate_summaries" type="button" class="menu_button">重新总结全部历史</button>
                 </div>
-                <small class="memory-augment-param-help">修复只重做空白、截断或拒绝式摘要；重新总结会清除当前存档的插件摘要，并从第一批可总结楼层重新生成。</small>
+                <div id="memory_augment_summary_action_progress" class="memory-augment-summary-action-progress" data-state="idle" hidden></div>
+                <small class="memory-augment-param-help">修复会补齐生成失败留下的缺失区间，并重做空白、截断或拒绝式摘要；重新总结会清除当前存档的插件摘要，并从第一批可总结楼层重新生成。</small>
                 <div class="memory-augment-summary-range">
                     <label>起始楼层<input id="memory_augment_summary_range_start" class="text_pole" type="number" min="1" step="1" inputmode="numeric"></label>
                     <label>结束楼层<input id="memory_augment_summary_range_end" class="text_pole" type="number" min="1" step="1" inputmode="numeric"></label>
@@ -67,6 +68,7 @@
         <details>
             <summary>RAG 设置</summary>
             <div class="memory-augment-section memory-augment-card">
+                <div class="memory-augment-field"><label class="checkbox_label"><input type="checkbox" data-setting="rag.enabled">启用正文 RAG 召回</label><small class="memory-augment-param-help">临时关闭后，正文生成将跳过自动总结、聊天历史和世界书的向量召回与精排；不会删除任何向量或摘要，重新打开即可恢复。地图、人物发展、状态和手机回注不受影响。</small></div>
                 <div class="memory-augment-field"><label>分段目标字数<input class="text_pole" type="number" min="100" max="2000" step="50" data-setting="rag.segmentTargetChars"></label><small class="memory-augment-param-help">每个向量片段的目标字数（中文字符）。在句子结束处自然断开，实际长度会有浮动。越小检索越精准但向量数量越多。</small></div>
                 <div class="memory-augment-field"><label>聊天历史粗召回 top-K<input class="text_pole" type="number" min="1" max="100" step="1" data-setting="rag.topK"></label><small class="memory-augment-param-help">先由进入本轮的剧情总结圈定楼层，再从这些楼层的正文中初选至多这么多条；另保留少量全库候选兜底。世界书独立固定为 10 个候选。</small></div>
                 <div class="memory-augment-field"><label>聊天历史精排 top-N<input class="text_pole" type="number" min="1" max="50" step="1" data-setting="rag.topN"></label><small class="memory-augment-param-help">最终发送给 AI 的正文细节片段上限，应不大于 top-K。剧情总结独立固定为初选 10 条、最多召回 3 条；世界书最多保留 5 条。</small></div>
@@ -199,6 +201,13 @@
                     <button id="memory_augment_refresh_status" type="button" class="menu_button">刷新状态</button>
                     <button id="memory_augment_clear_summaries" type="button" class="menu_button">清除所有摘要</button>
                 </div>
+            </div>
+        </details>
+
+        <details>
+            <summary>生成耗时诊断</summary>
+            <div id="memory_augment_generation_timing" class="memory-augment-section memory-augment-card memory-augment-timing">
+                <p class="memory-augment-timing-empty">发送一次正文后，这里会显示最近一轮耗时。</p>
             </div>
         </details>
     </div>

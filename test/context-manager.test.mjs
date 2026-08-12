@@ -38,6 +38,24 @@ function createChat(length = 6) {
     }));
 }
 
+test('RAG can be temporarily disabled without changing the generation chat', async () => {
+    const chat = createChat();
+    const original = structuredClone(chat);
+    let searched = false;
+    const settings = createSettings();
+    settings.rag.enabled = false;
+    const result = await retrieveAndInject(chat, settings, { chatId: 'chat-disabled' }, {
+        searchMemory: async () => {
+            searched = true;
+            return { chatResults: [] };
+        },
+    });
+
+    assert.deepEqual(result, { injected: false, reason: 'disabled' });
+    assert.deepEqual(chat, original);
+    assert.equal(searched, false);
+});
+
 test('interceptor query, parameters, reranking, threshold, and insertion position are wired', async () => {
     const chat = createChat();
     let searchPayload;
