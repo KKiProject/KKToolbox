@@ -212,10 +212,12 @@ test('browser barrage request separates recap, memory, and latest chapter', asyn
     assert.equal(requestBody.max_tokens, 1234);
     assert.match(requestBody.messages[0].content, /只控制 barrage 弹幕字段/);
     assert.match(requestBody.messages[0].content, /观众提示/);
-    assert.match(requestBody.messages[1].content, /【前情回顾】/);
-    assert.match(requestBody.messages[1].content, /更早的记忆/);
-    assert.match(requestBody.messages[1].content, /【最新章节】（这是本轮状态更新的直接剧情依据）\n最新回复/);
-    assert.match(requestBody.messages[1].content, /完成：观众弹幕、最新剧情状态与时间线/);
+    assert.match(requestBody.messages[1].content, /<State_Psychology_Guide>/);
+    const userPrompt = requestBody.messages.at(-1).content;
+    assert.match(userPrompt, /【前情回顾】/);
+    assert.match(userPrompt, /更早的记忆/);
+    assert.match(userPrompt, /【最新章节】（这是本轮状态更新的直接剧情依据）\n最新回复/);
+    assert.match(userPrompt, /完成：观众弹幕、最新剧情状态与时间线/);
     assert.deepEqual(result, { content: '弹幕内容' });
 });
 
@@ -409,6 +411,11 @@ test('story status infers inner states without copying prose and isolates barrag
 
     assert.match(requestBody.messages[0].content, /只控制 barrage 弹幕字段/);
     assert.match(requestBody.messages[0].content, /不得用于 status、timeline 或 development/);
+    assert.match(requestBody.messages[1].content, /<State_Psychology_Guide>/);
+    assert.match(requestBody.messages[1].content, /event 的 activity、situation、goals/);
+    assert.match(requestBody.messages[1].content, /development 的人物长期发展判断/);
+    assert.match(requestBody.messages[1].content, /Strong affection or desire is not automatically darker/);
+    assert.match(requestBody.messages[1].content, /客观时间、地点、季节、天气、外貌和已经发生的动作/);
     const prompt = requestBody.messages.at(-1).content;
     assert.match(prompt, /合理推出的隐含状态/);
     assert.match(prompt, /不算瞎编/);
@@ -432,8 +439,29 @@ test('barrage style system prompts are omitted from status-only requests', async
             return response({ choices: [{ message: { content: '{"barrage":"","status":{"environment":{},"characters":[],"event":{}},"timeline":{"transition":"unchanged","segments":[]},"development":null}' } }] });
         },
     });
-    assert.equal(requestBody.messages.length, 1);
+    assert.equal(requestBody.messages.length, 2);
+    assert.match(requestBody.messages[0].content, /<State_Psychology_Guide>/);
     assert.doesNotMatch(requestBody.messages[0].content, /这条要求绝不能进入状态栏/);
+    assert.doesNotMatch(requestBody.messages[1].content, /这条要求绝不能进入状态栏/);
+});
+
+test('psychology guide also applies when only character development is enabled', async () => {
+    let requestBody;
+    await generateBarrageCompletion({
+        barrage: { baseUrl: 'https://provider.example', apiKey: 'secret', model: 'chat-model' },
+        recentMessages: [{ id: 5, name: '角色', text: '她终于不再回避对方的目光。' }],
+        outputOptions: { barrageEnabled: false, statusEnabled: false, developmentEnabled: true },
+    }, {
+        fetchImpl: async (_url, options) => {
+            requestBody = JSON.parse(options.body);
+            return response({ choices: [{ message: { content: '{"module":"development","data":{"changes":[],"merges":[]}}' } }] });
+        },
+    });
+
+    assert.equal(requestBody.messages.length, 2);
+    assert.equal(requestBody.messages[0].role, 'system');
+    assert.match(requestBody.messages[0].content, /Preserve Emotional Momentum/);
+    assert.match(requestBody.messages[0].content, /人物长期发展判断/);
 });
 
 test('browser barrage recovers a final JSON object placed in reasoning_content', async () => {

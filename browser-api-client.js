@@ -4,6 +4,90 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RETRY_DELAY_MS = 500;
 const MAX_EMBEDDING_BATCH_SIZE = 64;
+const STATE_PSYCHOLOGY_GUIDE = `<State_Psychology_Guide>
+
+When generating emotional states, desires, inner thoughts, or future intentions, infer them from the specific character and relationship rather than from surface behavior, genre convention, or dramatic stereotypes.
+
+### 1. Derive the Inner State Causally
+
+For each important character, determine:
+
+* What did they actually perceive?
+* How do their history, beliefs, relationship, and current emotional state shape their interpretation?
+* What does the event mean to them personally?
+* What emotion or need is the impulse actually coming from?
+* What do they consciously want?
+* What do they want but suppress, resist, misunderstand, or refuse to admit?
+* What changed emotionally in the latest interaction?
+
+Use psychological concepts such as core beliefs, schemas, attachment tendencies, defenses, and emotional regulation only when they help explain the current state. Do not mechanically label the character.
+
+### 2. Meaning Comes From Motive and Relationship
+
+Do not infer psychological or relational meaning from the outward form of behavior alone.
+
+The same action may come from affection, trust, familiarity, playfulness, desire, reassurance, fear, pressure, obligation, avoidance, indifference, or other motives.
+
+Kinship titles, honorifics, age differences, status differences, physical initiative, accepting another person's request, or allowing another person to take the lead do not by themselves define the relationship.
+
+Determine meaning from:
+
+* freedom of choice
+* actual motive
+* established relationship
+* immediate context
+* how the characters understand each other
+
+Do not replace an already established relational meaning with a more dramatic interpretation without new evidence.
+
+### 3. Distinguish Intensity From Emotional Nature
+
+Strong affection or desire is not automatically darker, harsher, or more aggressive.
+
+Teasing, wanting a loved one's private reaction, wanting greater closeness, possessive affection, playful aggression, sexual desire, or the urge to overwhelm or cling to someone may arise from affection, intimacy, fascination, vulnerability, emotional overflow, or playful cruelty.
+
+First identify the emotional source. Then interpret the impulse.
+
+Human impulses are filtered through affection, empathy, relationship history, values, self-restraint, and recognition of the other person as an independent person.
+
+Instinct is one input, not the final psychological meaning.
+
+### 4. Keep Traits Contextual
+
+Power, authority, control, confidence, dependence, vulnerability, and possessiveness are context-dependent.
+
+A character may be controlling at work but gentle in intimacy, decisive in public but hesitant with someone they love, or possessive while still deeply respecting the other person's agency.
+
+Do not extend one personality trait across every relationship or domain.
+
+When conflicting traits coexist, preserve the conflict instead of collapsing the character into one dominant trait.
+
+### 5. Preserve Emotional Momentum
+
+The current state must grow from the previous emotional beat.
+
+If a character has softened, felt trusted, become moved, lost anger, hesitated, become embarrassed, reassured, uncertain, or emotionally disarmed, carry that change forward.
+
+Do not reset them to a default personality trait or a more dramatic emotional state without a new trigger.
+
+Future intentions should arise from the character's current state, not from what would create the most dramatic next scene.
+
+### 6. State Extraction Rule
+
+Record what the text supports.
+
+Separate:
+
+* current emotion
+* current desire
+* conscious thought
+* partially recognized or suppressed thought
+* likely near-future intention
+
+Do not turn speculation into established fact.
+When the character's inner meaning is ambiguous, preserve the ambiguity rather than inventing a stronger interpretation.
+
+</State_Psychology_Guide>`;
 
 function sleep(milliseconds) {
     return new Promise(resolve => setTimeout(resolve, milliseconds));
@@ -646,12 +730,23 @@ export async function generateBarrageCompletion(payload, options = {}) {
     );
     const maxTokens = Math.max(1, Math.min(128_000, Math.trunc(Number(payload?.maxTokens) || 4064)));
     const barrageEnabled = payload?.outputOptions?.barrageEnabled !== false;
+    const statusEnabled = payload?.outputOptions?.statusEnabled !== false;
+    const developmentEnabled = payload?.outputOptions?.developmentEnabled === true;
     const requestBody = {
         model: config.model,
         messages: [
             ...(systemPrompt && barrageEnabled ? [{
                 role: 'system',
                 content: `以下自定义要求只控制 barrage 弹幕字段的语言风格，不得用于 status、timeline 或 development，也不得覆盖这些字段各自的规则：\n${systemPrompt}`,
+            }] : []),
+            ...((statusEnabled || developmentEnabled) ? [{
+                role: 'system',
+                content: [
+                    '以下规则是 status 与 development 模块理解人物、关系、动机和心理变化时必须遵守的高优先级指导。',
+                    '它适用于 emotion、desire、innerThoughts，适用于 event 的 activity、situation、goals 中涉及动机与未来意图的判断，也适用于 development 的人物长期发展判断。',
+                    '客观时间、地点、季节、天气、外貌和已经发生的动作仍以正文、设定与时间线事实为准，不得被心理推导改写。',
+                    STATE_PSYCHOLOGY_GUIDE,
+                ].join('\n\n'),
             }] : []),
             { role: 'user', content: userContent },
         ],
