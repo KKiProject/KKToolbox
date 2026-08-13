@@ -117,10 +117,11 @@ export const defaultSettings = Object.freeze({
         summaryBatchSize: 15,
     },
     rag: {
+        defaultsVersion: 1,
         enabled: true,
         segmentTargetChars: 400,
-        topK: 25,
-        topN: 7,
+        topK: 20,
+        topN: 6,
         rerankerThreshold: 0.6,
         semanticWorldInfo: false,
         semanticWorldInfoBooks: [],
@@ -1201,6 +1202,12 @@ async function initialize() {
     );
     const hadStatusEnabled = Object.hasOwn(savedSettings?.status ?? {}, 'enabled');
     const hadLegacyAiCustomFields = Object.hasOwn(savedSettings?.status ?? {}, 'allowCustomFields');
+    const needsRagDefaultsMigration = Number(savedSettings?.rag?.defaultsVersion ?? 0) < 1;
+    const savedRagTopK = Number(savedSettings?.rag?.topK);
+    const savedRagTopN = Number(savedSettings?.rag?.topN);
+    const hadLegacyRagDefaults = needsRagDefaultsMigration
+        && ((!Number.isFinite(savedRagTopK) && !Number.isFinite(savedRagTopN))
+            || (savedRagTopK === 25 && savedRagTopN === 7));
     const savedBarragePrompt = String(savedSettings?.barrage?.systemPrompt ?? '').trim();
     const hadLegacyDefaultBarragePrompt = savedBarragePrompt === LEGACY_DEFAULT_BARRAGE_PROMPT;
     const hadBuiltinLiveRoomPrompt = Number(savedSettings?.barrage?.builtinPromptVersion) >= BUILTIN_LIVE_ROOM_PROMPT_VERSION;
@@ -1216,9 +1223,15 @@ async function initialize() {
         }
     }
     if (!hadStatusEnabled) settings.status.enabled = Boolean(savedSettings?.barrage?.enabled);
+    settings.rag.defaultsVersion = 1;
+    if (hadLegacyRagDefaults) {
+        settings.rag.topK = 20;
+        settings.rag.topN = 6;
+    }
     extension_settings[EXTENSION_KEY] = settings;
     if (hadLegacySummaryMaxTokens || hadLegacySummaryInterval || hadLegacyChunkSize
-        || hadLegacyAiCustomFields || !hadBuiltinLiveRoomPrompt || !hadStatusEnabled) {
+        || hadLegacyAiCustomFields || !hadBuiltinLiveRoomPrompt || !hadStatusEnabled
+        || needsRagDefaultsMigration) {
         context.saveSettingsDebounced();
     }
 

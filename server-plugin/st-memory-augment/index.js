@@ -620,7 +620,7 @@ async function init(router) {
             const bookIds = Array.isArray(scope.book_ids)
                 ? [...new Set(scope.book_ids.map(String).filter(Boolean))]
                 : [];
-            const chatTopK = clampInteger(req.body?.chatTopK, 25, 1, 100);
+            const chatTopK = clampInteger(req.body?.chatTopK, 20, 1, 100);
             const worldInfoTopK = clampInteger(req.body?.worldInfoTopK, 10, 1, 100);
             const [chatSearch, worldInfoSearch] = await Promise.allSettled([
                 chatId
@@ -671,7 +671,7 @@ async function init(router) {
         const candidates = Array.isArray(req.body?.candidates)
             ? req.body.candidates.filter(candidate => String(candidate?.text ?? '').trim())
             : [];
-        const topN = clampInteger(req.body?.topN, 7, 1, 100);
+        const topN = clampInteger(req.body?.topN, 6, 1, 100);
         const thresholdValue = Number(req.body?.threshold);
         const threshold = Number.isFinite(thresholdValue)
             ? Math.max(0, Math.min(1, thresholdValue))

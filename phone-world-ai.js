@@ -2,9 +2,15 @@ import { generatePhoneWorldCompletion } from './rag-client.js';
 import { preparePhoneStoryContext } from './phone-context.js';
 import {
     appendPhoneMessage,
+    createPhoneConversation,
     createPhoneRoundId,
     getPhoneChatId,
+    normalizePhoneIdentity,
 } from './phone-store.js';
+import {
+    findPhoneIdentitySourceForName,
+    loadPhoneIdentitySources,
+} from './phone-identities.js';
 import { cleanPhoneText as text } from './phone-utils.js';
 import {
     applyPhoneWeiboBatch,
@@ -39,6 +45,16 @@ const PUBLIC_MODULE_EVIDENCE = Object.freeze({
     community: /论坛|楼主|CP榜|同人|产粮|嗑点|扒帖|网上.{0,12}(帖子|讨论帖)|社区(?!服务|中心|居委|居民|街道)(?:.{0,8}(?:帖子|讨论|发帖|回帖))?/u,
     live: /直播|开播|直播间|主播|弹幕|连麦/u,
 });
+const PUBLIC_STORY_EVIDENCE_PATTERN = new RegExp([
+    '公开(?:发布|发表|宣布|公布|展示|露面|演出|活动|仪式|审理|处决|讲话|演说|授课|比赛|宴会|庆典)',
+    '(?:正式|对外|面向公众).{0,12}(?:发布|发表|宣布|公布|开放|展示|播出|举行|启用|生效)',
+    '(?:作品|影片|电影|剧集|歌曲|专辑|MV|预告|产品|法令|政策|名单|结果|声明|通告).{0,12}(?:发布|公布|上线|发行|首发)',
+    '(?:公布|官宣|宣告|颁布|公示|张贴|刊登|登报|播出|上映|上线|发行|首发|开幕|揭幕|首映|路演|演出|公演|比赛|典礼|庆典|游行|祭典|朝会|庭审|公开审判)',
+    '(?:公告|告示|布告|诏书|公报|新闻|报道|广播|转播|采访|记者会|发布会|见面会|说明会|听证会|宣讲会|集会)',
+    '(?:记者|媒体|观众|民众|群众|宾客|参会者|围观者|路人|信众|市民|村民|百姓).{0,20}(?:看见|看到|目击|听见|得知|拍到|录下|围观|议论|传播|转述)',
+    '(?:被|让).{0,12}(?:拍到|目击|看见|录下|报道|公开|曝光|传开|传遍)',
+    '(?:当众|众目睽睽|人尽皆知|广为人知|传遍|传开|公开可见|全城皆知|举世皆知)',
+].join('|'), 'u');
 const WORLD_MODULE_TOKEN_BUDGETS = Object.freeze({
     weibo: 10_000,
     community: 15_000,
@@ -249,28 +265,45 @@ export function parsePhoneWorldRecords(raw) {
     return { records, errors, decision };
 }
 
-export function selectDailyPhoneWorldModule(random = Math.random) {
+export function selectDailyPhoneWorldModule(rotation = {}, random = Math.random) {
+    const configured = Array.isArray(rotation?.remaining)
+        ? rotation.remaining.filter(module => DAILY_WORLD_MODULES.includes(module))
+        : [];
+    const remaining = [...new Set(configured)];
+    const candidates = remaining.length > 0 ? remaining : [...DAILY_WORLD_MODULES];
     const value = Number(random?.());
     const index = Number.isFinite(value)
-        ? Math.min(DAILY_WORLD_MODULES.length - 1, Math.max(0, Math.floor(value * DAILY_WORLD_MODULES.length)))
+        ? Math.min(candidates.length - 1, Math.max(0, Math.floor(value * candidates.length)))
         : 0;
-    return DAILY_WORLD_MODULES[index];
+    return candidates[index];
+}
+
+function commitDailyPhoneWorldModule(store, module) {
+    const selected = DAILY_WORLD_MODULES.includes(module) ? module : '';
+    if (!selected) return;
+    const configured = Array.isArray(store?.dailyWorldRotation?.remaining)
+        ? store.dailyWorldRotation.remaining.filter(item => DAILY_WORLD_MODULES.includes(item))
+        : [];
+    const remaining = [...new Set(configured.length > 0 ? configured : DAILY_WORLD_MODULES)]
+        .filter(item => item !== selected);
+    store.dailyWorldRotation = { remaining, lastModule: selected };
 }
 
 function routeIncludesPlayer(value, playerName) {
     const player = text(playerName, 80);
     if (!player) return false;
+    const playerAliases = ['我', '本人', '玩家', '你', player];
     const explicitRoutes = MESSAGE_ROUTE_PATTERNS
         .map(pattern => value.match(pattern))
         .filter(Boolean);
     if (explicitRoutes.length > 0) {
-        return explicitRoutes.some(match => [match[1], match[2]].some(participant => participant.includes(player)));
+        return explicitRoutes.some(match => [match[1], match[2]].some(participant => {
+            const routeName = text(participant, 80);
+            return playerAliases.some(alias => routeName === alias || routeName.endsWith(alias));
+        }));
     }
-    if (value.includes(player) || /(?:我|你|本人).{0,24}(?:消息|信息|短信|私信|微信|发来|收到|回复)/u.test(value)) {
-        return true;
-    }
-    // “姐姐发来消息”这类叙事默认省略的是当前视角玩家；明确写出双方的第三方通讯已在上面排除。
-    return /(?:发来|回复了?).{0,16}(?:消息|信息|短信|私信|微信)/u.test(value);
+    const escapedPlayer = player.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(?:${escapedPlayer}|我|本人|玩家|你).{0,24}(?:收到|收到了|看见|点开|回复了?|回了).{0,16}${MESSAGE_MEDIUM}|${MESSAGE_MEDIUM}.{0,20}(?:发给|发向|送到)(?:${escapedPlayer}|我|本人|玩家|你)`, 'u').test(value);
 }
 
 export function detectPhoneWorldPlotModules(story, options = {}) {
@@ -278,9 +311,12 @@ export function detectPhoneWorldPlotModules(story, options = {}) {
     const messageEvidence = Array.isArray(options.messageEvidence)
         ? options.messageEvidence
         : extractPhoneMessageEvidence(source, options.playerName);
-    return WORLD_MODULES.filter(module => module === 'messages'
-        ? messageEvidence.length > 0
-        : PUBLIC_MODULE_EVIDENCE[module]?.test(source) === true);
+    const publicPlot = PUBLIC_STORY_EVIDENCE_PATTERN.test(source)
+        || Object.values(PUBLIC_MODULE_EVIDENCE).some(pattern => pattern.test(source));
+    return [
+        ...(publicPlot ? DAILY_WORLD_MODULES : []),
+        ...(messageEvidence.length > 0 ? ['messages'] : []),
+    ];
 }
 
 export function extractPhoneMessageEvidence(story, playerName = '') {
@@ -382,8 +418,8 @@ function buildSelectedModulePromptLines(request) {
     );
     if (selected.has('messages')) lines.push(
         '【通讯模块】',
-        'data 结构：{"evidenceQuote":"从插件提供的通讯证据中原样选一条","conversations":[{"conversationId":"现有会话ID","messages":[{"sender":"发送者","fromUser":false,"type":"text|voice|image|redpacket|group_redpacket|location|sticker","content":"内容","duration":1,"amount":0,"recipient":"","count":0,"stickerName":""}]}]}。',
-        '只能写入现有会话 ID；未建立联系人或群聊时宁可不选择 messages。每个会话可以生成 1–8 条围绕正文核心意思的自然连续消息，允许低风险补全，不得改变正文事实。',
+        'data 结构：{"evidenceQuote":"从插件提供的通讯证据中原样选一条","conversations":[{"conversationId":"已有会话ID或空","type":"direct|group","name":"对方角色本名或群名","identityKey":"匹配到的角色卡／世界书身份key或空","members":["群成员本名"],"messages":[{"sender":"发送者","fromUser":false,"type":"text|voice|image|redpacket|group_redpacket|location|sticker","content":"内容","duration":1,"amount":0,"recipient":"","count":0,"stickerName":""}]}]}。',
+        '优先复用现有会话 ID。没有对应会话时仍要输出：单聊 name 必须是玩家以外那一方的角色本名，能匹配可用身份时填写 identityKey；群聊必须填写群名和除玩家外至少两名 members。插件会自动创建会话并绑定角色卡或世界书设定，不要另造昵称。每个会话可以生成 1–8 条围绕正文核心意思的自然连续消息，允许低风险补全，不得改变正文事实。',
         '',
     );
     return lines;
@@ -399,20 +435,22 @@ function buildWorldPrompt(request) {
         request.storyContext.mapContext,
     ].filter(Boolean).join('\n\n').slice(0, 70_000);
     return [
-        '根据玩家本轮输入与紧接着生成的 AI 正文，有选择地更新同一部虚构故事里的手机世界。四个功能共用下面的设定和信息边界，但本轮绝不能为了填满四个功能而全部生成。',
+        '根据玩家本轮输入与紧接着生成的 AI 正文，更新同一部虚构故事里的手机世界。通讯与三个公共板块共用设定和信息边界，但遵守各自不同的触发规则。',
         '只输出 JSONL：每行一个完整 JSON 对象，不要 Markdown，不要解释。第一行必须是 decision，后面只输出本轮固定模块；未选模块连空结构也不要输出。',
         'decision 外壳：{"module":"decision","data":{"mode":"plot|daily","modules":["weibo|community|live|messages"]}}。内容模块外壳：{"module":"weibo","data":{...}}（替换模块名与 data）。每行必须能单独 JSON.parse，禁止跨行共用括号或逗号。',
         '',
         `【本轮固定模式】mode=${request.generationMode}；modules=${JSON.stringify(request.selectedModules)}。decision 必须逐字照此填写，不得自行增删或换模块。`,
         '【模式判定规则】',
-        'A. 剧情模式 plot：只要本轮两楼中的任意一楼明确出现以下某类手机／公共平台内容就成立，并且只选择有直接依据的模块；出现几个选几个。messages=明确收发消息；weibo=明确出现微博、博文、热搜、转评赞或微博上的主角／角色信息；community=明确出现论坛、社区帖子、CP榜、同人内容或其中的主角／角色信息；live=明确出现开播、直播间、直播节目或直播中的主角／角色信息。普通线下剧情不能拿来充当平台内容。',
-        'B. 单纯发生了适合传播的线下事件，不算平台依据。正文写旅行、吃饭、约会、争执、工作、地点或物品，不代表网友知道，也不允许据此生成相似主题的微博、社区或直播。',
-        `C. 日常模式 daily：若四个模块都没有上述明确依据，modules 必须且只能是 ["${request.dailyModule}"]。这是插件随机指定的唯一背景模块；不得选择 messages，也不得自行换模块。`,
+        'A. 公共剧情模式 plot：只要本轮出现已经进入公共信息场的事实，三个公共模块 weibo、community、live 就全部更新。无需正文精准点名某个平台。现代世界的发布、播出、报道、公开活动和公众目击，古代或奇幻世界的公告、告示、庆典、朝会、公开审理与传遍人群的消息，未来世界的公共网络、广播和全息发布，都按各自世界观视为公共传播。',
+        'B. 公开资格看事实的传播范围，不看题材或角色职业。私宅相处、私聊、内心、未公开计划、内部处理和无人知晓的行动仍然保密；即使人物是名人、权贵或公众角色，也不能仅凭身份假定大众已经知道。公共场合实际被看见的部分可以传播，看不见的动机、后台细节和回家后的行为不能传播。',
+        'B1. 剧情模式虽然固定更新三个公共板块，但每个板块必须使用该世界真实存在的公共传播形式来表达同一批已公开事实；不得借机泄露私人部分。直播模块若没有适合直接转播的剧情，可以生成围绕已公开事实的公开解说、访谈、评议或该世界合理的实时传播内容，不能把私密现场变成直播。',
+        `C. 日常模式 daily：若没有任何公共剧情事实，也没有玩家手机通讯证据，modules 必须且只能是 ["${request.dailyModule}"]。这是插件按存档轮换后指定的唯一背景模块；不得选择 messages，也不得自行换模块。三种公共模块每轮各出现一次，全部走完后才开始下一轮。`,
+        'C1. 若正文只明确发生了玩家手机通讯而没有公共事件，仍属于 plot，但只更新 messages；绝不能因为一条私人消息而生成三个公共板块。',
         'D. 日常模式内容必须与最新正文脱钩。不得借用本楼出现的地点、活动、职业、关系、物品或关键词换皮创作；从既有世界设定、玩家兴趣、当前公共内容之外的新虚构人物／作品／行业动态中独立生成，模拟世界自行运转。',
         'E. 剧情模式不追加随机背景模块；日常模式不生成任何剧情关联内容。',
         '',
         '【共同硬规则】',
-        '1. 玩家本轮输入与 AI 本轮正文共同构成本轮新增事实；前者不能因为没有在后者中复述就被忽略。只按上面的模式判定更新，不得把“可能适合公开讨论”当作已经在平台出现。',
+        '1. 玩家本轮输入与 AI 本轮正文共同构成本轮新增事实；前者不能因为没有在后者中复述就被忽略。公共事实不要求已经写出具体平台名称，但必须有发布、公布、播出、公开举行、公众目击或已经传播等依据；仅仅“可能适合公开讨论”仍不算公开。',
         '1a. 微博、社区和直播是独立运转的公共生态，不是主角专属应援墙。日常模式必须与主角和本轮正文无关。',
         '1b. “当前公共内容摘要”是查重清单，不是让你仿写的题库。新内容不得照抄已有标题，也不得重复已有 CP 的同一成员组合、同人梗或直播主题。',
         '2. 正文不是给大众看的全知档案。路人、网友、媒体、粉丝和普通工作人员只知道正文明确写成“已经公开、已经发布、已经播出、已经被拍到或已经在平台出现”的信息；模型知道不等于角色知道，更不等于大众知道。',
@@ -433,6 +471,7 @@ function buildWorldPrompt(request) {
         `【本轮两楼剧情（玩家输入 + AI 正文；只用于核对明确证据，它们本身绝不是公开信息）】\n${request.storyText}`,
         `【共同故事与世界设定（只用于保持世界观；其中的私人设定不得公开）】\n${sharedContext || '（无额外设定）'}`,
         `【现有手机会话】\n${JSON.stringify(request.conversations)}`,
+        `【可自动绑定的角色身份】\n${JSON.stringify(request.messageIdentityDirectory)}`,
         `【当前聊天身份】\n${JSON.stringify(request.messageProfile)}`,
         `【已创建角色公共账号】\n${JSON.stringify(request.roleAccounts)}`,
         `【玩家公开资料】\n${JSON.stringify(request.profile)}`,
@@ -545,7 +584,75 @@ function applyLiveModule(settings, data, sourceKey, now) {
     };
 }
 
-function applyMessagesModule(store, data, messageEvidence, sourceKey) {
+function normalizedPersonName(value) {
+    return text(value, 120).toLocaleLowerCase().replace(/[\s\p{P}\p{S}]+/gu, '');
+}
+
+function identityFromSource(source) {
+    if (!source) return normalizePhoneIdentity();
+    return normalizePhoneIdentity({
+        mode: source.mode,
+        sourceKey: source.key,
+        label: source.label,
+        persona: source.persona,
+    });
+}
+
+function findIdentitySource(value, identities) {
+    const requestedKey = text(value?.identityKey, 500);
+    return identities.find(source => source.key === requestedKey)
+        ?? findPhoneIdentitySourceForName(value?.name, identities)
+        ?? null;
+}
+
+function sameMembers(left, right) {
+    const normalize = values => [...new Set((Array.isArray(values) ? values : [])
+        .map(normalizedPersonName).filter(Boolean))].sort();
+    return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
+}
+
+function resolveOrCreateMessageConversation(store, value, identities, playerName) {
+    const requestedId = text(value?.conversationId, 120);
+    let conversation = store.conversations.find(item => item.id === requestedId);
+    if (conversation) return conversation;
+
+    const type = value?.type === 'group' ? 'group' : 'direct';
+    const requestedName = text(value?.name ?? value?.targetName ?? value?.conversationName, 120);
+    const identitySource = findIdentitySource({ ...value, name: requestedName }, identities);
+    const identityKey = text(value?.identityKey, 500) || text(identitySource?.key, 500);
+    const members = [...new Set((Array.isArray(value?.members) ? value.members : [])
+        .map(member => text(member, 80))
+        .filter(member => member && normalizedPersonName(member) !== normalizedPersonName(playerName)))];
+    conversation = store.conversations.find(item => {
+        if (item.type !== type) return false;
+        if (identityKey && item.identity?.sourceKey === identityKey) return true;
+        if (type === 'group' && members.length >= 2 && sameMembers(item.members, members)) return true;
+        return requestedName && normalizedPersonName(item.name) === normalizedPersonName(requestedName);
+    });
+    if (conversation) return conversation;
+
+    if (type === 'group') {
+        if (!requestedName || members.length < 2) return null;
+        const memberIdentities = Object.fromEntries(members.map(member => [
+            member,
+            identityFromSource(findPhoneIdentitySourceForName(member, identities)),
+        ]));
+        return createPhoneConversation(store, {
+            type,
+            name: requestedName,
+            members,
+            memberIdentities,
+        });
+    }
+    if (!requestedName || normalizedPersonName(requestedName) === normalizedPersonName(playerName)) return null;
+    return createPhoneConversation(store, {
+        type,
+        name: requestedName,
+        identity: identityFromSource(identitySource),
+    });
+}
+
+function applyMessagesModule(store, data, messageEvidence, sourceKey, identitySources = [], playerName = '') {
     const conversations = Array.isArray(data?.conversations) ? data.conversations : [];
     if (conversations.length === 0) return { messages: [] };
     if (!Array.isArray(messageEvidence) || messageEvidence.length === 0) {
@@ -553,10 +660,17 @@ function applyMessagesModule(store, data, messageEvidence, sourceKey) {
     }
     const appended = [];
     for (const value of conversations) {
-        const conversation = store.conversations.find(item => item.id === text(value?.conversationId, 120));
+        const generatedMessages = (Array.isArray(value?.messages) ? value.messages : []).slice(0, 8);
+        if (generatedMessages.length === 0) continue;
+        const conversation = resolveOrCreateMessageConversation(
+            store,
+            value,
+            Array.isArray(identitySources) ? identitySources : [],
+            playerName,
+        );
         if (!conversation) continue;
         const roundId = createPhoneRoundId();
-        for (const message of (Array.isArray(value?.messages) ? value.messages : []).slice(0, 8)) {
+        for (const message of generatedMessages) {
             const requestedSender = text(message?.sender, 80);
             const fromUser = message?.fromUser === true
                 || message?.direction === 'outgoing'
@@ -633,7 +747,8 @@ async function performPhoneWorldStoryUpdate(phoneSession, context, messageId, op
     const swipeIndex = selectedSwipeIndex(message);
     const chatId = getPhoneChatId(context);
     const sourceKey = phoneWorldSourceKey(context, messageId, message);
-    if (options.force !== true && store.storyBatches?.some(batch => batch.sourceKey === sourceKey)) {
+    const existingBatch = store.storyBatches?.find(batch => batch.sourceKey === sourceKey);
+    if (options.force !== true && existingBatch) {
         return { duplicate: true };
     }
 
@@ -659,8 +774,24 @@ async function performPhoneWorldStoryUpdate(phoneSession, context, messageId, op
     const messageEvidence = extractPhoneMessageEvidence(latestStory, playerName);
     const plotModules = detectPhoneWorldPlotModules(latestStory, { playerName, messageEvidence });
     const generationMode = plotModules.length > 0 ? 'plot' : 'daily';
-    const dailyModule = selectDailyPhoneWorldModule(options.random);
+    const previousDailyModule = options.force === true
+        && (existingBatch?.generationMode === 'daily'
+            || (!existingBatch?.generationMode
+                && existingBatch?.modules?.length === 1
+                && DAILY_WORLD_MODULES.includes(existingBatch.modules[0])))
+        ? existingBatch.modules.find(module => DAILY_WORLD_MODULES.includes(module))
+        : '';
+    const dailyModule = previousDailyModule
+        || selectDailyPhoneWorldModule(store.dailyWorldRotation, options.random);
     const selectedModules = plotModules.length > 0 ? plotModules : [dailyModule];
+    let messageIdentitySources = [];
+    if (selectedModules.includes('messages')) {
+        try {
+            messageIdentitySources = await (options.loadIdentitySources ?? loadPhoneIdentitySources)(context);
+        } catch (error) {
+            console.warn('[Memory Augment] Phone message identities are unavailable; conversations can still be created without binding.', error);
+        }
+    }
     const recentStory = generationMode === 'plot'
         ? (Array.isArray(context.chat) ? context.chat : []).slice(-6)
             .map(item => text(item?.mes, 5000)).filter(Boolean)
@@ -678,6 +809,7 @@ async function performPhoneWorldStoryUpdate(phoneSession, context, messageId, op
             snapshot,
             store,
             recentStory,
+            messageId,
             includePhoneMemory: false,
         }, options.contextClients ?? {})
         : {
@@ -720,6 +852,13 @@ async function performPhoneWorldStoryUpdate(phoneSession, context, messageId, op
         generationMode,
         selectedModules,
         messageEvidence,
+        messageIdentitySources,
+        messageIdentityDirectory: messageIdentitySources.map(source => ({
+            key: source.key,
+            mode: source.mode,
+            label: source.label,
+            matchNames: source.matchNames,
+        })),
         playerName,
     };
     const generate = options.generate ?? generatePhoneWorldCompletion;
@@ -838,10 +977,17 @@ async function performPhoneWorldStoryUpdate(phoneSession, context, messageId, op
     const messageData = parsed.records.get('messages');
     if (messageData) {
         try {
-            const messageItems = applyMessagesModule(store, messageData, request.messageEvidence, sourceKey);
+            const messageItems = applyMessagesModule(
+                store,
+                messageData,
+                request.messageEvidence,
+                sourceKey,
+                request.messageIdentitySources,
+                request.playerName,
+            );
             Object.assign(items, messageItems);
             if (messageItems.messages.length > 0) appliedModules.push('messages');
-            else moduleWarnings.push('messages：没有找到可写入的现有会话。');
+            else moduleWarnings.push('messages：没有取得足够的收发对象信息，无法写入或自动创建会话。');
         } catch (error) {
             moduleErrors.push({ module: 'messages', error });
         }
@@ -857,10 +1003,14 @@ async function performPhoneWorldStoryUpdate(phoneSession, context, messageId, op
         sourceKey,
         messageId: String(messageId),
         swipeIndex,
+        generationMode,
         modules: appliedModules,
         items,
         createdAt: request.now,
     });
+    if (generationMode === 'daily' && appliedModules.includes(dailyModule)) {
+        commitDailyPhoneWorldModule(store, dailyModule);
+    }
     store.worldGeneration = {
         status: moduleErrors.length > 0 || moduleWarnings.length > 0 ? 'partial' : 'ready',
         messageId: String(messageId),

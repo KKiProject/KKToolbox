@@ -1,4 +1,4 @@
-import { retrieveAndInject } from './context-manager.js';
+import { getSharedPostGenerationRecall, retrieveAndInject } from './context-manager.js';
 import {
     applyStoryStatusOptions,
     formatStoryStatusMessage,
@@ -223,6 +223,7 @@ export async function preparePhoneStoryContext(payload = {}, clients = {}) {
     const snapshot = payload?.snapshot ?? {};
     const store = payload?.store ?? {};
     const recentStory = payload?.recentStory ?? [];
+    const storyMessageId = Math.trunc(Number(payload?.messageId));
     const includePhoneMemory = payload?.includePhoneMemory !== false;
     const query = buildPhoneRetrievalQuery(snapshot, recentStory);
     let helpers = { powerUser: clients.powerUser ?? {} };
@@ -235,6 +236,15 @@ export async function preparePhoneStoryContext(payload = {}, clients = {}) {
     const retrieveStoryContext = async () => {
         if (!query) return '';
         try {
+            if (Number.isInteger(storyMessageId) && storyMessageId >= 0) {
+                const shared = await (clients.getSharedPostGenerationRecall ?? getSharedPostGenerationRecall)(
+                    settings,
+                    context,
+                    storyMessageId,
+                    clients.retrievalClients ?? {},
+                );
+                return uniqueText((shared?.fragments ?? []).map(item => item?.text), 32000);
+            }
             const queryChat = [{ role: 'user', is_user: true, is_system: false, content: query, mes: query }];
             await (clients.retrieveAndInject ?? retrieveAndInject)(
                 queryChat,

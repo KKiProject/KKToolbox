@@ -1,6 +1,6 @@
 import { cleanPhoneText as cleanText } from './phone-utils.js';
 
-export const PHONE_STORE_VERSION = 6;
+export const PHONE_STORE_VERSION = 7;
 export const PHONE_MESSAGE_TYPES = Object.freeze([
     'text',
     'voice',
@@ -82,6 +82,7 @@ export function createEmptyPhoneStore(chatId = '') {
         phone: createEmptyScopedPhoneState(profile),
         activity: { events: [] },
         storyBatches: [],
+        dailyWorldRotation: { remaining: ['weibo', 'community', 'live'], lastModule: '' },
         worldGeneration: {
             status: 'idle',
             messageId: '',
@@ -390,6 +391,8 @@ export function normalizePhoneStore(value, chatId = '') {
                 sourceKey: cleanText(batch?.sourceKey, 500),
                 messageId: cleanText(batch?.messageId, 120),
                 swipeIndex: Math.max(0, Math.trunc(Number(batch?.swipeIndex) || 0)),
+                generationMode: batch?.generationMode === 'plot' ? 'plot'
+                    : batch?.generationMode === 'daily' ? 'daily' : '',
                 modules: Array.isArray(batch?.modules)
                     ? [...new Set(batch.modules.map(item => cleanText(item, 40)).filter(Boolean))]
                     : [],
@@ -399,6 +402,16 @@ export function normalizePhoneStore(value, chatId = '') {
                 ])),
                 createdAt: Number(batch?.createdAt) || Date.now(),
             })).filter(batch => batch.sourceKey).slice(-200),
+        dailyWorldRotation: {
+            remaining: [...new Set((Array.isArray(store?.dailyWorldRotation?.remaining)
+                ? store.dailyWorldRotation.remaining
+                : ['weibo', 'community', 'live'])
+                .map(item => cleanText(item, 40))
+                .filter(item => ['weibo', 'community', 'live'].includes(item)))],
+            lastModule: ['weibo', 'community', 'live'].includes(cleanText(store?.dailyWorldRotation?.lastModule, 40))
+                ? cleanText(store.dailyWorldRotation.lastModule, 40)
+                : '',
+        },
         worldGeneration: {
             status: ['idle', 'generating', 'ready', 'partial', 'error'].includes(store?.worldGeneration?.status)
                 ? store.worldGeneration.status

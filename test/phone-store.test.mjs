@@ -91,6 +91,7 @@ test('the complete phone profile and app state stay inside the chat-scoped file'
     store.profile.nickname = '夜酱';
     store.phone.profile.nickname = '夜酱';
     store.phone.community = { forumThreads: [{ id: 'thread-1', title: '当前存档的话题' }] };
+    store.dailyWorldRotation = { remaining: ['community', 'live'], lastModule: 'weibo' };
     createPhoneConversation(store, { type: 'direct', name: '经纪人' });
 
     await savePhoneStore(store, chatContext);
@@ -99,6 +100,7 @@ test('the complete phone profile and app state stay inside the chat-scoped file'
     assert.equal(restored.profile.nickname, '夜酱');
     assert.equal(restored.phone.profile.nickname, '夜酱');
     assert.equal(restored.phone.community.forumThreads[0].title, '当前存档的话题');
+    assert.deepEqual(restored.dailyWorldRotation, { remaining: ['community', 'live'], lastModule: 'weibo' });
     assert.equal(restored.conversations[0].name, '经纪人');
     assert.equal(fixture.files.size, 1);
     assert.equal(Object.hasOwn([...fixture.files.values()][0], 'profile'), true);

@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+    clearSharedRecallCache,
     findHistoricalInsertionIndex,
     formatMemoryMessage,
+    getSharedPostGenerationRecall,
     memoryAugmentInterceptor,
     retrieveAndInject,
 } from '../context-manager.js';
@@ -568,4 +570,80 @@ test('missing embedding configuration leaves the ST-provided generation chat int
 
     await memoryAugmentInterceptor(chat, 8192, () => undefined, 'normal');
     assert.deepEqual(chat.map(message => message.mes), createChat(8).map(message => message.mes));
+});
+
+test('post-generation barrage and phone consumers share one search and one rerank per candidate pool', async () => {
+    clearSharedRecallCache();
+    const settings = createSettings({ reranker: true, semanticWorldInfo: true, topK: 6, topN: 2 });
+    settings.barrage = { recentMessages: 3 };
+    settings.rag.activeWorldInfoBookIds = ['PublicBook'];
+    const context = {
+        chatId: 'shared-post-story',
+        chat: [
+            { is_user: true, mes: '玩家输入。' },
+            { is_user: false, mes: '最新正文。' },
+        ],
+    };
+    let searches = 0;
+    let reranks = 0;
+    let releaseSearch;
+    const searchGate = new Promise(resolve => { releaseSearch = resolve; });
+    const clients = {
+        async searchMemory() {
+            searches++;
+            await searchGate;
+            return {
+                chatResults: [{ id: 'history', text: '历史片段' }],
+                worldInfoResults: [{ id: 'world', text: '世界设定片段' }],
+            };
+        },
+        async rerankMemory(payload) {
+            reranks++;
+            return { results: payload.candidates.slice(0, payload.topN) };
+        },
+    };
+
+    const barrageRecall = getSharedPostGenerationRecall(settings, context, 1, clients);
+    const phoneRecall = getSharedPostGenerationRecall(settings, context, 1, clients);
+    releaseSearch();
+    const [barrage, phone] = await Promise.all([barrageRecall, phoneRecall]);
+
+    assert.equal(searches, 1);
+    assert.equal(reranks, 2);
+    assert.deepEqual(phone.fragments, barrage.fragments);
+    assert.deepEqual(phone.fragments.map(item => item.text), ['世界设定片段', '历史片段']);
+    await getSharedPostGenerationRecall(settings, context, 1, clients);
+    assert.equal(searches, 1, 'same settled story reuses the completed shared result');
+    assert.equal(reranks, 2);
+});
+
+test('same player-floor regeneration reuses the completed pre-generation recall bundle', async () => {
+    clearSharedRecallCache();
+    const settings = createSettings({ reranker: true, semanticWorldInfo: false, topK: 5, topN: 2 });
+    const context = { chatId: 'shared-pre-story', chat: createChat(6) };
+    let searches = 0;
+    let reranks = 0;
+    const clients = {
+        sharedCacheKey: 'pre:fixed-player-floor',
+        async getSummaries() { return []; },
+        async searchMemory() {
+            searches++;
+            return { chatResults: [{ id: 'old', text: '同楼重刷应复用的历史' }], worldInfoResults: [] };
+        },
+        async rerankMemory(payload) {
+            reranks++;
+            return { results: payload.candidates.slice(0, payload.topN) };
+        },
+    };
+    const first = createChat(6);
+    const second = createChat(6);
+
+    const firstResult = await retrieveAndInject(first, settings, context, clients);
+    const secondResult = await retrieveAndInject(second, settings, context, clients);
+
+    assert.equal(searches, 1);
+    assert.equal(reranks, 1);
+    assert.equal(secondResult.cachedRecall, true);
+    assert.equal(first[0].mes, second[0].mes);
+    assert.match(second[0].mes, /同楼重刷应复用的历史/);
 });

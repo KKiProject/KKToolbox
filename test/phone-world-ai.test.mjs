@@ -7,6 +7,7 @@ import {
     getPhoneWorldOutputTokenBudget,
     inferPhonePublicWorldFrame,
     isPhoneWorldAutomaticUpdateEnabled,
+    extractPhoneMessageEvidence,
     parsePhoneWorldRecords,
     removePhoneWorldStoryBatch,
     requestPhoneWorldStoryUpdate,
@@ -32,7 +33,7 @@ test('one phone story turn includes both the player floor and its assistant repl
     const turn = buildPhoneStoryTurnText(context, 2);
     assert.match(turn, /【玩家本轮输入】[\s\S]*打开微博/);
     assert.match(turn, /【AI本轮正文】[\s\S]*积了不少新内容/);
-    assert.deepEqual(detectPhoneWorldPlotModules(turn), ['weibo', 'community']);
+    assert.deepEqual(detectPhoneWorldPlotModules(turn), ['weibo', 'community', 'live']);
 });
 
 test('story-side phone generation selects every module explicitly present on the player floor', async () => {
@@ -71,7 +72,7 @@ test('story-side phone generation selects every module explicitly present on the
         },
     }), /只检查本轮请求/);
 
-    assert.match(prompt, /mode=plot；modules=\["weibo","community"\]/);
+    assert.match(prompt, /mode=plot；modules=\["weibo","community","live"\]/);
     assert.match(prompt, /【玩家本轮输入】[\s\S]*微博和社区/);
     assert.match(prompt, /【AI本轮正文】[\s\S]*继续浏览手机/);
 });
@@ -141,6 +142,54 @@ test('daily public-world generation cannot see private story, character names, o
     assert.doesNotMatch(inferPhonePublicWorldFrame(context), /顾知夏|找妹妹|秘密离开/);
 });
 
+test('daily public modules persist a full no-repeat rotation before starting a new cycle', async () => {
+    const store = createEmptyPhoneStore('phone-world-daily-rotation');
+    store.scopedInitialized = true;
+    store.phone.weibo = { initialized: true, roleAccounts: [], posts: [], feedPostIds: [], hotTopics: [] };
+    store.phone.community = {};
+    store.phone.live = {};
+    const settings = {
+        apis: { barrage: { url: 'https://example.com/v1', apiKey: 'key', model: 'model' } },
+        development: { enabled: false },
+        map: { includeInPrompt: false },
+        phone: store.phone,
+    };
+    const context = {
+        getCurrentChatId: () => store.chatId,
+        chatMetadata: {},
+        chat: Array.from({ length: 4 }, (_, index) => ({ is_user: false, mes: `两人在家安静度过私人日常${index + 1}。` })),
+    };
+    const selected = [];
+    const generate = async request => {
+        const module = request.prompt.includes('modules=["weibo"]') ? 'weibo'
+            : request.prompt.includes('modules=["community"]') ? 'community' : 'live';
+        selected.push(module);
+        const data = module === 'weibo' ? {
+            posts: [{ id: `rotation-weibo-${selected.length}`, authorType: 'npc', author: '路人', content: '独立背景消息。' }],
+            hotTopics: [],
+        } : module === 'community' ? {
+            forumThreads: [{ id: 'rotation-community', title: '独立背景讨论' }],
+            cpRankings: [],
+            fanWorks: [],
+        } : {
+            official: [{ id: 'rotation-live', title: '独立背景直播', scenes: [{ text: '公开画面。' }] }],
+            private: [],
+        };
+        return { content: [
+            JSON.stringify({ module: 'decision', data: { mode: 'daily', modules: [module] } }),
+            JSON.stringify({ module, data }),
+        ].join('\n') };
+    };
+    const phoneSession = { settings, ensure: async () => store, save: async () => store };
+
+    for (let messageId = 0; messageId < 4; messageId++) {
+        await requestPhoneWorldStoryUpdate(phoneSession, context, messageId, { random: () => 0, generate });
+    }
+
+    assert.deepEqual(selected, ['weibo', 'community', 'live', 'weibo']);
+    assert.deepEqual(store.dailyWorldRotation, { remaining: ['community', 'live'], lastModule: 'weibo' });
+});
+
 test('phone world parser accepts arrays, module wrappers, and direct four-module objects', () => {
     const direct = parsePhoneWorldRecords(JSON.stringify({
         weibo: { posts: [] },
@@ -177,13 +226,14 @@ test('phone world parser keeps the mode decision separate from generated modules
     const decisionOnly = parsePhoneWorldRecords('{"module":"decision","data":{"mode":"daily","modules":["weibo"]}}');
     assert.deepEqual(decisionOnly.decision, { mode: 'daily', modules: ['weibo'] });
     assert.equal(decisionOnly.records.size, 0);
-    assert.equal(selectDailyPhoneWorldModule(() => 0), 'weibo');
-    assert.equal(selectDailyPhoneWorldModule(() => 0.34), 'community');
-    assert.equal(selectDailyPhoneWorldModule(() => 0.99), 'live');
+    assert.equal(selectDailyPhoneWorldModule({ remaining: ['weibo', 'community', 'live'] }, () => 0), 'weibo');
+    assert.equal(selectDailyPhoneWorldModule({ remaining: ['community', 'live'] }, () => 0), 'community');
+    assert.equal(selectDailyPhoneWorldModule({ remaining: ['live'] }, () => 0), 'live');
+    assert.equal(selectDailyPhoneWorldModule({ remaining: [] }, () => 0.34), 'community');
     assert.deepEqual(detectPhoneWorldPlotModules('她决定明天去海边度假，顺便去社区服务中心吃顿饭。', { playerName: '夜酱' }), []);
     assert.deepEqual(
         detectPhoneWorldPlotModules('微博热搜出现了她的名字，姐姐随后发来消息叫她下楼。', { playerName: '夜酱' }),
-        ['weibo', 'messages'],
+        ['weibo', 'community', 'live'],
     );
     assert.deepEqual(
         detectPhoneWorldPlotModules('她按下内线拨号键，电话接起，听筒里传来总助的声音：“季董。”通话随后切断。', { playerName: '朝汐' }),
@@ -203,7 +253,24 @@ test('phone world parser keeps the mode decision separate from generated modules
     );
     assert.deepEqual(
         detectPhoneWorldPlotModules('季秋辞给总助发微信。微博随后发布了公开公告。', { playerName: '朝汐' }),
-        ['weibo'],
+        ['weibo', 'community', 'live'],
+    );
+    assert.deepEqual(extractPhoneMessageEvidence('姐姐发来消息叫妹妹下楼。', '朝汐'), []);
+    assert.deepEqual(extractPhoneMessageEvidence('季秋辞给总助发微信，朝汐就在旁边。', '朝汐'), []);
+    assert.deepEqual(extractPhoneMessageEvidence('季秋辞给朝汐发微信，叫她十分钟后下楼。', '朝汐'), [
+        '季秋辞给朝汐发微信，叫她十分钟后下楼',
+    ]);
+    assert.deepEqual(
+        detectPhoneWorldPlotModules('新作MV正式发布，预告同时面向公众上线。', { playerName: '朝汐' }),
+        ['weibo', 'community', 'live'],
+    );
+    assert.deepEqual(
+        detectPhoneWorldPlotModules('王城门口张贴了新告示，消息很快传遍全城。', { playerName: '朝汐' }),
+        ['weibo', 'community', 'live'],
+    );
+    assert.deepEqual(
+        detectPhoneWorldPlotModules('两人在家说起尚未公开的新作计划。', { playerName: '朝汐' }),
+        [],
     );
     assert.equal(getPhoneWorldOutputTokenBudget(['messages']), 4096);
     assert.equal(getPhoneWorldOutputTokenBudget(['weibo']), 10_000);
@@ -379,7 +446,7 @@ test('one story-side request updates all public apps and only imports evidence-b
         characterId: 0,
         characters: [{ name: '艾莉娅', description: '演员。', data: {} }],
         chatMetadata: {},
-        chat: [{ is_user: false, mes: '散场后，沈越发来消息：“今晚十点开会。”微博热搜出现艾莉娅的采访，论坛正在讨论她的新片，直播间正在播出发布会回放。' }],
+        chat: [{ is_user: false, mes: '散场后，沈越给夜酱发微信：“今晚十点开会。”微博热搜出现艾莉娅的采访，论坛正在讨论她的新片，直播间正在播出发布会回放。' }],
     };
     const comments = prefix => Array.from({ length: 5 }, (_, index) => ({
         id: `${prefix}-comment-${index}`, author: `网友${index}`, content: `${prefix}相关评论${index}`, likes: 10 - index,
@@ -421,13 +488,13 @@ test('one story-side request updates all public apps and only imports evidence-b
                 weibo: '微博热搜出现艾莉娅的采访',
                 community: '论坛正在讨论她的新片',
                 live: '直播间正在播出发布会回放',
-                messages: '沈越发来消息',
+                messages: '沈越给夜酱发微信',
             },
         } },
         { module: 'weibo', data: weibo },
         { module: 'community', data: { forumThreads, cpRankings, fanWorks } },
         { module: 'live', data: { official: [stream('world-official', 'official')], private: [stream('world-private', 'private')] } },
-        { module: 'messages', data: { evidenceQuote: '沈越发来消息', conversations: [{ conversationId: direct.id, messages: [{ sender: '沈越', type: 'text', content: '今晚十点开会。' }] }] } },
+        { module: 'messages', data: { evidenceQuote: '沈越给夜酱发微信', conversations: [{ conversationId: direct.id, messages: [{ sender: '沈越', type: 'text', content: '今晚十点开会。' }] }] } },
     ].map(record => JSON.stringify(record)).join('\n');
     let prompt = '';
     const phoneSession = { settings, ensure: async () => store, save: async () => store };
@@ -711,4 +778,73 @@ test('evidence-backed story messages preserve whether the player sent or receive
     assert.equal(saved.sender, '季宁');
     assert.equal(saved.fromUser, true);
     assert.equal(saved.content, '给她介绍个工作。');
+});
+
+test('an evidence-backed player message automatically creates and binds a missing character conversation', async () => {
+    const store = createEmptyPhoneStore('phone-world-auto-contact');
+    store.scopedInitialized = true;
+    store.profile.nickname = '季宁';
+    store.phone.profile = { nickname: '季宁', accountId: 'main', isMask: false };
+    store.phone.weibo = { initialized: true, roleAccounts: [] };
+    const settings = {
+        apis: { barrage: { url: 'https://example.com/v1', apiKey: 'key', model: 'model' } },
+        development: { enabled: false },
+        map: { includeInPrompt: false },
+        phone: store.phone,
+    };
+    const context = {
+        getCurrentChatId: () => store.chatId,
+        name1: '季宁',
+        characterId: 0,
+        characters: [{ name: '艾莉娅', description: '艾莉娅是一名演员。', data: {} }],
+        chatMetadata: {},
+        chat: [{ is_user: false, mes: '艾莉娅给季宁发微信：“我到门口了。”' }],
+    };
+    let prompt = '';
+    const phoneSession = { settings, ensure: async () => store, save: async () => store };
+
+    const result = await requestPhoneWorldStoryUpdate(phoneSession, context, 0, {
+        loadIdentitySources: async () => [{
+            key: 'character_card',
+            mode: 'character_card',
+            label: '角色卡主角 · 艾莉娅',
+            matchNames: ['艾莉娅'],
+            persona: '【角色名】\n艾莉娅\n\n【角色描述】\n艾莉娅是一名演员。',
+        }],
+        generate: async request => {
+            prompt = request.prompt;
+            return { content: [
+                JSON.stringify({ module: 'decision', data: { mode: 'plot', modules: ['messages'] } }),
+                JSON.stringify({
+                    module: 'messages',
+                    data: {
+                        evidenceQuote: '艾莉娅给季宁发微信',
+                        conversations: [{
+                            conversationId: '',
+                            type: 'direct',
+                            name: '艾莉娅',
+                            identityKey: 'character_card',
+                            messages: [{ sender: '艾莉娅', fromUser: false, type: 'text', content: '我到门口了。' }],
+                        }],
+                    },
+                }),
+            ].join('\n') };
+        },
+        contextClients: {
+            getPowerUser: () => ({}),
+            getMaxContextSize: () => 32768,
+            getWorldInfoPrompt: async () => ({}),
+            retrieveAndInject: async () => undefined,
+        },
+    });
+
+    assert.deepEqual(result.modules, ['messages']);
+    assert.equal(store.conversations.length, 1);
+    assert.equal(store.conversations[0].name, '艾莉娅');
+    assert.equal(store.conversations[0].identity.mode, 'character_card');
+    assert.equal(store.conversations[0].identity.sourceKey, 'character_card');
+    assert.equal(store.conversations[0].messages[0].content, '我到门口了。');
+    assert.match(prompt, /没有对应会话时仍要输出/);
+    assert.match(prompt, /角色卡主角 · 艾莉娅/);
+    assert.doesNotMatch(prompt, /艾莉娅是一名演员。.*可自动绑定的角色身份/);
 });

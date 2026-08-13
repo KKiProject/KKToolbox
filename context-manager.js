@@ -27,6 +27,78 @@ const SUMMARY_TOP_N = 3;
 const RECENT_SUMMARY_COUNT = 5;
 const CHAT_GLOBAL_FALLBACK_K = 3;
 const summarySyncSignatures = new Map();
+const sharedRecallBundles = new Map();
+const postGenerationRecallPromises = new Map();
+const postGenerationRecallResults = new Map();
+const recallClientIds = new WeakMap();
+let nextRecallClientId = 1;
+const SHARED_RECALL_TTL_MS = 10 * 60 * 1000;
+const SHARED_RECALL_LIMIT = 24;
+
+function cloneRecallValue(value) {
+    if (typeof globalThis.structuredClone === 'function') return globalThis.structuredClone(value);
+    return JSON.parse(JSON.stringify(value));
+}
+
+function stableRecallHash(value) {
+    let hash = 2166136261;
+    for (const character of String(value ?? '')) {
+        hash ^= character.codePointAt(0);
+        hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function pruneSharedRecallCache(now = Date.now()) {
+    for (const [key, record] of sharedRecallBundles) {
+        if (now - Number(record?.createdAt ?? 0) > SHARED_RECALL_TTL_MS) sharedRecallBundles.delete(key);
+    }
+    while (sharedRecallBundles.size > SHARED_RECALL_LIMIT) {
+        sharedRecallBundles.delete(sharedRecallBundles.keys().next().value);
+    }
+    for (const [key, record] of postGenerationRecallResults) {
+        if (now - Number(record?.createdAt ?? 0) > SHARED_RECALL_TTL_MS) postGenerationRecallResults.delete(key);
+    }
+    while (postGenerationRecallResults.size > SHARED_RECALL_LIMIT) {
+        postGenerationRecallResults.delete(postGenerationRecallResults.keys().next().value);
+    }
+}
+
+function getSharedRecallBundle(key) {
+    const cacheKey = String(key ?? '').trim();
+    if (!cacheKey) return null;
+    pruneSharedRecallCache();
+    const record = sharedRecallBundles.get(cacheKey);
+    if (!record) return null;
+    sharedRecallBundles.delete(cacheKey);
+    sharedRecallBundles.set(cacheKey, record);
+    return cloneRecallValue(record.bundle);
+}
+
+function saveSharedRecallBundle(key, bundle) {
+    const cacheKey = String(key ?? '').trim();
+    if (!cacheKey) return;
+    sharedRecallBundles.delete(cacheKey);
+    sharedRecallBundles.set(cacheKey, { createdAt: Date.now(), bundle: cloneRecallValue(bundle) });
+    pruneSharedRecallCache();
+}
+
+export function clearSharedRecallCache() {
+    sharedRecallBundles.clear();
+    postGenerationRecallPromises.clear();
+    postGenerationRecallResults.clear();
+}
+
+function recallClientSignature(clients = {}) {
+    const keys = ['searchMemory', 'rerankMemory', 'getSummaries', 'syncSummaryMemory', 'searchSummaryMemory'];
+    const ids = keys.map(key => {
+        const candidate = clients?.[key];
+        if (typeof candidate !== 'function') return `${key}:default`;
+        if (!recallClientIds.has(candidate)) recallClientIds.set(candidate, nextRecallClientId++);
+        return `${key}:${recallClientIds.get(candidate)}`;
+    });
+    return ids.join('|');
+}
 
 async function measureGenerationStage(callback, stage, operation) {
     const startedAt = globalThis.performance?.now?.() ?? Date.now();
@@ -314,6 +386,30 @@ async function selectRecallResults({
     }
 }
 
+function applyRecallBundle(chat, bundle = {}) {
+    const historicalMessage = bundle?.historicalMessage ? cloneRecallValue(bundle.historicalMessage) : null;
+    const worldInfoMessage = bundle?.worldInfoMessage ? cloneRecallValue(bundle.worldInfoMessage) : null;
+    if (!historicalMessage && !worldInfoMessage) {
+        return { ...(bundle?.result ?? {}), injected: false, reason: 'filtered' };
+    }
+    let insertionIndex = null;
+    if (historicalMessage) {
+        insertionIndex = findHistoricalInsertionIndex(chat);
+        chat.splice(insertionIndex, 0, historicalMessage);
+    }
+    let worldInfoInsertionIndex = null;
+    if (worldInfoMessage) {
+        worldInfoInsertionIndex = Math.max(0, chat.length - 2);
+        chat.splice(worldInfoInsertionIndex, 0, worldInfoMessage);
+    }
+    return {
+        ...(bundle?.result ?? {}),
+        injected: true,
+        insertionIndex,
+        worldInfoInsertionIndex,
+    };
+}
+
 export async function retrieveAndInject(chat, settings, context, clients = {}) {
     if (!Array.isArray(chat) || chat.length === 0) {
         return { injected: false, reason: 'empty-chat' };
@@ -329,12 +425,18 @@ export async function retrieveAndInject(chat, settings, context, clients = {}) {
         return { injected: false, reason: 'missing-input' };
     }
 
-    const topK = clampInteger(settings?.rag?.topK, 25, 1, 100);
-    const topN = clampInteger(settings?.rag?.topN, 7, 1, Math.min(50, topK));
+    const topK = clampInteger(settings?.rag?.topK, 20, 1, 100);
+    const topN = clampInteger(settings?.rag?.topN, 6, 1, Math.min(50, topK));
     const threshold = clampNumber(settings?.rag?.rerankerThreshold, 0.6, 0, 1);
     const recentMessages = clampInteger(settings?.context?.recentMessages, 20, 1, 1000);
     const persistentChatLength = Array.isArray(context?.chat) ? context.chat.length : chat.length;
-    const chatMessageIdBefore = Math.max(0, persistentChatLength - recentMessages);
+    const requestedMessageIdBefore = Math.trunc(Number(clients.chatMessageIdBefore));
+    const chatMessageIdBefore = Number.isInteger(requestedMessageIdBefore) && requestedMessageIdBefore >= 0
+        ? requestedMessageIdBefore
+        : Math.max(0, persistentChatLength - recentMessages);
+    const sharedCacheKey = String(clients.sharedCacheKey ?? '').trim();
+    const cachedBundle = getSharedRecallBundle(sharedCacheKey);
+    if (cachedBundle) return { ...applyRecallBundle(chat, cachedBundle), cachedRecall: true };
     const search = clients.searchMemory ?? searchMemory;
     const rerank = clients.rerankMemory ?? rerankMemory;
     const readSummaries = clients.getSummaries ?? getSummaries;
@@ -475,24 +577,10 @@ export async function retrieveAndInject(chat, settings, context, clients = {}) {
         recalledSummaries: recalledSummaryRecords,
         memories: chatSelection.results,
     }, context);
-    if (!worldInfoMessage && !historicalMessage) {
-        return { injected: false, reason: 'filtered', usedReranker };
-    }
-
-    let insertionIndex = null;
-    if (historicalMessage) {
-        insertionIndex = findHistoricalInsertionIndex(chat);
-        chat.splice(insertionIndex, 0, historicalMessage);
-    }
-    let worldInfoInsertionIndex = null;
-    if (worldInfoMessage) {
-        worldInfoInsertionIndex = Math.max(0, chat.length - 2);
-        chat.splice(worldInfoInsertionIndex, 0, worldInfoMessage);
-    }
-    return {
-        injected: true,
-        insertionIndex,
-        worldInfoInsertionIndex,
+    const bundle = {
+        historicalMessage,
+        worldInfoMessage,
+        result: {
         resultCount: recentSummaryRecords.length + recalledSummaryRecords.length
             + chatSelection.results.length + worldInfoSelection.results.length,
         recentSummaryCount: recentSummaryRecords.length,
@@ -500,7 +588,138 @@ export async function retrieveAndInject(chat, settings, context, clients = {}) {
         chatResultCount: chatSelection.results.length,
         worldInfoResultCount: worldInfoSelection.results.length,
         usedReranker,
+        },
     };
+    saveSharedRecallBundle(sharedCacheKey, bundle);
+    return applyRecallBundle(chat, bundle);
+}
+
+function recallSettingsSignature(settings = {}) {
+    const embedding = completeApiConfig(settings?.apis?.embedding) ?? {};
+    const reranker = completeApiConfig(settings?.apis?.reranker) ?? {};
+    return stableRecallHash(JSON.stringify({
+        embedding: [embedding.baseUrl, embedding.model],
+        reranker: [reranker.baseUrl, reranker.model],
+        topK: settings?.rag?.topK,
+        topN: settings?.rag?.topN,
+        threshold: settings?.rag?.rerankerThreshold,
+        semanticWorldInfo: settings?.rag?.semanticWorldInfo,
+        books: settings?.rag?.activeWorldInfoBookIds ?? settings?.rag?.semanticWorldInfoBooks ?? [],
+    }));
+}
+
+function preGenerationRecallCacheKey(chat, settings, context) {
+    const chatId = context?.getCurrentChatId?.() ?? context?.chatId;
+    const query = buildRagQuery(chat, 3);
+    if (!chatId || !query) return '';
+    return `pre:${stableRecallHash(`${chatId}\n${chat.length}\n${query}\n${recallSettingsSignature(settings)}`)}`;
+}
+
+export async function getSharedPostGenerationRecall(settings, context, messageId, clients = {}) {
+    if (settings?.rag?.enabled === false) return { fragments: [], reason: 'disabled' };
+    const numericId = Math.trunc(Number(messageId));
+    const chat = Array.isArray(context?.chat) ? context.chat : [];
+    const message = chat[numericId];
+    const chatId = context?.getCurrentChatId?.() ?? context?.chatId;
+    if (!chatId || !message || message.is_user || message.is_system) {
+        return { fragments: [], reason: 'missing-story-message' };
+    }
+    const precedingCount = clampInteger(settings?.barrage?.recentMessages, 5, 1, 20);
+    const start = Math.max(0, numericId - precedingCount);
+    const queryChat = cloneGenerationChat(chat.slice(start, numericId + 1));
+    const query = buildRagQuery(queryChat, 3);
+    const sourceHash = stableRecallHash(String(message?.mes ?? message?.content ?? ''));
+    const cacheKey = `post:${stableRecallHash([
+        chatId,
+        numericId,
+        sourceHash,
+        start,
+        query,
+        recallSettingsSignature(settings),
+        recallClientSignature(clients),
+    ].join('\n'))}`;
+    pruneSharedRecallCache();
+    const cached = postGenerationRecallResults.get(cacheKey);
+    if (cached) return { ...cloneRecallValue(cached.value), cachedRecall: true };
+    if (postGenerationRecallPromises.has(cacheKey)) return postGenerationRecallPromises.get(cacheKey);
+
+    const task = (async () => {
+        const embedding = completeApiConfig(settings?.apis?.embedding);
+        if (!embedding || !query) return { fragments: [], reason: 'missing-input', cacheKey };
+        const topK = clampInteger(settings?.rag?.topK, 20, 1, 100);
+        const topN = clampInteger(settings?.rag?.topN, 6, 1, Math.min(50, topK));
+        const threshold = clampNumber(settings?.rag?.rerankerThreshold, 0.6, 0, 1);
+        const activeBookIds = Array.isArray(settings?.rag?.activeWorldInfoBookIds)
+            ? settings.rag.activeWorldInfoBookIds.map(String)
+            : getActiveWorldInfoBookIds();
+        const ordinaryBookIds = activeBookIds.filter(id => !isManagedSummaryWorldInfoBookName(id));
+        const semanticWorldInfo = Boolean(settings?.rag?.semanticWorldInfo && ordinaryBookIds.length > 0);
+        const search = clients.searchMemory ?? searchMemory;
+        const searchResponse = await search({
+            chatId,
+            query,
+            separate: true,
+            chatTopK: topK,
+            chatGlobalFallbackK: CHAT_GLOBAL_FALLBACK_K,
+            worldInfoTopK: WORLD_INFO_TOP_K,
+            embedding,
+            scope: {
+                chat_id: chatId,
+                chat_message_id_before: start,
+                book_ids: semanticWorldInfo ? ordinaryBookIds : [],
+            },
+        });
+        const legacyResults = Array.isArray(searchResponse?.results) ? searchResponse.results : [];
+        const chatCandidates = Array.isArray(searchResponse?.chatResults)
+            ? searchResponse.chatResults
+            : legacyResults.filter(result => result.type !== 'worldinfo');
+        const worldInfoCandidates = semanticWorldInfo
+            ? Array.isArray(searchResponse?.worldInfoResults)
+                ? searchResponse.worldInfoResults
+                : legacyResults.filter(result => result.type === 'worldinfo')
+            : [];
+        const reranker = completeApiConfig(settings?.apis?.reranker);
+        const rerank = clients.rerankMemory ?? rerankMemory;
+        const [chatSelection, worldInfoSelection] = await Promise.all([
+            selectRecallResults({
+                candidates: chatCandidates,
+                query,
+                topN,
+                threshold,
+                reranker,
+                rerank,
+                source: 'Shared post-story chat memory',
+            }),
+            selectRecallResults({
+                candidates: worldInfoCandidates,
+                query,
+                topN: WORLD_INFO_TOP_N,
+                threshold,
+                reranker,
+                rerank,
+                source: 'Shared post-story world info',
+            }),
+        ]);
+        const fragments = [...worldInfoSelection.results, ...chatSelection.results]
+            .map((item, index) => ({
+                id: item?.id ?? `${cacheKey}:${index}`,
+                summary_tag: item?.summary_tag ?? '',
+                text: String(item?.text ?? '').trim(),
+            }))
+            .filter(item => item.text);
+        const value = {
+            fragments,
+            cacheKey,
+            usedReranker: chatSelection.usedReranker || worldInfoSelection.usedReranker,
+        };
+        postGenerationRecallResults.set(cacheKey, { createdAt: Date.now(), value: cloneRecallValue(value) });
+        pruneSharedRecallCache();
+        return value;
+    })().finally(() => {
+        if (postGenerationRecallPromises.get(cacheKey) === task) postGenerationRecallPromises.delete(cacheKey);
+    });
+    postGenerationRecallPromises.set(cacheKey, task);
+    return task;
 }
 
 /**
@@ -539,6 +758,7 @@ export async function memoryAugmentInterceptor(chat, contextSize, abort, type) {
         try {
             await retrieveAndInject(generationChat, settings, context, {
                 recordTiming: recordGenerationTimingStage,
+                sharedCacheKey: preGenerationRecallCacheKey(generationChat, settings, context),
             });
         } catch (error) {
             console.error('[Memory Augment] RAG interceptor failed; generation will continue without memory injection.', error);

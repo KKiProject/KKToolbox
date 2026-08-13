@@ -1,6 +1,6 @@
-import { generateBarrage, rerankMemory, searchMemory } from './rag-client.js';
+import { generateBarrage } from './rag-client.js';
 import { normalizeBaseUrl } from './api-utils.js';
-import { getActiveWorldInfoBookIds } from './world-info-manager.js';
+import { getSharedPostGenerationRecall } from './context-manager.js';
 import {
     applyStoryStatusOptions,
     applyStoryTimelineUpdate,
@@ -29,8 +29,6 @@ import {
 
 const BARRAGE_METADATA_KEY = 'memory_augment_barrages';
 const SIDE_RESULT_METADATA_KEY = 'memory_augment_side_results';
-const WORLD_INFO_TOP_K = 10;
-const WORLD_INFO_TOP_N = 5;
 const inFlight = new Map();
 let barrageTemplate = '';
 let regenerationBound = false;
@@ -456,83 +454,14 @@ async function getRagFragments(settings, context, recentMessages, clients) {
     if (!settings?.barrage?.includeRag) {
         return [];
     }
-
-    const embedding = completeApiConfig(settings?.apis?.embedding);
-    const chatId = getChatId(context);
-    const query = recentMessages.slice(-3).map(message => message.text).join('\n\n');
-    if (!embedding || !chatId || !query) {
-        return [];
-    }
-
-    const topK = clampInteger(settings?.rag?.topK, 25, 1, 100);
-    const topN = clampInteger(settings?.rag?.topN, 7, 1, Math.min(50, topK));
-    const configuredThreshold = Number(settings?.rag?.rerankerThreshold);
-    const rerankerThreshold = Number.isFinite(configuredThreshold) ? configuredThreshold : 0.6;
-    const recentMessageIds = recentMessages.map(message => Number(message.id)).filter(Number.isInteger);
-    const chatMessageIdBefore = recentMessageIds.length > 0 ? Math.min(...recentMessageIds) : 0;
-    const search = clients.searchMemory ?? searchMemory;
-    const activeBookIds = Array.isArray(settings?.rag?.activeWorldInfoBookIds)
-        ? settings.rag.activeWorldInfoBookIds.map(String)
-        : getActiveWorldInfoBookIds();
-    const includeWorldInfo = Boolean(settings?.rag?.semanticWorldInfo && activeBookIds.length > 0);
-    const searchResponse = await search({
-        chatId,
-        query,
-        separate: true,
-        chatTopK: topK,
-        worldInfoTopK: WORLD_INFO_TOP_K,
-        embedding,
-        scope: {
-            chat_id: chatId,
-            chat_message_id_before: chatMessageIdBefore,
-            book_ids: includeWorldInfo ? activeBookIds : [],
-        },
-    });
-    const legacyResults = Array.isArray(searchResponse?.results) ? searchResponse.results : [];
-    let chatResults = Array.isArray(searchResponse?.chatResults)
-        ? searchResponse.chatResults
-        : legacyResults.filter(result => result.type !== 'worldinfo');
-    let worldInfoResults = includeWorldInfo
-        ? Array.isArray(searchResponse?.worldInfoResults)
-            ? searchResponse.worldInfoResults
-            : legacyResults.filter(result => result.type === 'worldinfo')
-        : [];
-    const reranker = completeApiConfig(settings?.apis?.reranker);
-
-    if (reranker) {
-        const rerank = clients.rerankMemory ?? rerankMemory;
-        const rerankSource = async (candidates, limit, label) => {
-            if (candidates.length === 0) return [];
-            try {
-                const rerankResponse = await rerank({
-                    query,
-                    candidates,
-                    topN: limit,
-                    threshold: rerankerThreshold,
-                    reranker,
-                });
-                return Array.isArray(rerankResponse?.results)
-                    ? rerankResponse.results.slice(0, limit)
-                    : [];
-            } catch (error) {
-                console.warn(`[Memory Augment] Barrage ${label} RAG reranking failed; using vector order.`, error);
-                return candidates.slice(0, limit);
-            }
-        };
-        [chatResults, worldInfoResults] = await Promise.all([
-            rerankSource(chatResults, topN, 'chat'),
-            rerankSource(worldInfoResults, WORLD_INFO_TOP_N, 'world info'),
-        ]);
-    } else {
-        chatResults = chatResults.slice(0, topN);
-        worldInfoResults = worldInfoResults.slice(0, WORLD_INFO_TOP_N);
-    }
-
-    return [...worldInfoResults, ...chatResults].map(result => ({
-        id: result.id,
-        summary_tag: result.summary_tag,
-        text: String(result.text ?? '').trim(),
-    })).filter(fragment => fragment.text);
+    const messageId = recentMessages.at(-1)?.id;
+    const shared = await (clients.getSharedPostGenerationRecall ?? getSharedPostGenerationRecall)(
+        settings,
+        context,
+        messageId,
+        clients,
+    );
+    return Array.isArray(shared?.fragments) ? shared.fragments : [];
 }
 
 function createPanelFromTemplate() {

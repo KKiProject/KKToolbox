@@ -894,7 +894,7 @@ export async function searchScopes(payload) {
                 document.chunks.filter(chunk => chunk?.disabled !== true).length,
             );
             const eligibleRanked = ranked.filter(chunk => before === null || Number(chunk.message_id) < before);
-            const limit = clampInteger(payload?.chatTopK ?? payload?.topK, 25, 1, 100);
+            const limit = clampInteger(payload?.chatTopK ?? payload?.topK, 20, 1, 100);
             if (ranges.length > 0) {
                 const routed = eligibleRanked.filter(inSelectedRange).slice(0, limit);
                 const fallbackLimit = clampInteger(payload?.chatGlobalFallbackK, 3, 0, 20);
