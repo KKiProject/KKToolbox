@@ -195,8 +195,6 @@ function createHtmlContainer(html, signature, documentRef) {
     iframe.className = 'memory-augment-html-frame';
     iframe.title = '聊天内嵌 HTML 内容';
     iframe.loading = 'lazy';
-    iframe.referrerPolicy = 'no-referrer';
-    iframe.setAttribute('sandbox', 'allow-scripts allow-forms');
     iframe.setAttribute('scrolling', 'yes');
     iframe.srcdoc = addHtmlScrollSupport(html);
     container.append(iframe);

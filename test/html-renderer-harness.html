@@ -38,7 +38,7 @@
             getChat: () => chat,
             applyDisplayRegex: source => source.replace(
                 '[状态栏]',
-                '```html\n<!doctype html><html><body><script>document.body.dataset.regexReady="true"<\/script><div id="regex-status">正则替换页面已运行</div></body></html>\n```',
+                '```html\n<!doctype html><html><body><script>document.body.dataset.regexReady="true";parent.document.documentElement.dataset.htmlParentAccess="true"<\/script><div id="regex-status">正则替换页面已运行</div></body></html>\n```',
             ),
         };
         renderHtmlCodeBlocks(root, settings, regexOptions);
@@ -58,6 +58,7 @@
         external.textContent = '稍后由别人生成';
         document.querySelector('#late-renderer').append(external);
         renderHtmlCodeBlocks(root, settings);
+        await new Promise(resolve => setTimeout(resolve, 100));
         const result = {
             existingFrames: document.querySelectorAll('#already-rendered iframe').length,
             existingOutputs: document.querySelectorAll('#already-rendered #friend-status').length,
@@ -72,6 +73,7 @@
             regexSourceHidden: document.querySelector('#regex-display .memory-augment-html-original')?.hidden === true,
             regexOriginalText: chat[0].mes,
             regexFenceRemoved: !document.querySelector('#regex-display iframe')?.srcdoc.includes('```html'),
+            parentAccess: document.documentElement.dataset.htmlParentAccess === 'true',
             editPreserved,
         };
         document.querySelector('#result').textContent = JSON.stringify(result);

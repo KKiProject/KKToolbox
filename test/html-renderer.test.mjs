@@ -16,16 +16,17 @@ test('HTML compatibility detection keeps the legacy supported tag set', () => {
     assert.equal(containsRenderableHtml('<strong>普通 HTML 教学片段</strong>'), false);
 });
 
-test('HTML compatibility renderer is event-driven, isolated, and silent', async () => {
+test('HTML compatibility renderer is event-driven, fully functional, and silent', async () => {
     const source = await readFile(new URL('../html-renderer.js', import.meta.url), 'utf8');
     assert.match(source, /\.mes_text pre > code/);
     assert.match(source, /renderRegexDisplayMessages/);
     assert.match(source, /MutationObserverRef/);
-    assert.match(source, /sandbox', 'allow-scripts allow-forms'/);
     assert.match(source, /hasEquivalentRenderedOutput/);
     assert.match(source, /isIntentionallyHidden/);
     assert.match(source, /RENDER_SETTLE_DELAY/);
     assert.match(source, /scrolling', 'yes'/);
+    assert.doesNotMatch(source, /setAttribute\('sandbox'/);
+    assert.doesNotMatch(source, /referrerPolicy/);
     assert.doesNotMatch(source, /setInterval/);
     assert.doesNotMatch(source, /toastr/);
 });
