@@ -2,6 +2,7 @@ import { extension_settings, renderExtensionTemplateAsync } from '../../../exten
 import { power_user } from '../../../power-user.js';
 import { Popup, POPUP_RESULT, POPUP_TYPE } from '../../../popup.js';
 import { eventSource, event_types, reloadCurrentChat } from '../../../../script.js';
+import { getRegexedString, regex_placement } from '../../regex/engine.js';
 import { normalizeBaseUrl } from './api-utils.js';
 import { bindChatIngestionLifecycle, reconcileBufferedMessageQueue } from './chat-lifecycle.js';
 import { initializeChatMemoryUi } from './chat-memory-ui.js';
@@ -1243,7 +1244,21 @@ async function initialize() {
 
     bindSettings(settings, context);
     initializeGenerationTimingUi({ eventSource, eventTypes: event_types, documentRef: document });
-    initializeHtmlRenderer(settings);
+    initializeHtmlRenderer(settings, {
+        getChat: () => SillyTavern.getContext()?.chat ?? [],
+        applyDisplayRegex: (source, { message, depth }) => {
+            const placement = message?.is_user
+                ? regex_placement.USER_INPUT
+                : message?.extra?.type === 'narrator'
+                    ? regex_placement.SLASH_COMMAND
+                    : regex_placement.AI_OUTPUT;
+            return getRegexedString(source, placement, {
+                characterOverride: message?.name,
+                isMarkdown: true,
+                depth,
+            });
+        },
+    });
     bindStatusCustomFields(settings, context);
     bindModelDiscovery(settings, context);
     bindActions(settings);

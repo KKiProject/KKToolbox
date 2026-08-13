@@ -24,13 +24,23 @@
         <section class="mes_text" id="late-renderer">
             <pre><code>&lt;div id="late-status" class="late-status status-panel"&gt;稍后由别人生成&lt;/div&gt;</code></pre>
         </section>
+        <article class="mes" mesid="0">
+            <section class="mes_text" id="regex-display"><div id="regex-status">被酒馆清洗后的静态显示</div></section>
+        </article>
     </div>
     <output id="result">等待测试</output>
     <script type="module">
         import { renderHtmlCodeBlocks } from '../html-renderer.js';
         const root = document.querySelector('#chat');
         const settings = { htmlRenderer: { enabled: true } };
-        renderHtmlCodeBlocks(root, settings);
+        const chat = [{ mes: '[状态栏]', name: '角色', is_user: false }];
+        renderHtmlCodeBlocks(root, settings, {
+            getChat: () => chat,
+            applyDisplayRegex: source => source.replace(
+                '[状态栏]',
+                '<!doctype html><html><body><script>document.body.dataset.regexReady="true"<\/script><div id="regex-status">正则替换页面已运行</div></body></html>',
+            ),
+        });
         const external = document.createElement('div');
         external.id = 'late-status';
         external.className = 'late-status status-panel';
@@ -47,6 +57,9 @@
             lateFrames: document.querySelectorAll('#late-renderer iframe').length,
             lateOutputs: document.querySelectorAll('#late-renderer #late-status').length,
             lateSourceHidden: document.querySelector('#late-renderer pre')?.hidden === true,
+            regexFrames: document.querySelectorAll('#regex-display iframe').length,
+            regexSourceHidden: document.querySelector('#regex-display .memory-augment-html-original')?.hidden === true,
+            regexOriginalText: chat[0].mes,
         };
         document.querySelector('#result').textContent = JSON.stringify(result);
         globalThis.__KK_HTML_RENDERER_RESULT__ = result;

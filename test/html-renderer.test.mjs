@@ -5,6 +5,7 @@ import {
     addHtmlScrollSupport,
     containsRenderableHtml,
     getHtmlRenderFingerprint,
+    getRegexDisplayHtml,
 } from '../html-renderer.js';
 
 test('HTML compatibility detection keeps the legacy supported tag set', () => {
@@ -18,6 +19,7 @@ test('HTML compatibility detection keeps the legacy supported tag set', () => {
 test('HTML compatibility renderer is event-driven, isolated, and silent', async () => {
     const source = await readFile(new URL('../html-renderer.js', import.meta.url), 'utf8');
     assert.match(source, /\.mes_text pre > code/);
+    assert.match(source, /renderRegexDisplayMessages/);
     assert.match(source, /MutationObserverRef/);
     assert.match(source, /sandbox', 'allow-scripts allow-forms'/);
     assert.match(source, /hasEquivalentRenderedOutput/);
@@ -26,6 +28,26 @@ test('HTML compatibility renderer is event-driven, isolated, and silent', async 
     assert.match(source, /scrolling', 'yes'/);
     assert.doesNotMatch(source, /setInterval/);
     assert.doesNotMatch(source, /toastr/);
+});
+
+test('HTML compatibility renders the HTML produced only by display regex without changing chat text', () => {
+    const chat = [
+        { mes: '前文', is_user: true },
+        { mes: '[状态栏]', name: '角色', is_user: false },
+    ];
+    let received;
+    const html = getRegexDisplayHtml(chat[1], 1, chat, (source, options) => {
+        received = { source, options };
+        return '<!doctype html><html><body><script>document.body.dataset.ready = "1"</script><div>状态栏</div></body></html>';
+    });
+
+    assert.match(html, /document\.body\.dataset\.ready/);
+    assert.equal(chat[1].mes, '[状态栏]');
+    assert.equal(received.source, '[状态栏]');
+    assert.equal(received.options.message, chat[1]);
+    assert.equal(received.options.depth, 0);
+    assert.equal(getRegexDisplayHtml(chat[1], 1, chat, source => source), '');
+    assert.equal(getRegexDisplayHtml({ mes: '[状态栏]', is_system: true }, 0, [], () => html), '');
 });
 
 test('HTML compatibility fingerprints equivalent formatting and injects mobile scrolling once', () => {
