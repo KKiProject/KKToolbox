@@ -44,6 +44,14 @@ export function addHtmlScrollSupport(value) {
     return `${style}${html}`;
 }
 
+function unwrapHtmlFence(value) {
+    const text = String(value ?? '').trim();
+    const match = text.match(/^(`{3,}|~{3,})[ \t]*(?:html?)?[ \t]*\r?\n([\s\S]*?)\r?\n\1[ \t]*$/i);
+    if (!match) return text;
+    const html = match[2].trim();
+    return containsRenderableHtml(html) ? html : text;
+}
+
 export function getRegexDisplayHtml(message, messageId, chat, applyDisplayRegex) {
     if (!message || message.is_system || typeof applyDisplayRegex !== 'function') return '';
     const rawText = String(message?.extra?.display_text ?? message?.mes ?? '');
@@ -59,7 +67,7 @@ export function getRegexDisplayHtml(message, messageId, chat, applyDisplayRegex)
         depth,
     }) ?? '');
     if (!displayText || displayText === rawText || !containsRenderableHtml(displayText)) return '';
-    return displayText;
+    return unwrapHtmlFence(displayText);
 }
 
 function decodeHtmlEntities(value, documentRef) {
@@ -207,8 +215,12 @@ function renderRegexDisplayMessages(root, options, documentRef) {
         const messageElement = messageRoot.closest?.('.mes');
         const messageId = Number(messageElement?.getAttribute?.('mesid'));
         if (!Number.isInteger(messageId) || !chat[messageId]) return;
-        const html = getRegexDisplayHtml(chat[messageId], messageId, chat, applyDisplayRegex);
         const existing = messageRoot.querySelector?.(`[${MESSAGE_RENDER_ATTRIBUTE}]`);
+        if (messageRoot.querySelector?.('.edit_textarea')) {
+            if (existing) restoreRenderedBlocks(messageRoot);
+            return;
+        }
+        const html = getRegexDisplayHtml(chat[messageId], messageId, chat, applyDisplayRegex);
         if (!html) {
             if (existing) restoreRenderedBlocks(messageRoot);
             return;

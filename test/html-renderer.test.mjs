@@ -50,6 +50,17 @@ test('HTML compatibility renders the HTML produced only by display regex without
     assert.equal(getRegexDisplayHtml({ mes: '[状态栏]', is_system: true }, 0, [], () => html), '');
 });
 
+test('HTML compatibility removes a complete HTML fence before creating srcdoc', () => {
+    const message = { mes: '[手机屏幕]', name: '角色', is_user: false };
+    const html = getRegexDisplayHtml(message, 0, [message], () => [
+        '```html',
+        '<!doctype html><html><body><div>手机</div></body></html>',
+        '```',
+    ].join('\n'));
+
+    assert.equal(html, '<!doctype html><html><body><div>手机</div></body></html>');
+});
+
 test('HTML compatibility fingerprints equivalent formatting and injects mobile scrolling once', () => {
     const compact = '<div id="status-root"><span>状态</span></div>';
     const spaced = '<div id="status-root">\n  <span>状态</span>\n</div>';

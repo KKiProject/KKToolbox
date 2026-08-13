@@ -34,13 +34,24 @@
         const root = document.querySelector('#chat');
         const settings = { htmlRenderer: { enabled: true } };
         const chat = [{ mes: '[状态栏]', name: '角色', is_user: false }];
-        renderHtmlCodeBlocks(root, settings, {
+        const regexOptions = {
             getChat: () => chat,
             applyDisplayRegex: source => source.replace(
                 '[状态栏]',
-                '<!doctype html><html><body><script>document.body.dataset.regexReady="true"<\/script><div id="regex-status">正则替换页面已运行</div></body></html>',
+                '```html\n<!doctype html><html><body><script>document.body.dataset.regexReady="true"<\/script><div id="regex-status">正则替换页面已运行</div></body></html>\n```',
             ),
-        });
+        };
+        renderHtmlCodeBlocks(root, settings, regexOptions);
+        const regexRoot = document.querySelector('#regex-display');
+        const editTextarea = document.createElement('textarea');
+        editTextarea.className = 'edit_textarea';
+        editTextarea.value = '[状态栏]';
+        regexRoot.replaceChildren(editTextarea);
+        renderHtmlCodeBlocks(root, settings, regexOptions);
+        const editPreserved = regexRoot.querySelector('.edit_textarea') === editTextarea
+            && regexRoot.querySelector('iframe') === null;
+        regexRoot.innerHTML = '<div id="regex-status">被酒馆清洗后的静态显示</div>';
+        renderHtmlCodeBlocks(root, settings, regexOptions);
         const external = document.createElement('div');
         external.id = 'late-status';
         external.className = 'late-status status-panel';
@@ -60,6 +71,8 @@
             regexFrames: document.querySelectorAll('#regex-display iframe').length,
             regexSourceHidden: document.querySelector('#regex-display .memory-augment-html-original')?.hidden === true,
             regexOriginalText: chat[0].mes,
+            regexFenceRemoved: !document.querySelector('#regex-display iframe')?.srcdoc.includes('```html'),
+            editPreserved,
         };
         document.querySelector('#result').textContent = JSON.stringify(result);
         globalThis.__KK_HTML_RENDERER_RESULT__ = result;
