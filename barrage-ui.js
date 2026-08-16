@@ -410,13 +410,15 @@ function restoreSideResultVariant(context, messageId, message, record, settings)
     if (settings?.status?.enabled === true && record.statusProcessed && record.status
         && !getStoryStatusAt(context, numericId)) {
         clearStoryStatusRecords(context, numericId);
-        const restored = applyStoryTimelineUpdate(
-            context,
-            numericId,
-            cloneSideValue(record.status),
-            cloneSideValue(record.timeline),
-            sourceHash,
-        ).status;
+        const restored = record.timeline
+            ? applyStoryTimelineUpdate(
+                context,
+                numericId,
+                cloneSideValue(record.status),
+                cloneSideValue(record.timeline),
+                sourceHash,
+            ).status
+            : cloneSideValue(record.status);
         saveStoryStatus(context, numericId, restored, sourceHash);
         changed = true;
     }
@@ -770,55 +772,11 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
             },
         };
         const response = await request(requestPayload);
-        let parsed = parseSideResponse(response?.content);
-        let statusRecoveryError = null;
-        let barrageRecoveryError = null;
-        const initialModules = new Set(Array.isArray(parsed.modules) ? parsed.modules : []);
-        const missingBarrage = requestBarrage && !parsed.barrage;
-        const missingStatus = requestStatus && (!parsed.status || !initialModules.has('timeline'));
-        const missingDevelopment = requestDevelopment && !initialModules.has('development');
-        if (missingBarrage || missingStatus || missingDevelopment) {
-            try {
-                const recoveryResponse = await request({
-                    ...requestPayload,
-                    outputOptions: {
-                        barrageEnabled: missingBarrage,
-                        statusEnabled: missingStatus,
-                        developmentEnabled: missingDevelopment,
-                    },
-                });
-                const recovered = parseSideResponse(recoveryResponse?.content);
-                const recoveredModules = new Set(Array.isArray(recovered.modules) ? recovered.modules : []);
-                const modules = new Set(initialModules);
-                if (missingBarrage && recovered.barrage) {
-                    parsed.barrage = recovered.barrage;
-                    modules.add('barrage');
-                }
-                if (missingStatus && recovered.status && recoveredModules.has('timeline')) {
-                    parsed.status = recovered.status;
-                    parsed.timeline = recovered.timeline;
-                    modules.add('status');
-                    modules.add('timeline');
-                }
-                if (missingDevelopment && recoveredModules.has('development')) {
-                    parsed.development = recovered.development;
-                    modules.add('development');
-                }
-                parsed.modules = [...modules];
-                if (missingStatus && (!parsed.status || !modules.has('timeline'))) {
-                    statusRecoveryError = new Error('副 API 连续两次没有返回有效的剧情状态。');
-                }
-                if (missingBarrage && !parsed.barrage) {
-                    barrageRecoveryError = new Error('副 API 连续两次没有返回有效弹幕。');
-                }
-            } catch (error) {
-                if (missingStatus) statusRecoveryError = error;
-                if (missingBarrage) barrageRecoveryError = error;
-            }
-        }
+        const parsed = parseSideResponse(response?.content);
         const generatedContent = parsed.barrage;
         const parsedModules = new Set(Array.isArray(parsed.modules) ? parsed.modules : []);
-        const statusBundleReady = !requestStatus || (Boolean(parsed.status) && parsedModules.has('timeline'));
+        const statusReady = !requestStatus || Boolean(parsed.status);
+        const timelineReady = parsedModules.has('timeline');
         const developmentReady = !requestDevelopment || parsedModules.has('development');
 
         const currentContext = dependencies.getCurrentContext?.()
@@ -833,7 +791,7 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
         if (barrageEnabled && content) {
             safelyRender(render, numericId, content, 'ready');
         } else if (barrageEnabled && requestBarrage) {
-            const detail = String(barrageRecoveryError?.message ?? '副 API 没有返回有效弹幕。').trim();
+            const detail = '本次副 API 没有返回有效弹幕。';
             safelyRender(render, numericId, `弹幕生成失败：${detail}`, 'error');
         }
         if (requestBarrage) {
@@ -843,22 +801,24 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
                 timestamp: Math.floor(Date.now() / 1000),
             } : {
                 state: 'error',
-                error: String(barrageRecoveryError?.message ?? '副 API 没有返回有效弹幕。').trim(),
+                error: '本次副 API 没有返回有效弹幕。',
                 timestamp: Math.floor(Date.now() / 1000),
             });
         }
         let finalStatus = requestStatus
-            ? statusBundleReady ? applyStoryStatusOptions(parsed.status, statusOptions) : null
+            ? statusReady ? applyStoryStatusOptions(parsed.status, statusOptions) : null
             : applyStoryStatusOptions(cachedSideResult?.status ?? cachedStatus?.status, statusOptions);
         if (requestStatus && finalStatus) {
             clearStoryStatusRecords(currentContext, numericId);
-            finalStatus = applyStoryTimelineUpdate(
-                currentContext,
-                numericId,
-                finalStatus,
-                parsed.timeline,
-                sourceHash,
-            ).status;
+            if (timelineReady) {
+                finalStatus = applyStoryTimelineUpdate(
+                    currentContext,
+                    numericId,
+                    finalStatus,
+                    parsed.timeline,
+                    sourceHash,
+                ).status;
+            }
         }
         const statusSaved = requestStatus
             ? saveStoryStatus(currentContext, numericId, finalStatus, sourceHash)
@@ -867,7 +827,7 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
             ? getMessageTimelineMetadata(currentContext, numericId)
             : null;
         let developmentResult = null;
-        if (requestDevelopment && developmentReady && response?.partial !== true) {
+        if (requestDevelopment && developmentReady) {
             clearCharacterDevelopmentRecords(currentContext, numericId);
             developmentResult = applyCharacterDevelopmentUpdate(currentContext, numericId, parsed.development, {
                 status: finalStatus,
@@ -876,7 +836,7 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
                 characterBaselines,
             });
         }
-        if ((requestStatus && finalStatus) || (requestDevelopment && developmentReady && response?.partial !== true)) {
+        if ((requestStatus && finalStatus) || (requestDevelopment && developmentReady)) {
             const currentSideStore = getSideResultStore(currentContext.chatMetadata, true);
             const nextSideResult = {
                 ...(cachedSideResult ? cloneSideValue(cachedSideResult) : {}),
@@ -886,9 +846,10 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
             if (requestStatus && finalStatus) {
                 nextSideResult.statusProcessed = true;
                 nextSideResult.status = cloneSideValue(finalStatus);
-                nextSideResult.timeline = cloneSideValue(parsed.timeline);
+                if (timelineReady) nextSideResult.timeline = cloneSideValue(parsed.timeline);
+                else delete nextSideResult.timeline;
             }
-            if (requestDevelopment && developmentReady && response?.partial !== true) {
+            if (requestDevelopment && developmentReady) {
                 nextSideResult.developmentProcessed = true;
                 nextSideResult.development = cloneSideValue(parsed.development);
             }
@@ -904,8 +865,7 @@ export async function handleCharacterMessageRendered(messageId, settings, contex
         }
         refreshStoryStatusUi(currentContext);
         if (requestStatus && !finalStatus) {
-            const detail = String(statusRecoveryError?.message ?? '副 API 没有返回有效的剧情状态。').trim();
-            showSideGenerationDiagnostic(currentContext, `状态栏生成失败：${detail}`, { preserveStatus: false });
+            showSideGenerationDiagnostic(currentContext, '状态栏生成失败：本次副 API 没有返回有效的剧情状态。', { preserveStatus: false });
         }
         refreshCharacterDevelopmentUi(currentContext);
         return {

@@ -287,7 +287,7 @@ test('status can run without rendering or storing barrage', async () => {
     assert.equal(context.chatMetadata[STORY_STATUS_METADATA_KEY]['5'].status.environment.time, '清晨');
 });
 
-test('missing status in a combined response gets one focused recovery request without losing barrage', async () => {
+test('missing status keeps the successful barrage without spending a second request', async () => {
     const context = createContext();
     let calls = 0;
     const result = await handleCharacterMessageRendered(5, createSettings(), context, {
@@ -295,83 +295,62 @@ test('missing status in a combined response gets one focused recovery request wi
         getCurrentContext: () => context,
         async generateBarrage(payload) {
             calls++;
-            if (calls === 1) {
-                assert.equal(payload.outputOptions.barrageEnabled, true);
-                return { content: '先保留下来的弹幕' };
-            }
-            assert.deepEqual(payload.outputOptions, {
-                barrageEnabled: false,
-                statusEnabled: true,
-                developmentEnabled: false,
-            });
-            return { content: JSON.stringify({
-                barrage: '',
-                status: {
-                    environment: { time: '深夜', location: '走廊' },
-                    characters: [{ name: '玩家', role: 'user' }],
-                    event: { activity: '等待' },
-                },
-                timeline: { transition: 'unknown', currentTime: '深夜', mainlineTime: '深夜', segments: [] },
-            }) };
+            assert.equal(payload.outputOptions.barrageEnabled, true);
+            return { content: '先保留下来的弹幕' };
         },
     });
-    assert.equal(calls, 2);
+    assert.equal(calls, 1);
     assert.equal(result.generated, true);
-    assert.equal(result.statusSaved, true);
+    assert.equal(result.statusSaved, false);
     assert.equal(getOnlyBarrageVariant(context).content, '先保留下来的弹幕');
-    assert.equal(context.chatMetadata[STORY_STATUS_METADATA_KEY]['5'].status.environment.location, '走廊');
+    assert.equal(context.chatMetadata[STORY_STATUS_METADATA_KEY], undefined);
 });
 
-test('a truncated barrage retries only barrage and still preserves the completed status bundle', async () => {
+test('a truncated final development line keeps earlier barrage, status, and timeline in one request', async () => {
     const context = createContext();
+    const settings = createSettings();
+    settings.development = { enabled: true };
     const renders = [];
     let calls = 0;
-    const result = await handleCharacterMessageRendered(5, createSettings(), context, {
+    const result = await handleCharacterMessageRendered(5, settings, context, {
         renderBarrage: (...args) => renders.push(args),
         getCurrentContext: () => context,
         async generateBarrage(payload) {
             calls++;
-            if (calls === 1) {
-                assert.deepEqual(payload.outputOptions, {
-                    barrageEnabled: true,
-                    statusEnabled: true,
-                    developmentEnabled: false,
-                });
-                return { content: [
-                    JSON.stringify({
-                        module: 'status',
-                        data: {
-                            environment: { time: '深夜', location: '窗边' },
-                            characters: [{ name: '玩家', role: 'user' }, { name: '角色', role: 'char' }],
-                            event: { activity: '交谈' },
-                        },
-                    }),
-                    JSON.stringify({
-                        module: 'timeline',
-                        data: { transition: 'unchanged', currentTime: '深夜', mainlineTime: '深夜', segments: [] },
-                    }),
-                    '{"module":"barrage","data":{"lines":["断在这里"',
-                ].join('\n') };
-            }
             assert.deepEqual(payload.outputOptions, {
                 barrageEnabled: true,
-                statusEnabled: false,
-                developmentEnabled: false,
+                statusEnabled: true,
+                developmentEnabled: true,
             });
-            return { content: JSON.stringify({ module: 'barrage', data: { lines: ['补回来的弹幕'] } }) };
+            return { content: [
+                JSON.stringify({ module: 'barrage', data: { lines: ['先保存的弹幕'] } }),
+                JSON.stringify({
+                    module: 'status',
+                    data: {
+                        environment: { time: '深夜', location: '窗边' },
+                        characters: [{ name: '玩家', role: 'user' }, { name: '角色', role: 'char' }],
+                        event: { activity: '交谈' },
+                    },
+                }),
+                JSON.stringify({
+                    module: 'timeline',
+                    data: { transition: 'unchanged', currentTime: '深夜', mainlineTime: '深夜', segments: [] },
+                }),
+                '{"module":"development","data":{"changes":[',
+            ].join('\n') };
         },
-    });
+    }, { refreshDerived: true });
 
-    assert.equal(calls, 2);
+    assert.equal(calls, 1);
     assert.equal(result.statusSaved, true);
-    assert.equal(result.content, '补回来的弹幕');
+    assert.equal(result.content, '先保存的弹幕');
     assert.equal(context.chatMetadata[STORY_STATUS_METADATA_KEY]['5'].status.environment.location, '窗边');
-    assert.equal(getOnlyBarrageVariant(context).content, '补回来的弹幕');
-    assert.equal(renders.at(-1)[1], '补回来的弹幕');
+    assert.equal(getOnlyBarrageVariant(context).content, '先保存的弹幕');
+    assert.equal(renders.at(-1)[1], '先保存的弹幕');
     assert.equal(renders.at(-1)[2], 'ready');
 });
 
-test('two failed barrage modules do not discard a valid status update', async () => {
+test('missing barrage and timeline do not discard a valid status update or spend a second request', async () => {
     const context = createContext();
     const renders = [];
     let calls = 0;
@@ -380,32 +359,20 @@ test('two failed barrage modules do not discard a valid status update', async ()
         getCurrentContext: () => context,
         async generateBarrage(payload) {
             calls++;
-            if (calls === 1) {
-                return { content: [
-                    JSON.stringify({
-                        module: 'status',
-                        data: {
-                            environment: { time: '清晨', location: '庭院' },
-                            characters: [{ name: '玩家', role: 'user' }, { name: '角色', role: 'char' }],
-                            event: { activity: '等待' },
-                        },
-                    }),
-                    JSON.stringify({
-                        module: 'timeline',
-                        data: { transition: 'unchanged', currentTime: '清晨', mainlineTime: '清晨', segments: [] },
-                    }),
-                ].join('\n') };
-            }
-            assert.deepEqual(payload.outputOptions, {
-                barrageEnabled: true,
-                statusEnabled: false,
-                developmentEnabled: false,
-            });
-            return { content: '{"module":"barrage","data":{"lines":[' };
+            return { content: [
+                JSON.stringify({
+                    module: 'status',
+                    data: {
+                        environment: { time: '清晨', location: '庭院' },
+                        characters: [{ name: '玩家', role: 'user' }, { name: '角色', role: 'char' }],
+                        event: { activity: '等待' },
+                    },
+                }),
+            ].join('\n') };
         },
     });
 
-    assert.equal(calls, 2);
+    assert.equal(calls, 1);
     assert.equal(result.statusSaved, true);
     assert.equal(result.content, '');
     assert.equal(context.chatMetadata[STORY_STATUS_METADATA_KEY]['5'].status.environment.location, '庭院');

@@ -552,16 +552,17 @@ function buildBarrageUserContent(
         '',
         '【必须完成的输出任务】',
         `完成：${requestedTasks || '返回空结果'}。只输出 JSONL，不要 Markdown，不要解释。每行必须是一个能够独立 JSON.parse 的完整对象；模块之间绝不能共用括号、逗号或字符串。`,
-        '严格按 status → timeline → development → barrage 的顺序输出已启用模块。某一行损坏不得改变其他行；未启用模块整行省略。',
+        '严格按 barrage → status → timeline → development 的顺序输出已启用模块。完成一行就立即闭合并换行，不要回头改写；未启用模块整行省略。',
+        '所有字段保持简洁。宁可缩短措辞，也必须优先完整闭合每个已启用模块，禁止把额度耗在分析、复述规则或重复剧情上。',
+        ...(barrageEnabled ? [
+            'barrage 必须首先输出。barrage 行：{"module":"barrage","data":{"lines":["弹幕1","弹幕2","弹幕3"]}}。lines 中每项只能是纯字符串，禁止输出作者对象、content 对象或包含真实换行的单个字符串。',
+        ] : []),
         ...(statusEnabled ? [
             'status 行：{"module":"status","data":{"environment":{"time":"完整时间","location":"大地点 → 小地点","season":"季节","weather":"天气"},"characters":[{"name":"人物名","role":"user、char或重要NPC","appearance":"当前外貌","action":"当前动作或姿态","emotion":"当前情绪","desire":"当前欲望或倾向","innerThoughts":"1至3句内心OS","extras":[{"label":"玩家启用的状态名","value":"状态内容"}]}],"event":{"activity":"正在做什么","situation":"当前形势","goals":["当前目标"]}}}',
             'timeline 行：{"module":"timeline","data":{"transition":"unchanged|advance|jump|enter_flashback|return_mainline|unknown","currentTime":"当前叙事时间","mainlineTime":"主线现在","elapsed":"明确经过多久或空字符串","evidence":"证明时间变化的短原文或空字符串","segments":[{"messageId":12,"startQuote":"该段开头的短原文","time":"该段时间","relation":"与主线现在的关系","mode":"mainline|flashback|flashforward|mention|unknown"}]}}',
         ] : []),
         ...(developmentEnabled ? [
             'development 行：{"module":"development","data":{"changes":[{"character":"人物名","dimension":"temperament|belief|relationship|habit|boundary|self_view","target":"关系对象或空字符串","candidateId":"候选ID或空字符串","trend":"稳定语义标签","before":"过去倾向或空字符串","after":"长期变化","reason":"已知原因或空字符串","source":"user_direct|observed","evidence":[{"messageId":12,"quote":"逐字短原文"}]}],"merges":[{"intoId":"保留ID","fromIds":["并入ID"],"trend":"合并标签","after":"合并后的当前倾向"}]}}',
-        ] : []),
-        ...(barrageEnabled ? [
-            'barrage 必须最后输出。barrage 行：{"module":"barrage","data":{"lines":["弹幕1","弹幕2","弹幕3"]}}。lines 中每项只能是纯字符串，禁止输出作者对象、content 对象或包含真实换行的单个字符串。',
         ] : []),
         statusEnabled
             ? 'status 是最新章节结束时的一份当前快照，不是剧情总结。必须包含 user 和 char；只加入真正重要的 NPC，忽略普通 NPC。'
@@ -607,23 +608,6 @@ function buildBarrageUserContent(
         statusEnabled && showGoals
             ? '可以在 goals 中记录当前目标；没有明确目标时返回空数组。'
             : statusEnabled ? 'goals 必须返回空数组，不要生成目标。' : '',
-    ].join('\n');
-}
-
-function buildBarrageRecoveryUserContent(recentMessages) {
-    const latest = (Array.isArray(recentMessages) ? recentMessages : [])
-        .map(message => String(message?.text ?? '').trim())
-        .filter(Boolean)
-        .at(-1);
-    if (!latest) throw new Error('生成弹幕至少需要一条最近消息。');
-    return [
-        '【既有虚构剧情片段】',
-        latest,
-        '',
-        '【任务】',
-        '只生成几条简短的观众弹幕，对已经发生的剧情作旁观反应。不要续写剧情，不要复述或扩写敏感行为细节，也不要评价用户喜好。',
-        '即使片段涉及成人关系、暴力、强制关系或近亲关系，也只需用含蓄、中性的观众语气评论剧情张力、人物反应或关系变化，不要拒绝任务。',
-        '只输出一行合法 JSONL：{"module":"barrage","data":{"lines":["弹幕1","弹幕2","弹幕3"]}}。lines 每项只能是纯字符串。',
     ].join('\n');
 }
 
@@ -753,29 +737,7 @@ export async function generateBarrageCompletion(payload, options = {}) {
         max_tokens: maxTokens,
     };
     const response = await postJson(endpoint, requestBody, config, options);
-    try {
-        return { content: extractChatContent(response, '弹幕副 API') };
-    } catch (error) {
-        const choice = response?.choices?.[0];
-        const emptyStop = choice?.finish_reason === 'stop'
-            && !contentToText(choice?.message?.content)
-            && !contentToText(choice?.message?.reasoning_content ?? choice?.message?.reasoning);
-        if (!emptyStop || !barrageEnabled) throw error;
-        const recoveryPrompt = buildBarrageRecoveryUserContent(payload?.recentMessages);
-        const recoveryResponse = await postJson(endpoint, {
-            model: config.model,
-            messages: [
-                {
-                    role: 'system',
-                    content: '你是虚构小说直播间的观众，只对已经发生的剧情做简短、含蓄的旁观评论，不续写，不说教，不评价用户。',
-                },
-                ...(systemPrompt ? [{ role: 'system', content: `弹幕风格要求：${systemPrompt}` }] : []),
-                { role: 'user', content: recoveryPrompt },
-            ],
-            max_tokens: maxTokens,
-        }, config, options);
-        return { content: extractChatContent(recoveryResponse, '弹幕副 API（轻量重试）'), partial: true };
-    }
+    return { content: extractChatContent(response, '弹幕副 API') };
 }
 
 export async function generateCustomPanelCompletion(payload, options = {}) {
@@ -1306,4 +1268,4 @@ export async function generateAtlasCompletion(payload, options = {}) {
     return { content: extractChatContent(response, '地图册副 API') };
 }
 
-export { buildAtlasUserContent, buildBarrageRecoveryUserContent, buildBarrageUserContent, MAX_EMBEDDING_BATCH_SIZE };
+export { buildAtlasUserContent, buildBarrageUserContent, MAX_EMBEDDING_BATCH_SIZE };

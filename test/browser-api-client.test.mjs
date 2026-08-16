@@ -45,7 +45,7 @@ test('custom panel uses a separate direct-output request with player-defined pur
     assert.match(result.content, /^KK_CHOICES_JSON=/);
 });
 
-test('combined side prompt uses ordered independent JSONL modules with barrage last', () => {
+test('combined side prompt closes the visible barrage first and keeps every module independent', () => {
     const prompt = buildBarrageUserContent(
         [{ id: 1, name: '玩家', text: '上楼。' }, { id: 2, name: '角色', text: '门开了。' }],
         [],
@@ -59,9 +59,10 @@ test('combined side prompt uses ordered independent JSONL modules with barrage l
     );
 
     assert.match(prompt, /只输出 JSONL/);
-    assert.match(prompt, /status → timeline → development → barrage/);
+    assert.match(prompt, /barrage → status → timeline → development/);
     assert.match(prompt, /"module":"barrage".*"lines":\["弹幕1"/);
-    assert.match(prompt, /barrage 必须最后输出/);
+    assert.match(prompt, /barrage 必须首先输出/);
+    assert.match(prompt, /宁可缩短措辞.*完整闭合每个已启用模块/);
     assert.doesNotMatch(prompt, /只输出一个合法 JSON 对象/);
 });
 
@@ -506,28 +507,25 @@ test('browser barrage preserves every JSONL module placed in reasoning_content',
     assert.deepEqual(result.content.split('\n'), moduleLines);
 });
 
-test('an empty stop response retries with a lightweight barrage-only request', async () => {
+test('an empty stop response does not spend a second side API request automatically', async () => {
     const requests = [];
-    const result = await generateBarrageCompletion({
-        barrage: { baseUrl: 'https://provider.example', apiKey: 'secret', model: 'chat-model' },
-        systemPrompt: '用围观群众语气吐槽',
-        recentMessages: [{ id: 1, name: '角色', text: '剧情发生了复杂的关系变化。' }],
-        outputOptions: { barrageEnabled: true, statusEnabled: true },
-    }, {
-        fetchImpl: async (_url, options) => {
-            requests.push(JSON.parse(options.body));
-            if (requests.length === 1) {
+    await assert.rejects(
+        generateBarrageCompletion({
+            barrage: { baseUrl: 'https://provider.example', apiKey: 'secret', model: 'chat-model' },
+            systemPrompt: '用围观群众语气吐槽',
+            recentMessages: [{ id: 1, name: '角色', text: '剧情发生了复杂的关系变化。' }],
+            outputOptions: { barrageEnabled: true, statusEnabled: true },
+        }, {
+            fetchImpl: async (_url, options) => {
+                requests.push(JSON.parse(options.body));
                 return response({ choices: [{ finish_reason: 'stop', message: { content: '' } }] });
-            }
-            return response({ choices: [{ finish_reason: 'stop', message: { content: '{"barrage":"这关系越来越复杂了！","status":null}' } }] });
-        },
-    });
+            },
+        }),
+        /没有返回有效正文.*finish_reason=stop/,
+    );
 
-    assert.equal(requests.length, 2);
+    assert.equal(requests.length, 1);
     assert.match(requests[0].messages.at(-1).content, /最新剧情状态/);
-    assert.match(requests[1].messages.at(-1).content, /只生成几条简短的观众弹幕/);
-    assert.doesNotMatch(requests[1].messages.at(-1).content, /innerThoughts/);
-    assert.match(result.content, /这关系越来越复杂了/);
 });
 
 test('empty side API responses explain whether tokens ended in reasoning', async () => {
