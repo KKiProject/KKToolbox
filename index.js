@@ -61,6 +61,8 @@ const TEMPLATE_PATH = `third-party/${EXTENSION_FOLDER}`;
 const API_TYPES = ['embedding', 'reranker', 'barrage'];
 const LEGACY_DEFAULT_BARRAGE_PROMPT = '你是一群正在观看小说直播的观众，请以弹幕/评论区风格吐槽点评';
 const BUILTIN_LIVE_ROOM_PROMPT_VERSION = 1;
+const BARRAGE_MAX_TOKENS_DEFAULT_VERSION = 1;
+const LEGACY_BARRAGE_MAX_TOKENS = 4064;
 const BUILTIN_LIVE_ROOM_PROMPT = `这里是一个成人高维世界观众观看的成人向独立直播切片。只有成年女性能观看这场直播内容，对于她们而言，角色们的真实生活其实是小说、游戏或连续剧剧情。观众可以发疯、嗑CP、考据、吐槽、玩梗、心疼、阴暗爬行，但无法干涉剧情。
 禁止与角色世界内任何“直播、弹幕、观众、论坛、评论区”等情节混同。故事中的角色永远不会意识到自己的生活正被高维观众观看。
 高维观众的发言只能基于当前正文已经发生的内容、合理情绪推断、已知伏笔和前文关系。可以结合旧内容做前后呼应（"卧槽这不是XX的伏笔吗"、"早就猜到了"），但呼应的落脚点必须回到最新章节。
@@ -131,8 +133,9 @@ export const defaultSettings = Object.freeze({
     barrage: {
         enabled: false,
         builtinPromptVersion: BUILTIN_LIVE_ROOM_PROMPT_VERSION,
+        maxTokensDefaultVersion: BARRAGE_MAX_TOKENS_DEFAULT_VERSION,
         recentMessages: 5,
-        maxTokens: 4064,
+        maxTokens: 8064,
         includeRag: true,
         systemPrompt: BUILTIN_LIVE_ROOM_PROMPT,
     },
@@ -1212,6 +1215,12 @@ async function initialize() {
     const savedBarragePrompt = String(savedSettings?.barrage?.systemPrompt ?? '').trim();
     const hadLegacyDefaultBarragePrompt = savedBarragePrompt === LEGACY_DEFAULT_BARRAGE_PROMPT;
     const hadBuiltinLiveRoomPrompt = Number(savedSettings?.barrage?.builtinPromptVersion) >= BUILTIN_LIVE_ROOM_PROMPT_VERSION;
+    const needsBarrageMaxTokensDefaultMigration = Number(
+        savedSettings?.barrage?.maxTokensDefaultVersion ?? 0,
+    ) < BARRAGE_MAX_TOKENS_DEFAULT_VERSION;
+    const hadLegacyBarrageMaxTokens = needsBarrageMaxTokensDefaultMigration
+        && (!Object.hasOwn(savedSettings?.barrage ?? {}, 'maxTokens')
+            || Number(savedSettings.barrage.maxTokens) === LEGACY_BARRAGE_MAX_TOKENS);
     const settings = mergeSettings(defaultSettings, extension_settings[EXTENSION_KEY]);
     delete settings.context.summaryMaxTokens;
     delete settings.context.summaryInterval;
@@ -1223,6 +1232,10 @@ async function initialize() {
             settings.barrage.systemPrompt = BUILTIN_LIVE_ROOM_PROMPT;
         }
     }
+    if (needsBarrageMaxTokensDefaultMigration) {
+        settings.barrage.maxTokensDefaultVersion = BARRAGE_MAX_TOKENS_DEFAULT_VERSION;
+        if (hadLegacyBarrageMaxTokens) settings.barrage.maxTokens = defaultSettings.barrage.maxTokens;
+    }
     if (!hadStatusEnabled) settings.status.enabled = Boolean(savedSettings?.barrage?.enabled);
     settings.rag.defaultsVersion = 1;
     if (hadLegacyRagDefaults) {
@@ -1232,7 +1245,7 @@ async function initialize() {
     extension_settings[EXTENSION_KEY] = settings;
     if (hadLegacySummaryMaxTokens || hadLegacySummaryInterval || hadLegacyChunkSize
         || hadLegacyAiCustomFields || !hadBuiltinLiveRoomPrompt || !hadStatusEnabled
-        || needsRagDefaultsMigration) {
+        || needsRagDefaultsMigration || needsBarrageMaxTokensDefaultMigration) {
         context.saveSettingsDebounced();
     }
 

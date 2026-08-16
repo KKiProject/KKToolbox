@@ -728,7 +728,7 @@ export async function generateBarrageCompletion(payload, options = {}) {
         payload?.statusOptions,
         payload?.outputOptions,
     );
-    const maxTokens = Math.max(1, Math.min(128_000, Math.trunc(Number(payload?.maxTokens) || 4064)));
+    const maxTokens = Math.max(1, Math.min(128_000, Math.trunc(Number(payload?.maxTokens) || 8064)));
     const barrageEnabled = payload?.outputOptions?.barrageEnabled !== false;
     const statusEnabled = payload?.outputOptions?.statusEnabled !== false;
     const developmentEnabled = payload?.outputOptions?.developmentEnabled === true;

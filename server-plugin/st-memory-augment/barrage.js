@@ -5,7 +5,7 @@ const { normalizeBaseUrl } = require('./api-url');
 const DEFAULT_MAX_RETRIES = 4;
 const DEFAULT_RETRY_DELAY_MS = 500;
 const DEFAULT_TIMEOUT_MS = 60_000;
-const DEFAULT_MAX_TOKENS = 4064;
+const DEFAULT_MAX_TOKENS = 8064;
 const MAX_MAX_TOKENS = 128_000;
 
 class BarrageApiError extends Error {

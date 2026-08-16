@@ -67,7 +67,7 @@ test('uses standard OpenAI chat completions format with the default token limit'
         messages,
         max_tokens: DEFAULT_MAX_TOKENS,
     });
-    assert.equal(DEFAULT_MAX_TOKENS, 4064);
+    assert.equal(DEFAULT_MAX_TOKENS, 8064);
     assert.equal(content, '弹幕内容');
 });
 

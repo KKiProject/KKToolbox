@@ -113,7 +113,7 @@
                 <div class="memory-augment-field"><label class="checkbox_label"><input type="checkbox" data-setting="status.enabled">启用剧情状态栏</label><small class="memory-augment-param-help">AI 回复完成后更新剧情状态，并在下一次回复前放到最新用户消息前。与弹幕同时开启时只调用一次副 API。</small></div>
                 <div class="memory-augment-field"><label class="checkbox_label"><input type="checkbox" data-setting="development.enabled">启用人物发展档案</label><small class="memory-augment-param-help">记录故事开始后真正形成的人物变化。普通变化会先观察，玩家明确设定则立即生效；与弹幕和状态共用一次副 API。</small></div>
                 <div class="memory-augment-field"><label>携带最近 N 楼<input class="text_pole" type="number" min="1" max="20" step="1" data-setting="barrage.recentMessages"></label><small class="memory-augment-param-help">作为弹幕与剧情状态的前情回顾发送；最新 AI 回复会单独作为“最新章节”发送。</small></div>
-                <div class="memory-augment-field"><label>副 API 最大输出长度<input class="text_pole" type="number" min="1" max="128000" step="1" data-setting="barrage.maxTokens"></label><small class="memory-augment-param-help">弹幕与剧情状态单次生成允许输出的最大 token 数，默认 4064。</small></div>
+                <div class="memory-augment-field"><label>副 API 最大输出长度<input class="text_pole" type="number" min="1" max="128000" step="1" data-setting="barrage.maxTokens"></label><small class="memory-augment-param-help">弹幕与剧情状态单次生成允许输出的最大 token 数，默认 8064。</small></div>
                 <div class="memory-augment-field"><label class="checkbox_label"><input type="checkbox" data-setting="barrage.includeRag">携带 RAG 召回</label><small class="memory-augment-param-help">让弹幕与剧情状态生成同时参考当前相关的历史记忆片段。</small></div>
                 <div class="memory-augment-field memory-augment-status-custom-manager">
                     <label>玩家自定义人物状态项</label>
