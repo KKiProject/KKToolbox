@@ -1,6 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createPhoneSession } from '../phone-session.js';
+import {
+    appendPhoneMessage,
+    createEmptyPhoneStore,
+    createPhoneConversation,
+    loadPhoneStore,
+    savePhoneStore,
+} from '../phone-store.js';
 import { installNativeFetch } from './native-fetch-fixture.mjs';
 
 test('legacy global phone data migrates once and every later chat receives an isolated phone', async (context) => {
@@ -49,4 +56,48 @@ test('legacy global phone data migrates once and every later chat receives an is
     const restored = await session.ensure({ force: true });
     assert.deepEqual(restored.phone.weibo.posts.map(post => post.id), ['legacy-post', 'chat-a-post']);
     assert.equal(settings.phoneScopedStorage.migratedChatId, 'scoped-phone-a');
+});
+
+test('opening a new branch clones the parent phone once without touching the parent file', async (context) => {
+    const originalFetch = globalThis.fetch;
+    const originalSillyTavern = globalThis.SillyTavern;
+    context.after(() => {
+        globalThis.fetch = originalFetch;
+        globalThis.SillyTavern = originalSillyTavern;
+    });
+    const fixture = installNativeFetch();
+    globalThis.fetch = fixture.fetch;
+    globalThis.SillyTavern = { getContext: () => ({ getRequestHeaders: () => ({}) }) };
+
+    const parentId = 'phone-branch-parent';
+    const childId = 'Branch #1 - phone child';
+    const parent = createEmptyPhoneStore(parentId);
+    parent.scopedInitialized = true;
+    const conversation = createPhoneConversation(parent, { type: 'direct', name: '共同联系人' });
+    const message = appendPhoneMessage(parent, conversation.id, { sender: '共同联系人', content: '共同消息' });
+    message.timestamp = Date.now() - 5_000;
+    await savePhoneStore(parent, { getCurrentChatId: () => parentId });
+
+    let metadataSaves = 0;
+    const childContext = {
+        getCurrentChatId: () => childId,
+        chatMetadata: { main_chat: parentId },
+        chat: [
+            { is_user: true, mes: '共同开头', send_date: Date.now() - 10_000 },
+            { is_user: false, mes: '共同回复', send_date: Date.now() },
+        ],
+        async saveMetadata() { metadataSaves++; },
+    };
+    const session = createPhoneSession({}, () => childContext);
+    const inherited = await session.ensure();
+
+    assert.equal(inherited.chatId, childId);
+    assert.equal(inherited.conversations[0].name, '共同联系人');
+    assert.equal(inherited.conversations[0].messages[0].content, '共同消息');
+    assert.equal(childContext.chatMetadata.kktoolbox_branch_state.phoneInitialized, true);
+    assert.ok(metadataSaves > 0);
+
+    const parentReloaded = await loadPhoneStore({ getCurrentChatId: () => parentId }, { force: true });
+    assert.equal(parentReloaded.chatId, parentId);
+    assert.equal(parentReloaded.conversations[0].messages[0].content, '共同消息');
 });

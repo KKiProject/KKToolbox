@@ -3,6 +3,7 @@ import {
     generateSummary as generateSummaryWithSideApi,
 } from './rag-client.js';
 import { getMessageTimelineMetadata } from './story-status.js';
+import { prepareBranchState } from './branch-state.js';
 
 export const SUMMARY_KEY_PREFIX = '[KKT摘要]';
 export const SUMMARY_STATE_KEY = 'kktoolbox_summary_state';
@@ -242,6 +243,7 @@ async function bindSummaryBookToCharacter(context, character, bookName) {
 }
 
 async function getSummaryBookName(context, create = false) {
+    await ensureBranchSummaryIsolation(context);
     const current = getCurrentCharacter(context);
     if (!current) {
         if (create) throw new Error('当前没有可用于创建摘要世界书的角色。');
@@ -377,6 +379,128 @@ function getManagedSummaryRange(entry) {
     const managedKey = keys.find(key => String(key ?? '').startsWith(SUMMARY_KEY_PREFIX)
         || String(key ?? '').startsWith(LEGACY_SUMMARY_KEY_PREFIX));
     return getRangeFromKey(managedKey);
+}
+
+function getManagedSummaryZeroBasedRange(entry) {
+    const keys = Array.isArray(entry?.key) ? entry.key : [entry?.key];
+    const managedKey = keys.find(key => String(key ?? '').startsWith(SUMMARY_KEY_PREFIX)
+        || String(key ?? '').startsWith(LEGACY_SUMMARY_KEY_PREFIX));
+    const range = getRangeFromKey(managedKey);
+    if (!range) return null;
+    return String(managedKey).startsWith(`${SUMMARY_KEY_PREFIX}[第`)
+        ? { start: Math.max(0, range.start - 1), end: Math.max(0, range.end - 1) }
+        : range;
+}
+
+function filterHistoricalOverviewForFork(content, forkMessageId) {
+    const source = String(content ?? '').trim();
+    if (!source) return '';
+    const blocks = source.match(/【历史概括·第\d+-\d+楼】[\s\S]*?(?=\n\n【历史概括·第\d+-\d+楼】|$)/gu) ?? [];
+    return blocks.filter((block) => {
+        const range = block.match(/【历史概括·第(\d+)-(\d+)楼】/u);
+        return range && Number(range[2]) - 1 <= forkMessageId;
+    }).join('\n\n');
+}
+
+function cloneValue(value) {
+    if (typeof structuredClone === 'function') return structuredClone(value);
+    return JSON.parse(JSON.stringify(value));
+}
+
+function calculateContiguousSummaryEnd(entries) {
+    let contiguousEnd = -1;
+    for (const entry of [...entries].sort(compareSummaryRanges)) {
+        if (Number(entry.start) > contiguousEnd + 1) break;
+        contiguousEnd = Math.max(contiguousEnd, Number(entry.end));
+    }
+    return contiguousEnd;
+}
+
+/** Creates a local, write-independent summary lorebook for a SillyTavern branch. */
+export async function ensureBranchSummaryIsolation(context) {
+    const prepared = prepareBranchState(context);
+    const branch = prepared.state;
+    if (prepared.changed) await context?.saveMetadata?.();
+    if (!branch || branch.kind !== 'branch' || branch.summaryInitialized === true) return false;
+
+    const current = getCurrentCharacter(context);
+    if (!current) return false;
+    const state = getSummaryState(context?.chatMetadata, true);
+    const sourceBookName = String(
+        branch.summarySourceBookName
+        || state?.bookName
+        || state?.entries?.find(entry => String(entry?.bookName ?? '').trim())?.bookName
+        || (isSummaryBookForCharacter(context?.chatMetadata?.world_info, current.name)
+            ? context.chatMetadata.world_info
+            : ''),
+    ).trim();
+    branch.summarySourceBookName = sourceBookName;
+
+    let targetBookName = String(branch.summaryTargetBookName ?? '').trim();
+    if (!targetBookName && sourceBookName) {
+        targetBookName = await findNextSummaryBookName(context, current.name);
+        branch.summaryTargetBookName = targetBookName;
+        await context?.saveMetadata?.();
+    }
+
+    if (!targetBookName) {
+        state.bookName = '';
+        state.entries = [];
+        state.overviewGroups = [];
+        state.lastSummarizedMessageIndex = -1;
+        if (isSummaryBookForCharacter(context?.chatMetadata?.world_info, current.name)) {
+            context.chatMetadata.world_info = '';
+        }
+        branch.summaryInitialized = true;
+        await context?.saveMetadata?.();
+        return true;
+    }
+
+    const sourceData = typeof context?.loadWorldInfo === 'function' && sourceBookName
+        ? await context.loadWorldInfo(sourceBookName)
+        : null;
+    const knownBookNames = await listWorldInfoBookNames(context);
+    const targetExists = knownBookNames
+        ? knownBookNames.includes(targetBookName)
+        : Boolean(typeof context?.loadWorldInfo === 'function' && await context.loadWorldInfo(targetBookName));
+    if (!targetExists) await createSummaryBook(context, targetBookName);
+    const targetData = typeof context?.loadWorldInfo === 'function'
+        ? (await context.loadWorldInfo(targetBookName) ?? { entries: {} })
+        : { entries: {} };
+    targetData.entries = {};
+
+    for (const [uid, entry] of Object.entries(sourceData?.entries ?? {})) {
+        if (isManagedSummaryEntry(entry)) {
+            const range = getManagedSummaryZeroBasedRange(entry);
+            if (range && range.end <= Number(branch.forkMessageId)) {
+                targetData.entries[uid] = cloneValue(entry);
+            }
+            continue;
+        }
+        if (isHistoricalOverviewEntry(entry)) {
+            const content = filterHistoricalOverviewForFork(entry.content, Number(branch.forkMessageId));
+            if (content) targetData.entries[uid] = { ...cloneValue(entry), content };
+        }
+    }
+    await saveSummaryBookData(context, targetBookName, targetData);
+
+    state.entries = state.entries
+        .filter(entry => Number.isInteger(Number(entry?.start))
+            && Number.isInteger(Number(entry?.end))
+            && Number(entry.end) <= Number(branch.forkMessageId)
+            && Object.hasOwn(targetData.entries, String(entry.uid)))
+        .map(entry => ({ ...entry, bookName: targetBookName }))
+        .sort(compareSummaryRanges);
+    state.lastSummarizedMessageIndex = calculateContiguousSummaryEnd(state.entries);
+    state.overviewGroups = state.overviewGroups
+        .filter(group => Number(group?.end) <= Number(branch.forkMessageId));
+    state.bookName = targetBookName;
+    if (isSummaryBookForCharacter(context?.chatMetadata?.world_info, current.name)) {
+        context.chatMetadata.world_info = targetBookName;
+    }
+    branch.summaryInitialized = true;
+    await context?.saveMetadata?.();
+    return true;
 }
 
 function rebuildSummaryProgressFromBook(state, bookName, data) {
@@ -1584,6 +1708,7 @@ export async function migrateLegacySummaries(context) {
     if (!metadata) {
         return 0;
     }
+    await ensureBranchSummaryIsolation(context);
     const hadLegacyCounters = Boolean(metadata[SUMMARY_STATE_KEY]
         && (Object.hasOwn(metadata[SUMMARY_STATE_KEY], 'aiRepliesSinceLastSummary')
             || Object.hasOwn(metadata[SUMMARY_STATE_KEY], 'lastCountedReplySignature')));

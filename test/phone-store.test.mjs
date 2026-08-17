@@ -9,6 +9,7 @@ import {
     clearPreparedPhoneContext,
     commitQueuedPhoneMessages,
     consumePreparedPhoneContext,
+    createBranchedPhoneStore,
     createEmptyPhoneStore,
     createPhoneConversation,
     createPhoneRoundId,
@@ -57,6 +58,56 @@ test('phone profiles normalize independently before being stored in a chat scope
         bio: '',
         persona: '',
     });
+});
+
+test('a branched phone keeps the shared past and removes parent activity after the fork', () => {
+    const parent = createEmptyPhoneStore('parent-phone');
+    parent.scopedInitialized = true;
+    parent.phone.profile.nickname = '继承的账号';
+    const conversation = createPhoneConversation(parent, { type: 'direct', name: '朋友' });
+    const sharedMessage = appendPhoneMessage(parent, conversation.id, {
+        sender: '朋友', content: '分叉前',
+    });
+    sharedMessage.id = 'shared-message';
+    sharedMessage.timestamp = 1_000;
+    const futureMessage = appendPhoneMessage(parent, conversation.id, {
+        sender: '朋友', content: '父档后来发生',
+    });
+    futureMessage.id = 'future-message';
+    futureMessage.timestamp = 3_000;
+    parent.phone.community = {
+        forumThreads: [
+            { id: 'shared-thread', title: '共同历史', createdAt: 1_000 },
+            { id: 'future-thread', title: '父档未来', createdAt: 3_000 },
+        ],
+        cpRankings: [],
+        fanWorks: [],
+    };
+    parent.storyBatches = [{
+        sourceKey: 'parent:4',
+        messageId: '4',
+        modules: ['community'],
+        items: { communityForum: ['future-thread'], messages: ['future-message'] },
+        createdAt: 3_000,
+    }];
+    parent.worldGeneration = { status: 'ready', messageId: '4', sourceKey: 'parent:4' };
+
+    const branch = createBranchedPhoneStore(parent, 'child-phone', {
+        forkMessageId: 2,
+        cutoffTimestamp: 2_000,
+    });
+
+    assert.equal(branch.chatId, 'child-phone');
+    assert.equal(branch.scopedInitialized, true);
+    assert.equal(branch.phone.profile.nickname, '继承的账号');
+    assert.deepEqual(branch.conversations[0].messages.map(message => message.id), ['shared-message']);
+    assert.deepEqual(branch.phone.community.forumThreads.map(item => item.id), ['shared-thread']);
+    assert.deepEqual(branch.storyBatches, []);
+    assert.equal(branch.worldGeneration.status, 'idle');
+    assert.equal(parent.conversations[0].messages.length, 2, 'branching must not mutate the parent phone');
+    assert.deepEqual(parent.phone.community.forumThreads.map(item => item.id), [
+        'shared-thread', 'future-thread',
+    ]);
 });
 
 test('phone conversations keep display names separate from real identities', () => {

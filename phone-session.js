@@ -1,10 +1,13 @@
 import {
+    createBranchedPhoneStore,
     createEmptyScopedPhoneState,
     getPhoneChatId,
     loadPhoneStore,
+    loadPhoneStoreByChatId,
     normalizePhoneProfile,
     savePhoneStore,
 } from './phone-store.js';
+import { prepareBranchState } from './branch-state.js';
 
 const SCOPED_STORAGE_VERSION = 1;
 
@@ -45,6 +48,33 @@ export function createPhoneSession(globalSettings = {}, contextGetter = () => ({
     });
 
     async function initializeStore(nextStore, context) {
+        const prepared = prepareBranchState(context);
+        const branch = prepared.state;
+        if (prepared.changed) await context?.saveMetadata?.();
+        if (branch?.kind === 'branch' && branch.phoneInitialized !== true) {
+            if (nextStore.scopedInitialized) {
+                // An older branch may already contain phone activity of its own.
+                // Never overwrite it merely to backfill the inherited prefix.
+                branch.phoneInitialized = true;
+                await context?.saveMetadata?.();
+                return false;
+            }
+            const parentStore = await loadPhoneStoreByChatId(branch.parentChatId, {
+                missingAsNull: true,
+            });
+            if (parentStore) {
+                const inherited = createBranchedPhoneStore(parentStore, nextStore.chatId, {
+                    forkMessageId: branch.forkMessageId,
+                    cutoffTimestamp: branch.forkTimestamp,
+                });
+                for (const key of Object.keys(nextStore)) delete nextStore[key];
+                Object.assign(nextStore, inherited);
+                await savePhoneStore(nextStore, context);
+                branch.phoneInitialized = true;
+                await context?.saveMetadata?.();
+                return true;
+            }
+        }
         if (nextStore.scopedInitialized) return false;
         const migration = globalSettings.phoneScopedStorage ?? {};
         if (migration.legacyMigrated !== true && globalSettings.phone) {
@@ -69,6 +99,10 @@ export function createPhoneSession(globalSettings = {}, contextGetter = () => ({
         }
         nextStore.scopedInitialized = true;
         await savePhoneStore(nextStore, context);
+        if (branch?.kind === 'branch' && branch.phoneInitialized !== true) {
+            branch.phoneInitialized = true;
+            await context?.saveMetadata?.();
+        }
         return true;
     }
 

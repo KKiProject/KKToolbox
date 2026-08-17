@@ -4,6 +4,7 @@ import {
     buildSummaryBookName,
     clearAllSummaries,
     buildSummaryPrompt,
+    ensureBranchSummaryIsolation,
     getSummaries,
     getSummaryStatus,
     initializeSummaryManager,
@@ -245,6 +246,43 @@ function createContext(messages = []) {
     };
     return context;
 }
+
+test('a branch copies only summaries completed before the fork into a new lorebook', async () => {
+    const context = createContext(dialoguePairs(4));
+    const sourceBookName = context.summaryBookName;
+    context.chatId = 'Branch #2 - summary fork';
+    context.chat = context.chat.slice(0, 3);
+    context.chatMetadata.main_chat = 'parent-summary-chat';
+    context.chatMetadata[SUMMARY_STATE_KEY] = {
+        lastSummarizedMessageIndex: 3,
+        entries: [
+            { uid: '0', start: 0, end: 1, bookName: sourceBookName, createdAt: 'old-a', qualityVersion: 1 },
+            { uid: '1', start: 2, end: 3, bookName: sourceBookName, createdAt: 'old-b', qualityVersion: 1 },
+        ],
+        overviewGroups: [],
+        bookName: sourceBookName,
+        migrationVersion: 2,
+    };
+    context.chatMetadata.world_info = sourceBookName;
+    context.lorebooks.set(sourceBookName, { entries: {
+        0: { uid: 0, key: [`${SUMMARY_KEY_PREFIX}[第1-2楼]`], content: '共同历史', order: 100 },
+        1: { uid: 1, key: [`${SUMMARY_KEY_PREFIX}[第3-4楼]`], content: '跨过分叉点', order: 101 },
+    } });
+
+    const isolated = await ensureBranchSummaryIsolation(context);
+    const state = context.chatMetadata[SUMMARY_STATE_KEY];
+    const targetBookName = '金钰琳-自动总结2';
+
+    assert.equal(isolated, true);
+    assert.equal(state.bookName, targetBookName);
+    assert.equal(state.lastSummarizedMessageIndex, 1);
+    assert.deepEqual(state.entries.map(item => [item.start, item.end, item.bookName]), [
+        [0, 1, targetBookName],
+    ]);
+    assert.equal(context.chatMetadata.world_info, targetBookName);
+    assert.deepEqual(Object.keys(context.lorebooks.get(targetBookName).entries), ['0']);
+    assert.equal(context.lorebooks.get(sourceBookName).entries[1].content, '跨过分叉点');
+});
 
 test('a stale summary name is recreated from the real lorebook list before it is rebound', async () => {
     const context = createContext();

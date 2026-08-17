@@ -472,24 +472,141 @@ function preserveScopedPhoneReferences(store, normalized) {
     normalized.phone = replaceObjectContents(currentPhone, normalized.phone);
 }
 
-export async function loadPhoneStore(context = globalThis.SillyTavern?.getContext?.(), options = {}) {
-    const chatId = getPhoneChatId(context);
+function resetPhoneWorldGeneration() {
+    return {
+        status: 'idle',
+        messageId: '',
+        swipeIndex: 0,
+        sourceKey: '',
+        modules: [],
+        warnings: [],
+        lastError: '',
+        startedAt: 0,
+        completedAt: 0,
+        dismissed: false,
+    };
+}
+
+function clonePhoneStoreValue(value) {
+    if (typeof structuredClone === 'function') return structuredClone(value);
+    return JSON.parse(JSON.stringify(value));
+}
+
+function removeBranchedStoryBatch(store, batch) {
+    const ids = batch?.items ?? {};
+    const asSet = key => new Set(Array.isArray(ids[key]) ? ids[key].map(String) : []);
+    const messageIds = asSet('messages');
+    for (const conversation of store.conversations ?? []) {
+        conversation.messages = (conversation.messages ?? [])
+            .filter(message => !messageIds.has(String(message.id)));
+        const remainingRounds = new Set(conversation.messages.map(message => message.roundId));
+        conversation.rounds = (conversation.rounds ?? []).filter(round => remainingRounds.has(round.id));
+    }
+
+    const community = store.phone?.community ?? {};
+    const forumIds = asSet('communityForum');
+    const cpIds = asSet('communityCp');
+    const fanworkIds = asSet('communityFanwork');
+    community.forumThreads = (community.forumThreads ?? []).filter(item => !forumIds.has(String(item.id)));
+    community.cpRankings = (community.cpRankings ?? []).filter(item => !cpIds.has(String(item.id)));
+    community.fanWorks = (community.fanWorks ?? []).filter(item => !fanworkIds.has(String(item.id)));
+
+    const liveIds = asSet('live');
+    const live = store.phone?.live ?? {};
+    live.streams = (live.streams ?? []).filter(item => !liveIds.has(String(item.id)));
+
+    const weibo = store.phone?.weibo ?? {};
+    const generationBatches = (weibo.generationBatches ?? [])
+        .filter(item => String(item.messageId) === String(batch.messageId));
+    const postIds = new Set(generationBatches.flatMap(item => item.postIds ?? []).map(String));
+    for (const id of asSet('weibo')) postIds.add(id);
+    const topicIds = new Set(generationBatches.flatMap(item => item.hotTopicIds ?? []).map(String));
+    const followerDelta = generationBatches.reduce((sum, item) => sum + (Number(item.followerDelta) || 0), 0);
+    weibo.posts = (weibo.posts ?? []).filter(post => !postIds.has(String(post.id)));
+    weibo.feedPostIds = (weibo.feedPostIds ?? []).filter(id => !postIds.has(String(id)));
+    weibo.hotTopics = (weibo.hotTopics ?? [])
+        .filter(topic => !topicIds.has(String(topic.id)) && !postIds.has(String(topic.postId)));
+    weibo.commentReplies = (weibo.commentReplies ?? []).filter(reply => !postIds.has(String(reply.postId)));
+    weibo.likedPostIds = (weibo.likedPostIds ?? []).filter(id => !postIds.has(String(id)));
+    weibo.generationBatches = (weibo.generationBatches ?? [])
+        .filter(item => String(item.messageId) !== String(batch.messageId));
+    weibo.followerCount = Math.max(0, Number(weibo.followerCount || 0) - followerDelta);
+}
+
+function pruneTimedArrays(value, cutoffTimestamp) {
+    if (!value || typeof value !== 'object' || cutoffTimestamp <= 0) return;
+    for (const [key, child] of Object.entries(value)) {
+        if (Array.isArray(child)) {
+            value[key] = child.filter((item) => {
+                if (!item || typeof item !== 'object') return true;
+                const timestamp = Number(item.timestamp ?? item.createdAt ?? 0);
+                return !Number.isFinite(timestamp) || timestamp <= 0 || timestamp <= cutoffTimestamp;
+            });
+            value[key].forEach(item => pruneTimedArrays(item, cutoffTimestamp));
+        } else if (child && typeof child === 'object') {
+            pruneTimedArrays(child, cutoffTimestamp);
+        }
+    }
+}
+
+export function createBranchedPhoneStore(source, chatId, options = {}) {
+    const forkMessageId = Math.max(-1, Math.trunc(Number(options.forkMessageId) || 0));
+    const cutoffTimestamp = Math.max(0, Number(options.cutoffTimestamp) || 0);
+    const branch = normalizePhoneStore(clonePhoneStoreValue(source), chatId);
+    const staleBatches = (branch.storyBatches ?? [])
+        .filter(batch => Number(batch.messageId) > forkMessageId);
+    staleBatches.forEach(batch => removeBranchedStoryBatch(branch, batch));
+    branch.storyBatches = (branch.storyBatches ?? [])
+        .filter(batch => Number(batch.messageId) <= forkMessageId);
+
+    if (cutoffTimestamp > 0) {
+        for (const conversation of branch.conversations) {
+            conversation.messages = conversation.messages
+                .filter(message => Number(message.timestamp) <= cutoffTimestamp);
+            const remainingRounds = new Set(conversation.messages.map(message => message.roundId));
+            conversation.rounds = conversation.rounds.filter(round => remainingRounds.has(round.id));
+        }
+        branch.onlineMemory.events = branch.onlineMemory.events
+            .filter(event => Number(event.createdAt) <= cutoffTimestamp);
+        branch.activity.events = branch.activity.events
+            .filter(event => Number(event.createdAt) <= cutoffTimestamp);
+        pruneTimedArrays(branch.phone?.weibo, cutoffTimestamp);
+        pruneTimedArrays(branch.phone?.community, cutoffTimestamp);
+        pruneTimedArrays(branch.phone?.live, cutoffTimestamp);
+    }
+
+    if (Number(branch.worldGeneration?.messageId) > forkMessageId) {
+        branch.worldGeneration = resetPhoneWorldGeneration();
+    }
+    branch.chatId = cleanText(chatId, 500);
+    branch.scopedInitialized = true;
+    branch.updatedAt = 0;
+    return branch;
+}
+
+export async function loadPhoneStoreByChatId(chatId, options = {}) {
     const scope = getPhoneScope(chatId);
-    if (!scope) return createEmptyPhoneStore('');
-    if (!options.force && storeCache.has(chatId)) return storeCache.get(chatId);
+    if (!scope) return options.missingAsNull ? null : createEmptyPhoneStore('');
+    if (!options.force && storeCache.has(scope.id)) return storeCache.get(scope.id);
     const response = await fetch(`${scope.url}?v=${Date.now()}`, {
         headers: getRequestHeaders(),
         cache: 'no-store',
     });
     if (response.status === 404) {
-        const empty = createEmptyPhoneStore(chatId);
-        storeCache.set(chatId, empty);
+        if (options.missingAsNull) return null;
+        const empty = createEmptyPhoneStore(scope.id);
+        storeCache.set(scope.id, empty);
         return empty;
     }
     if (!response.ok) throw new Error(`读取手机数据失败（${response.status}）。`);
-    const store = normalizePhoneStore(await response.json(), chatId);
-    storeCache.set(chatId, store);
+    const store = normalizePhoneStore(await response.json(), scope.id);
+    storeCache.set(scope.id, store);
     return store;
+}
+
+export async function loadPhoneStore(context = globalThis.SillyTavern?.getContext?.(), options = {}) {
+    const chatId = getPhoneChatId(context);
+    return loadPhoneStoreByChatId(chatId, options);
 }
 
 export async function savePhoneStore(store, context = globalThis.SillyTavern?.getContext?.()) {

@@ -51,6 +51,7 @@ import {
 } from './phone-store.js';
 import { initializeSwipeCleanup } from './swipe-cleanup.js';
 import { analyzeChatTagRemoval, removeChatTagContent } from './chat-tag-cleaner.js';
+import { initializeBranchStateLifecycle } from './branch-state.js';
 
 const EXTENSION_KEY = 'st-memory-augment';
 const EXTENSION_FOLDER = decodeURIComponent(new URL('.', import.meta.url).pathname)
@@ -1276,6 +1277,9 @@ async function initialize() {
     bindModelDiscovery(settings, context);
     bindActions(settings);
     addTopNavigationButton();
+    // Bind first: all later chat-change listeners must see branch metadata
+    // after it has been cut back to the actual fork floor.
+    initializeBranchStateLifecycle(context);
     bindMessageIngestion(settings, context);
     bindPhoneMemoryLifecycle(context);
     initializeChatMemoryUi(settings, context);
