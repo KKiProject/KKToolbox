@@ -3,12 +3,15 @@ const RENDERED_SELECTOR = '.memory-augment-html-render';
 const SOURCE_HASH_ATTRIBUTE = 'data-memory-augment-html-source';
 const MESSAGE_RENDER_ATTRIBUTE = 'data-memory-augment-html-message';
 const YIELDED_ATTRIBUTE = 'data-memory-augment-html-yielded';
+const SUSPENDED_ATTRIBUTE = 'data-memory-augment-html-suspended';
 const SCROLL_STYLE_MARKER = 'data-memory-augment-scroll-support';
 const RENDER_SETTLE_DELAY = 120;
+const RENDER_ACTIVE_MARGIN = '1000px 0px';
 
 let rendererState = null;
 const originalBlocks = new WeakMap();
 const blockSignatures = new WeakMap();
+const frameStates = new WeakMap();
 
 export function containsRenderableHtml(value) {
     return HTML_TRIGGER_PATTERN.test(String(value ?? ''));
@@ -156,11 +159,51 @@ function yieldToExistingRenderer(pre, signature) {
     pre.hidden = true;
 }
 
+function activateHtmlFrame(container) {
+    const state = frameStates.get(container);
+    if (!state || state.active) return;
+    state.iframe.removeAttribute('src');
+    state.iframe.srcdoc = state.html;
+    state.active = true;
+    container.removeAttribute(SUSPENDED_ATTRIBUTE);
+}
+
+function suspendHtmlFrame(container) {
+    const state = frameStates.get(container);
+    if (!state || !state.active) return;
+    state.iframe.removeAttribute('srcdoc');
+    state.iframe.setAttribute('src', 'about:blank');
+    state.active = false;
+    container.setAttribute(SUSPENDED_ATTRIBUTE, 'true');
+}
+
+function manageHtmlFrame(container) {
+    const state = frameStates.get(container);
+    if (!state) return;
+    const visibilityObserver = rendererState?.visibilityObserver;
+    if (visibilityObserver && elementIsInside(container, rendererState?.chatRoot)) {
+        if (!state.observed) {
+            visibilityObserver.observe(container);
+            state.observed = true;
+        }
+        return;
+    }
+    activateHtmlFrame(container);
+}
+
+function stopManagingHtmlFrame(container) {
+    const state = frameStates.get(container);
+    if (!state?.observed) return;
+    rendererState?.visibilityObserver?.unobserve?.(container);
+    state.observed = false;
+}
+
 function reconcileRenderedBlocks(root, documentRef) {
     root.querySelectorAll(RENDERED_SELECTOR).forEach((container) => {
         const state = originalBlocks.get(container);
         const messageRoot = container.closest?.('.mes_text');
         if (!state?.original || !messageRoot || !hasEquivalentRenderedOutput(messageRoot, state.signature, container)) return;
+        stopManagingHtmlFrame(container);
         const original = state.original.cloneNode(true);
         yieldToExistingRenderer(original, state.signature);
         container.replaceWith(original);
@@ -169,6 +212,7 @@ function reconcileRenderedBlocks(root, documentRef) {
 
 function restoreRenderedBlocks(root) {
     root.querySelectorAll(RENDERED_SELECTOR).forEach((container) => {
+        stopManagingHtmlFrame(container);
         const state = originalBlocks.get(container);
         if (state?.sourceWrapper && container.parentElement === state.sourceWrapper.parentElement) {
             const parent = container.parentElement;
@@ -196,8 +240,13 @@ function createHtmlContainer(html, signature, documentRef) {
     iframe.title = '聊天内嵌 HTML 内容';
     iframe.loading = 'lazy';
     iframe.setAttribute('scrolling', 'yes');
-    iframe.srcdoc = addHtmlScrollSupport(html);
     container.append(iframe);
+    frameStates.set(container, {
+        iframe,
+        html: addHtmlScrollSupport(html),
+        active: false,
+        observed: false,
+    });
     return container;
 }
 
@@ -235,6 +284,7 @@ function renderRegexDisplayMessages(root, options, documentRef) {
         container.setAttribute(MESSAGE_RENDER_ATTRIBUTE, 'true');
         originalBlocks.set(container, { sourceWrapper, signature });
         messageRoot.append(sourceWrapper, container);
+        manageHtmlFrame(container);
         rendered += 1;
     });
 
@@ -276,6 +326,7 @@ export function renderHtmlCodeBlocks(root, settings, options = {}) {
         const container = createHtmlContainer(html, signature, documentRef);
         originalBlocks.set(container, { original: pre.cloneNode(true), signature });
         pre.replaceWith(container);
+        manageHtmlFrame(container);
         rendered += 1;
     });
 
@@ -305,6 +356,11 @@ export function refreshHtmlRenderer() {
 export function destroyHtmlRenderer() {
     if (!rendererState) return;
     rendererState.observer?.disconnect();
+    rendererState.visibilityObserver?.disconnect();
+    rendererState.chatRoot?.querySelectorAll?.(RENDERED_SELECTOR).forEach((container) => {
+        const state = frameStates.get(container);
+        if (state) state.observed = false;
+    });
     const clearTimer = rendererState.document?.defaultView?.clearTimeout ?? globalThis.clearTimeout;
     if (rendererState.timer) clearTimer(rendererState.timer);
     rendererState = null;
@@ -317,13 +373,28 @@ export function initializeHtmlRenderer(settings, options = {}) {
     const MutationObserverRef = options.MutationObserver
         ?? documentRef?.defaultView?.MutationObserver
         ?? globalThis.MutationObserver;
+    const IntersectionObserverRef = options.IntersectionObserver
+        ?? documentRef?.defaultView?.IntersectionObserver
+        ?? globalThis.IntersectionObserver;
     if (!chatRoot || typeof MutationObserverRef !== 'function') return false;
 
     const observer = new MutationObserverRef(scheduleRefresh);
+    const visibilityObserver = typeof IntersectionObserverRef === 'function'
+        ? new IntersectionObserverRef((entries) => {
+            for (const entry of entries) {
+                if (entry.isIntersecting) activateHtmlFrame(entry.target);
+                else suspendHtmlFrame(entry.target);
+            }
+        }, {
+            root: chatRoot,
+            rootMargin: RENDER_ACTIVE_MARGIN,
+        })
+        : null;
     rendererState = {
         chatRoot,
         document: documentRef,
         observer,
+        visibilityObserver,
         timer: null,
         settings,
         getChat: options.getChat,
@@ -334,6 +405,7 @@ export function initializeHtmlRenderer(settings, options = {}) {
         subtree: true,
         characterData: true,
     });
+    chatRoot.querySelectorAll(RENDERED_SELECTOR).forEach(manageHtmlFrame);
     renderHtmlCodeBlocks(chatRoot, settings, {
         document: documentRef,
         getChat: options.getChat,

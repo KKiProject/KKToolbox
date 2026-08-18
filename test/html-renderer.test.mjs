@@ -21,6 +21,10 @@ test('HTML compatibility renderer is event-driven, fully functional, and silent'
     assert.match(source, /\.mes_text pre > code/);
     assert.match(source, /renderRegexDisplayMessages/);
     assert.match(source, /MutationObserverRef/);
+    assert.match(source, /IntersectionObserverRef/);
+    assert.match(source, /RENDER_ACTIVE_MARGIN/);
+    assert.match(source, /suspendHtmlFrame/);
+    assert.match(source, /about:blank/);
     assert.match(source, /hasEquivalentRenderedOutput/);
     assert.match(source, /isIntentionallyHidden/);
     assert.match(source, /RENDER_SETTLE_DELAY/);
