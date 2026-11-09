@@ -742,6 +742,7 @@ export async function memoryAugmentInterceptor(chat, contextSize, abort, type) {
 
     const context = SillyTavern.getContext();
     const settings = context.extensionSettings?.[EXTENSION_KEY];
+    if (settings?.enabled === false) return;
     if (!settings || chat === context.chat) {
         if (chat === context.chat) {
             console.error('[Memory Augment] Refusing to modify persistent context.chat.');

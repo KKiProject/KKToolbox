@@ -1,7 +1,8 @@
 import { extension_settings, renderExtensionTemplateAsync } from '../../../extensions.js';
 import { power_user } from '../../../power-user.js';
 import { Popup, POPUP_RESULT, POPUP_TYPE } from '../../../popup.js';
-import { eventSource, event_types, reloadCurrentChat } from '../../../../script.js';
+import { eventSource, event_types, reloadCurrentChat, saveSettings } from '../../../../script.js';
+import { bindMasterSwitch } from './master-switch.js';
 import { getRegexedString, regex_placement } from '../../regex/engine.js';
 import { normalizeBaseUrl } from './api-utils.js';
 import { bindChatIngestionLifecycle, reconcileBufferedMessageQueue } from './chat-lifecycle.js';
@@ -111,6 +112,7 @@ export async function refreshDisplayedVersion(documentRef = globalThis.document,
 }
 
 export const defaultSettings = Object.freeze({
+    enabled: true,
     apis: {
         embedding: { url: '', apiKey: '', model: '', availableModels: [], modelsBaseUrl: '' },
         reranker: { url: '', apiKey: '', model: '', availableModels: [], modelsBaseUrl: '' },
@@ -1255,6 +1257,13 @@ async function initialize() {
         document.querySelector('#extensions_settings2')?.insertAdjacentHTML('beforeend', html);
     }
     await refreshDisplayedVersion();
+
+    bindMasterSwitch(settings, {
+        documentRef: document,
+        save: saveSettings,
+        reload: () => globalThis.location.reload(),
+    });
+    if (settings.enabled === false) return;
 
     bindSettings(settings, context);
     initializeGenerationTimingUi({ eventSource, eventTypes: event_types, documentRef: document });
