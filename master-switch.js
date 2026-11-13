@@ -1,5 +1,5 @@
 // A page reload tears down every listener, queue and iframe together. When off,
-// index.js keeps only this control and never starts the feature lifecycles.
+// index.js keeps settings editable but never starts the feature lifecycles.
 export function bindMasterSwitch(settings, { documentRef, save, reload }) {
     const input = documentRef.querySelector('#memory_augment_enabled');
     const status = documentRef.querySelector('#memory_augment_enabled_status');
@@ -7,8 +7,19 @@ export function bindMasterSwitch(settings, { documentRef, save, reload }) {
     if (!input) return;
     const enabled = settings.enabled !== false;
     input.checked = enabled;
-    if (features) features.hidden = !enabled;
-    if (status) status.textContent = enabled ? '工具箱已开启' : '工具箱已关闭';
+    if (features) features.hidden = false;
+    if (status) status.textContent = enabled ? '工具箱已开启' : '工具箱已关闭；设置仍可查看和保存，重新开启后生效。';
+    if (!enabled) {
+        features?.querySelectorAll('button').forEach(button => {
+            if (button.id === 'memory_augment_add_status_custom_field') return;
+            button.disabled = true;
+            button.title = '请先开启工具箱再执行此操作';
+        });
+        for (const id of ['memory_augment_worldinfo_entries', 'memory_augment_status_summary_progress', 'memory_augment_generation_timing']) {
+            const element = documentRef.querySelector(`#${id}`);
+            if (element) element.textContent = '工具箱已关闭，暂停读取和更新。';
+        }
+    }
     input.addEventListener('change', async () => {
         const previous = settings.enabled;
         settings.enabled = input.checked;

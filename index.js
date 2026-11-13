@@ -296,6 +296,7 @@ function bindSettings(settings, context) {
             setValueByPath(settings, input.dataset.setting, readInputValue(input));
             updateValueLabel(input);
             context.saveSettingsDebounced();
+            if (settings.enabled === false) return;
             if (input.dataset.setting.startsWith('status.')) refreshStoryStatusUi(context);
             if (input.dataset.setting.startsWith('development.')) refreshCharacterDevelopmentUi(context);
             if (input.dataset.setting === 'barrage.enabled') refreshBarrageVisibility(settings, context);
@@ -311,7 +312,9 @@ function bindSettings(settings, context) {
             if (input.dataset.setting === 'htmlRenderer.enabled') refreshHtmlRenderer();
         });
         if (input.dataset.setting === 'customPanel.prompt') {
-            input.addEventListener('change', () => scheduleLatestCustomPanelGeneration(settings, context, { force: true }));
+            input.addEventListener('change', () => {
+                if (settings.enabled !== false) scheduleLatestCustomPanelGeneration(settings, context, { force: true });
+            });
         }
     });
 }
@@ -324,7 +327,7 @@ function bindStatusCustomFields(settings, context) {
 
     const save = () => {
         context.saveSettingsDebounced();
-        refreshStoryStatusUi(context);
+        if (settings.enabled !== false) refreshStoryStatusUi(context);
     };
     const render = () => {
         container.replaceChildren();
@@ -467,7 +470,7 @@ function updateFetchButton(settings, apiType) {
     }
 
     const apiSettings = settings.apis[apiType];
-    button.disabled = !normalizeBaseUrl(apiSettings?.url) || !String(apiSettings?.apiKey ?? '').trim();
+    button.disabled = settings.enabled === false || !normalizeBaseUrl(apiSettings?.url) || !String(apiSettings?.apiKey ?? '').trim();
 }
 
 function bindModelDiscovery(settings, context) {
@@ -496,6 +499,7 @@ function bindModelDiscovery(settings, context) {
         });
 
         button?.addEventListener('click', async () => {
+            if (settings.enabled === false) return;
             const apiSettings = settings.apis[apiType];
             const requestConfig = {
                 baseUrl: normalizeBaseUrl(apiSettings.url),
@@ -1263,9 +1267,11 @@ async function initialize() {
         save: saveSettings,
         reload: () => globalThis.location.reload(),
     });
+    bindSettings(settings, context);
+    bindStatusCustomFields(settings, context);
+    bindModelDiscovery(settings, context);
     if (settings.enabled === false) return;
 
-    bindSettings(settings, context);
     initializeGenerationTimingUi({ eventSource, eventTypes: event_types, documentRef: document });
     initializeHtmlRenderer(settings, {
         getChat: () => SillyTavern.getContext()?.chat ?? [],
@@ -1282,8 +1288,6 @@ async function initialize() {
             });
         },
     });
-    bindStatusCustomFields(settings, context);
-    bindModelDiscovery(settings, context);
     bindActions(settings);
     addTopNavigationButton();
     // Bind first: all later chat-change listeners must see branch metadata

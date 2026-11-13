@@ -8,14 +8,16 @@ import { memoryAugmentInterceptor } from '../context-manager.js';
 function controls(settings, save, reload) {
     const input = { addEventListener: (_, handler) => input.change = handler };
     const status = {};
-    const features = {};
+    const action = { id: 'memory_augment_regenerate_summaries' };
+    const addField = { id: 'memory_augment_add_status_custom_field' };
+    const features = { querySelectorAll: () => [action, addField] };
     const nodes = {
         '#memory_augment_enabled': input,
         '#memory_augment_enabled_status': status,
         '#memory_augment_feature_settings': features,
     };
     bindMasterSwitch(settings, { documentRef: { querySelector: id => nodes[id] }, save, reload });
-    return { input, status, features };
+    return { input, status, features, action, addField };
 }
 
 test('master switch preserves feature preferences and waits for saving before reload', async () => {
@@ -39,11 +41,13 @@ test('master switch preserves feature preferences and waits for saving before re
     assert.deepEqual(settings.phone, originalFeatures.phone);
 });
 
-test('disabled settings retain a working re-enable control', async () => {
+test('disabled settings stay visible, disable execution buttons and retain re-enable control', async () => {
     const settings = { enabled: false };
     let reloaded = false;
-    const { input, features } = controls(settings, async () => ({ result: 'ok' }), () => reloaded = true);
-    assert.equal(features.hidden, true);
+    const { input, features, action, addField } = controls(settings, async () => ({ result: 'ok' }), () => reloaded = true);
+    assert.equal(features.hidden, false);
+    assert.equal(action.disabled, true);
+    assert.notEqual(addField.disabled, true);
     assert.equal(input.checked, false);
     input.checked = true;
     await input.change();
@@ -76,18 +80,30 @@ test('disabled generation interceptor neither sends requests nor changes prompt 
     assert.deepEqual(chat, before);
 });
 
-test('disabled startup installs only the master control and skips feature initialization', async () => {
+test('disabled startup loads editable settings but never starts features or generates on edits', async () => {
     let source = await readFile(new URL('../index.js', import.meta.url), 'utf8');
     source = source.replace(/^import[\s\S]*?;\r?$/gm, '')
         .replace(/\bexport /g, '')
         .replaceAll('import.meta.url', JSON.stringify('https://example.test/KKToolbox/index.js'));
     let initialize;
     let bound = false;
+    let saves = 0;
+    const inputs = ['barrage.enabled', 'status.enabled', 'development.enabled', 'customPanel.enabled',
+        'customPanel.choicesEnabled', 'customPanel.customContentEnabled', 'customPanel.prompt',
+        'htmlRenderer.enabled', 'apis.barrage.model', 'barrage.maxTokens'].map(path => ({
+        dataset: { setting: path },
+        type: path.endsWith('enabled') || path.endsWith('Enabled') ? 'checkbox' : path.endsWith('maxTokens') ? 'number' : 'text',
+        handlers: {},
+        addEventListener(event, callback) { this.handlers[event] = callback; },
+    }));
     const sandbox = {
         URL, console,
         extension_settings: { 'st-memory-augment': { enabled: false } },
-        SillyTavern: { getContext: () => ({ saveSettingsDebounced() {} }) },
-        document: { querySelector: id => id === '#memory_augment_settings' ? {} : null },
+        SillyTavern: { getContext: () => ({ saveSettingsDebounced() { saves++; } }) },
+        document: {
+            querySelector: id => id === '#memory_augment_settings' ? {} : null,
+            querySelectorAll: () => inputs,
+        },
         memoryAugmentInterceptor,
         saveSettings() {},
         bindMasterSwitch: settings => { assert.equal(settings.enabled, false); bound = true; },
@@ -97,4 +113,19 @@ test('disabled startup installs only the master control and skips feature initia
     vm.runInNewContext(source, sandbox);
     await initialize();
     assert.equal(bound, true);
+    assert.equal(inputs.at(-1).value, '8064');
+    const before = saves;
+    for (const input of inputs) {
+        input.checked = true;
+        input.value = input.type === 'number' ? '9000' : '新的设置';
+        input.handlers.input();
+        input.handlers.change?.();
+    }
+    assert.equal(saves, before + inputs.length);
+    const settings = sandbox.extension_settings['st-memory-augment'];
+    assert.equal(settings.enabled, false);
+    assert.equal(settings.barrage.enabled, true);
+    assert.equal(settings.customPanel.prompt, '新的设置');
+    assert.equal(settings.apis.barrage.model, '新的设置');
+    assert.equal(settings.barrage.maxTokens, 9000);
 });
